@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>「输出格式」开关 · 设计方案预览</title>
+<style>
+  :root{
+    --bg:#0d1117; --card:#161b22; --line:#2a3038; --fg:#e6edf3; --dim:#8b949e;
+    --ok:#7ee787; --blue:#79c0ff; --warn:#ffa657; --pink:#f778ba;
+    --fill:#0f766e; --fill-fg:#fff;            /* 真实插件里的主色 */
+    --ctl-border:rgba(140,140,140,.45);
+    --ctl-text:#4b5563;
+    --hover-bg:rgba(140,140,140,.14);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.65 system-ui,-apple-system,"PingFang SC",sans-serif;padding:24px 26px 70px}
+  h1{font-size:19px;margin:0 0 6px}
+  .sub{color:var(--dim);font-size:12.5px;margin-bottom:18px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(520px,1fr));gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px 16px}
+  .card.now{border-color:#9e6a03}
+  .card.reco{border-color:#238636}
+  .card h3{margin:0 0 2px;font-size:14.5px;display:flex;align-items:center;gap:8px}
+  .tag{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid currentColor;font-weight:600}
+  .tag.now{color:var(--warn)} .tag.reco{color:var(--ok)} .tag.plain{color:var(--dim)}
+  .card .why{color:var(--dim);font-size:12.5px;margin:0 0 12px}
+  .pair{display:flex;flex-direction:column;gap:10px}
+  .state{display:flex;flex-direction:column;gap:5px}
+  .label{font-size:11.5px;color:var(--dim);display:flex;gap:6px;align-items:center}
+  .label b{color:var(--fg);font-weight:600}
+  /* —— 真实 composer 的 1:1 复刻（面板内容宽 516） —— */
+  .composer{width:516px;max-width:100%;display:flex;flex-direction:column;gap:6px;padding:10px 10px 8px 14px;
+    border-radius:22px;border:1px solid var(--ctl-border);background:#fff;color:#111827}
+  .ph{font-size:13px;line-height:1.5;color:#9ca3af}
+  .row{display:flex;align-items:center;gap:8px;min-height:26px}
+  .space{flex:1 1 auto}
+  .send{width:26px;height:26px;border-radius:13px;background:var(--fill);color:var(--fill-fg);
+    display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .send svg{width:14px;height:14px}
+  /* —— A 分段开关 —— */
+  .seg{display:inline-flex;align-items:center;height:26px;border:1px solid var(--ctl-border);border-radius:13px;overflow:hidden}
+  .seg span{padding:0 10px;font-size:11.5px;line-height:24px;color:var(--ctl-text)}
+  .seg span.on{background:var(--fill);color:#fff;font-weight:600}
+  /* —— B 开关 + 标签 —— */
+  .sw{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ctl-text)}
+  .track{position:relative;width:28px;height:16px;border-radius:8px;background:rgba(140,140,140,.35);flex:0 0 auto}
+  .track i{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:left .15s}
+  .track.on{background:var(--fill)}
+  .track.on i{left:14px}
+  /* —— C/F 胶囊 + 下拉 —— */
+  .pill{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;border-radius:13px;
+    border:1px solid var(--ctl-border);font-size:11.5px;color:var(--ctl-text)}
+  .pill b{font-weight:600;color:#111827}
+  .pill.on{background:var(--fill);border-color:transparent;color:#fff;font-weight:600}
+  .pill.on b{color:#fff}
+  .caret{font-size:9px;opacity:.7}
+  .menu{margin-top:6px;width:236px;border:1px solid var(--line);border-radius:10px;background:#fff;padding:4px;
+    box-shadow:0 10px 26px rgba(0,0,0,.18);color:#111827}
+  .menu div{display:flex;flex-direction:column;gap:1px;padding:6px 9px;border-radius:7px;font-size:12px}
+  .menu div.cur{background:rgba(15,118,110,.1);font-weight:600}
+  .menu small{color:#6b7280;font-size:11px;font-weight:400}
+  /* —— D 图标分段 —— */
+  .icoseg{display:inline-flex;align-items:center;height:26px;border:1px solid var(--ctl-border);border-radius:13px;overflow:hidden}
+  .icoseg span{width:34px;height:24px;display:inline-flex;align-items:center;justify-content:center;color:var(--ctl-text)}
+  .icoseg span.on{background:var(--fill);color:#fff}
+  .icoseg svg{width:14px;height:14px}
+  /* —— 现状 —— */
+  .nowbtn{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 9px;border-radius:13px;
+    border:1px solid var(--ctl-border);font-size:11.5px;color:var(--ctl-text)}
+  .nowbtn.on{background:var(--fill);border-color:transparent;color:#fff;font-weight:600}
+  .nowbtn svg{width:14px;height:14px}
+  .notes{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;font-size:12px}
+  .notes div{color:var(--dim)}
+  .notes b{color:var(--fg);font-weight:600}
+  .pro{color:var(--ok)} .con{color:var(--warn)}
+  table.cmp{width:100%;border-collapse:collapse;margin-top:22px;font-size:12.5px}
+  table.cmp th,table.cmp td{border-bottom:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  table.cmp th{color:var(--dim);font-weight:500}
+  .foot{margin-top:18px;color:var(--dim);font-size:12.5px}
+  code{color:var(--pink)}
+</style>
+</head>
+<body>
+<h1>「输出格式」开关 · 六个设计方案（按真实尺寸 1:1）</h1>
+<div class="sub">位置：追问输入框的第二行左侧。尺寸与真实组件一致：composer 516px 宽、控件高 26px、发送键 26×26。每个方案都给出<b>关（文字回答）</b>与<b>开（网页回答）</b>两个状态。</div>
+
+<div class="grid">
+
+  <!-- 现状 -->
+  <div class="card now">
+    <h3>现状（有歧义）<span class="tag now">要替换</span></h3>
+    <p class="why">地球图标 + 「网页」两个字：看不出是"输出格式"，也看不出它是个开关（像是"打开网页/浏览器"这种动作）。</p>
+    <div class="pair">
+      <div class="state">
+        <div class="label"><b>关</b>　文字回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="nowbtn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="5.6"/><path d="M8 2.4c1.9 1.7 2.9 3.6 2.9 5.6S9.9 11.9 8 13.6C6.1 11.9 5.1 10 5.1 8S6.1 4.1 8 2.4z"/><path d="M2.5 8h11"/></svg>网页</span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="state">
+        <div class="label"><b>开</b>　网页回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="nowbtn on"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="5.6"/><path d="M8 2.4c1.9 1.7 2.9 3.6 2.9 5.6S9.9 11.9 8 13.6C6.1 11.9 5.1 10 5.1 8S6.1 4.1 8 2.4z"/><path d="M2.5 8h11"/></svg>网页</span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A -->
+  <div class="card reco">
+    <h3>A · 分段开关「文字 ｜ 网页」<span class="tag reco">推荐</span></h3>
+    <p class="why">把两个格式<b>并排摆出来</b>，当前项高亮——"在两种输出格式之间切换"这件事没有第二种解读。也顺手教会用户：关掉就是文字。</p>
+    <div class="pair">
+      <div class="state">
+        <div class="label"><b>关</b>　文字回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="seg"><span class="on">文字</span><span>网页</span></span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="state">
+        <div class="label"><b>开</b>　网页回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="seg"><span>文字</span><span class="on">网页</span></span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="pro">✓ 无歧义：两种格式都在眼前，当前的一目了然</div>
+      <div class="con">✗ 比现状略宽（约 100px），但行内左侧空间充足</div>
+      <div class="pro">✓ 一次点击即切换，不用展开菜单</div>
+      <div class="con">✗ 语义是"二选一"，不是"开关"——但实际行为就是二选一</div>
+    </div>
+  </div>
+
+  <!-- B -->
+  <div class="card">
+    <h3>B · 真开关「网页回答 ◯—」</h3>
+    <p class="why">用标准的开关样式（轨道 + 滑块）表达布尔量，左侧文字说明它管的是什么。语义 = "让回答变成网页"。</p>
+    <div class="pair">
+      <div class="state">
+        <div class="label"><b>关</b>　文字回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="sw">网页回答<span class="track"><i></i></span></span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="state">
+        <div class="label"><b>开</b>　网页回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="sw">网页回答<span class="track on"><i></i></span></span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="pro">✓ "开关"这个性质最清楚（轨道+滑块是通用语言）</div>
+      <div class="con">✗ "网页回答"仍不是一个纯格式名词，关掉后是什么没写出来</div>
+      <div class="pro">✓ 宽度适中（约 96px）</div>
+      <div class="con">✗ 小尺寸下开关轨道容易显得琐碎</div>
+    </div>
+  </div>
+
+  <!-- C -->
+  <div class="card">
+    <h3>C · 当前值胶囊 + 菜单「格式：文字 ▾」</h3>
+    <p class="why">只显示<b>当前</b>格式，点开才是菜单。最省空间，且能用副标题解释每一项。</p>
+    <div class="pair">
+      <div class="state">
+        <div class="label"><b>关</b>　文字回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="pill">格式：<b>文字</b><span class="caret">▼</span></span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="state">
+        <div class="label"><b>开</b>　网页回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="pill on">格式：<b>网页</b><span class="caret">▼</span></span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+        <div class="menu">
+          <div>文字回答　<small>普通段落，最省时间</small></div>
+          <div class="cur">网页回答　<small>较复杂的问题生成一个 HTML 页面</small></div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="pro">✓ 空间最省，且"格式"二字直接点明这是输出格式</div>
+      <div class="con">✗ 要点两下才切换；当前值在胶囊里，用户得先看再点</div>
+      <div class="pro">✓ 菜单里能写清两种格式的差别（教学成本最低）</div>
+      <div class="con">✗ 面板窄，弹出菜单可能被裁</div>
+    </div>
+  </div>
+
+  <!-- D -->
+  <div class="card">
+    <h3>D · 图标分段「¶ ｜ &lt;/&gt;」</h3>
+    <p class="why">用最通用的两个符号代表"文本"与"代码/页面"，靠 hover 提示补语义。最紧凑。</p>
+    <div class="pair">
+      <div class="state">
+        <div class="label"><b>关</b>　文字回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="icoseg">
+              <span class="on"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2.6 4.4h10.8"/><path d="M2.6 8h10.8"/><path d="M2.6 11.6h6.4"/></svg></span>
+              <span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5.6 4.6 2.6 8l3 3.4"/><path d="M10.4 4.6 13.4 8l-3 3.4"/></svg></span>
+            </span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="state">
+        <div class="label"><b>开</b>　网页回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="icoseg">
+              <span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2.6 4.4h10.8"/><path d="M2.6 8h10.8"/><path d="M2.6 11.6h6.4"/></svg></span>
+              <span class="on"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5.6 4.6 2.6 8l3 3.4"/><path d="M10.4 4.6 13.4 8l-3 3.4"/></svg></span>
+            </span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="pro">✓ 最紧凑（约 68px），和发送键视觉重量接近</div>
+      <div class="con">✗ 仍有学习成本：<code>&lt;/&gt;</code> 是"代码"，不等于"网页"</div>
+      <div class="pro">✓ 两态并排，切换方向清楚</div>
+      <div class="con">✗ 面板里 hover 才算真机会，触屏设备没有 hover</div>
+    </div>
+  </div>
+
+  <!-- E -->
+  <div class="card">
+    <h3>E · 双态文字胶囊「输出 · 文字 ⇄ 输出 · 网页」</h3>
+    <p class="why">一个胶囊，文字直接写清"输出什么"，点一下就翻面。不带图标、不带菜单。</p>
+    <div class="pair">
+      <div class="state">
+        <div class="label"><b>关</b>　文字回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="pill">输出 · <b>文字</b></span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="state">
+        <div class="label"><b>开</b>　网页回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="pill on">输出 · <b>网页</b></span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="pro">✓ "输出"二字把它和"打开网页"这类动作彻底区分开</div>
+      <div class="con">✗ 只显示当前值，用户第一眼不知道点一下会变成什么</div>
+      <div class="pro">✓ 一次点击切换，宽度适中（约 84px）</div>
+      <div class="con">✗ 两种状态的差异全靠颜色，弱视觉用户不友好</div>
+    </div>
+  </div>
+
+  <!-- F -->
+  <div class="card">
+    <h3>F · 主会话同款下拉「文字回答 ⌄」</h3>
+    <p class="why">和主会话 composer 里的模型选择器同一套语言（当前值 + 下拉箭头），点开是带说明的菜单。</p>
+    <div class="pair">
+      <div class="state">
+        <div class="label"><b>关</b>　文字回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="pill">文字回答<span class="caret">▼</span></span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="state">
+        <div class="label"><b>开</b>　网页回答</div>
+        <div class="composer">
+          <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+          <div class="row">
+            <span class="pill on">网页回答<span class="caret">▼</span></span>
+            <span class="space"></span>
+            <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+          </div>
+        </div>
+        <div class="menu">
+          <div class="cur">文字回答　<small>默认 · 普通段落</small></div>
+          <div>网页回答　<small>较复杂的问题输出一个 HTML 页面</small></div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="pro">✓ 和主会话一致，用户已经会读这种控件</div>
+      <div class="con">✗ 同样要点两下；占用宽度最大（约 100px）</div>
+      <div class="pro">✓ 菜单能写清行为差异</div>
+      <div class="con">✗ 主会话那排是"模型/权限/附件"，混进一个"格式"容易被当成同一类东西</div>
+    </div>
+  </div>
+
+</div>
+
+<table class="cmp">
+  <tr><th>方案</th><th>一眼看懂"这是输出格式"</th><th>一眼看懂"当前是哪档"</th><th>看懂"点一下会变什么"</th><th>点击次数</th><th>宽度</th></tr>
+  <tr><td><b>A 分段「文字｜网页」</b></td><td>强</td><td>强</td><td>强（另一档就在旁边）</td><td>1</td><td>≈100px</td></tr>
+  <tr><td>B 开关「网页回答 ◯—」</td><td>中（要读文字）</td><td>强</td><td>强</td><td>1</td><td>≈96px</td></tr>
+  <tr><td>C 胶囊+菜单「格式：文字 ▾」</td><td>强（写了"格式"）</td><td>强</td><td>中（要展开）</td><td>2</td><td>≈92px</td></tr>
+  <tr><td>D 图标分段「¶｜&lt;/&gt;」</td><td>弱</td><td>中</td><td>强</td><td>1</td><td>≈68px</td></tr>
+  <tr><td>E 双态胶囊「输出·文字」</td><td>强</td><td>强</td><td>弱</td><td>1</td><td>≈84px</td></tr>
+  <tr><td>F 下拉「文字回答 ⌄」</td><td>中</td><td>强</td><td>中</td><td>2</td><td>≈100px</td></tr>
+</table>
+
+<div class="foot">
+  <b>我的建议</b>：<b>A（分段「文字｜网页」）</b>——把两个格式并排摆出来，当前项高亮，"这是输出格式的开关"没有第二种解读，
+  而且能顺手告诉用户"关掉就是文字"。若你更想要"开关"的心理模型，就选 <b>B</b>；若面板更挤、宁可多一次点击，选 <b>C</b>（"格式：…" 三字最直白）。<br>
+  只等你点头，代码先不动。
+</div>
+
+</body>
+</html>

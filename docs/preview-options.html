@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>小窗网页预览 · 改善方案示意图</title>
+<style>
+  :root{
+    --bg:#0f1216; --card:#161b22; --line:#2a3038; --fg:#e6edf3; --dim:#8b949e;
+    --ok:#7ee787; --blue:#79c0ff; --warn:#ffa657; --pink:#f778ba;
+    /* 实测尺寸（CSS px） */
+    --panel-w:542px; --panel-h:636px; --body-h:438px;
+    --bubble-max:90%; --bubble-pad:11px; --frame-h:240px;
+    --scale:.6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 system-ui,-apple-system,"PingFang SC",sans-serif;padding:22px 24px 60px}
+  h1{font-size:19px;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:12.5px;margin-bottom:14px}
+  .toolbar{display:flex;flex-wrap:wrap;gap:6px;margin:14px 0 18px}
+  .toolbar button{border:1px solid var(--line);background:#1b2230;color:var(--fg);font:inherit;font-size:12.5px;
+    padding:5px 11px;border-radius:999px;cursor:pointer}
+  .toolbar button[data-on="1"]{background:#1f6feb33;border-color:#1f6feb88;color:var(--blue);font-weight:600}
+  .toolbar .reco{border-color:#23863688;color:var(--ok)}
+  .stage{position:relative;width:calc(1280px * var(--scale));height:calc(700px * var(--scale));border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#0b0e12}
+  .viewport{position:absolute;left:0;top:0;width:1280px;height:700px;transform:scale(var(--scale));transform-origin:0 0;
+    background:linear-gradient(0deg,#0b0e12,#0b0e12)}
+  .ruler-v{position:absolute;left:0;top:0;bottom:0;width:1px;background:#1d232c}
+  /* —— 模拟面板 —— */
+  .panel{position:absolute;right:24px;top:24px;width:var(--panel-w);height:var(--panel-h);display:flex;flex-direction:column;
+    background:#fff;color:#1a1d21;border:.5px solid rgba(140,140,140,.35);border-radius:16px;box-shadow:0 20px 52px rgba(0,0,0,.35);overflow:hidden;
+    transition:width .18s ease}
+  .head{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:.5px solid rgba(140,140,140,.25);font-size:13.5px}
+  .dot{width:8px;height:8px;border-radius:50%;background:#0d9488}
+  .head .sp{flex:1}
+  .chip{border:.5px solid rgba(140,140,140,.35);border-radius:8px;padding:2px 8px;font-size:11.5px;color:#555}
+  .quote{margin:10px 12px 0;padding:7px 10px;border-left:3px solid #0d9488;background:rgba(13,148,136,.06);border-radius:6px;
+    font-size:12.5px;color:#333;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .body{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px;padding:10px 12px;overflow:hidden}
+  .sec{border:.5px solid rgba(140,140,140,.3);border-radius:10px;padding:8px 10px;font-size:12.5px;background:#fff}
+  .sec b{color:#0f766e}
+  .chat{margin-top:auto;display:flex;flex-direction:column;gap:8px;align-items:flex-start;padding:0 2px;min-height:0}
+  .bubble{max-width:var(--bubble-max);background:#f1f3f5;border-radius:12px;padding:8px var(--bubble-pad);font-size:12.5px;color:#222;
+    transition:max-width .18s ease,padding .18s ease}
+  .bubble.me{align-self:flex-end;background:#0d9488;color:#fff}
+  /* —— 预览块 —— */
+  .preview{margin:0;border:1px solid rgba(140,140,140,.35);border-radius:10px;overflow:hidden;background:#fff;
+    transition:margin .18s ease}
+  .pbar{display:flex;align-items:center;gap:6px;padding:4px 6px;border-bottom:1px solid rgba(140,140,140,.25);font-size:11.5px;color:#444}
+  .tab{padding:2px 8px;border-radius:6px}
+  .tab.on{background:rgba(140,140,140,.16);font-weight:600}
+  .pbar .sp{flex:1}
+  .frame{position:relative;height:var(--frame-h);background:#0e1116;color:#e6edf3;overflow:hidden;transition:height .18s ease}
+  .page{width:1000px;padding:14px 16px}
+  .page h3{margin:0 0 6px;color:var(--ok);font-size:17px}
+  .page p{margin:0 0 10px;font-size:12.5px;color:#c9d1d9}
+  .page table{border-collapse:collapse;font-size:12px;min-width:900px}
+  .page td,.page th{border:1px solid #30363d;padding:3px 10px;white-space:nowrap;color:#c9d1d9}
+  .overflow-hint{position:absolute;right:0;bottom:0;background:#ffa65733;color:var(--warn);font-size:11px;padding:2px 8px;border-top-left-radius:8px}
+  /* D：注入自适应样式后 —— 页面自己回流，不再横向溢出 */
+  .stage[data-opt="D"] .page{width:100%}
+  .stage[data-opt="D"] .page table{min-width:0;width:100%;table-layout:fixed}
+  .stage[data-opt="D"] .page td,.stage[data-opt="D"] .page th{white-space:normal;
+    overflow:hidden;text-overflow:ellipsis}
+  .stage[data-opt="D"] .overflow-hint{display:none}
+  /* A：预览块撑满面板内容宽（抵消气泡内边距 + 解除 90% 上限） */
+  .stage[data-opt="A"] .bubble{max-width:100%;padding-left:0;padding-right:0}
+  .stage[data-opt="A"] .preview{margin-left:-4px;margin-right:-4px}
+  /* B：更高 */
+  .stage[data-opt="B"]{--frame-h:320px}
+  /* E：面板加宽档 */
+  .stage[data-opt="E"]{--panel-w:720px}
+  /* F：拖拽手柄 */
+  .handle{display:none;position:absolute;right:0;bottom:0;width:14px;height:14px;cursor:nwse-resize;
+    background:linear-gradient(135deg,transparent 46%,#8b949e 46%,#8b949e 54%,transparent 54%,transparent 70%,#8b949e 70%,#8b949e 78%,transparent 78%)}
+  .stage[data-opt="F"] .frame{outline:1.5px dashed var(--warn);outline-offset:-3px}
+  .stage[data-opt="F"] .handle{display:block}
+  /* C：全屏浮层 */
+  .overlay{display:none;position:absolute;inset:0;background:rgba(3,6,10,.72);backdrop-filter:blur(2px);align-items:center;justify-content:center}
+  .stage[data-opt="C"] .overlay{display:flex}
+  .overlay .card{width:min(1200px,94%);height:min(545px,88%);background:#fff;border-radius:14px;overflow:hidden;display:flex;flex-direction:column;
+    box-shadow:0 24px 70px rgba(0,0,0,.5);border:.5px solid rgba(255,255,255,.25)}
+  .overlay .pbar{color:#333}
+  .overlay .frame{flex:1;height:auto}
+  .stage[data-opt="C"] .overlay .page{width:100%}
+  .stage[data-opt="C"] .overlay .page table{min-width:0;width:100%;table-layout:fixed}
+  .stage[data-opt="C"] .overlay .page td,.stage[data-opt="C"] .overlay .page th{white-space:normal}
+  /* 推荐组合 */
+  .stage[data-opt="Z"]{--panel-w:542px;--frame-h:320px}
+  .stage[data-opt="Z"] .bubble{max-width:100%;padding-left:0;padding-right:0}
+  .stage[data-opt="Z"] .page{width:100%}
+  .stage[data-opt="Z"] .page table{min-width:0;width:100%;table-layout:fixed}
+  .stage[data-opt="Z"] .page td,.stage[data-opt="Z"] .page th{white-space:normal;overflow:hidden;text-overflow:ellipsis}
+  .stage[data-opt="Z"] .overflow-hint{display:none}
+  /* 标注 */
+  .badge{position:absolute;background:#000000aa;border:1px solid var(--line);border-radius:8px;padding:3px 8px;font-size:11.5px;color:var(--blue)}
+  .badge.ok{color:var(--ok);border-color:#23863688}
+  .badge.warn{color:var(--warn);border-color:#9e6a0388}
+  .notes{margin-top:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+  .note{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .note h4{margin:0 0 6px;font-size:13.5px;color:var(--blue)}
+  .note p{margin:0 0 6px;color:var(--dim);font-size:12.5px}
+  .note code{color:var(--pink)}
+  .kpi{font-size:12.5px;color:var(--fg)}
+  .kpi b{color:var(--ok)}
+  table.cmp{width:100%;border-collapse:collapse;margin-top:16px;font-size:12.5px}
+  table.cmp th,table.cmp td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left}
+  table.cmp th{color:var(--dim);font-weight:500}
+</style>
+</head>
+<body>
+<h1>小窗网页预览 · 改善方案示意图</h1>
+<div class="sub" style="color:#7ee787">✅ 已实现：推荐组合 Z（B 加高 + D 页面自适应 + A 撑满面板宽）→ 实测 445×240 变成 493×320。本页保留作方案对比。</div>
+<div class="sub">按实测尺寸等比绘制（面板 542×636、消息区 497、气泡 max-width 90% + padding 11、预览 iframe 445×240）。点按钮切换，右下角绿色数字是**实测出来的**预览尺寸。</div>
+
+<div class="toolbar">
+  <button data-opt="base" data-on="1">现状</button>
+  <button data-opt="A">A · 撑满面板宽</button>
+  <button data-opt="B">B · 加高</button>
+  <button data-opt="C">C · 全屏浮层</button>
+  <button data-opt="D">D · 页面自适应（点两次看对比）</button>
+  <button data-opt="E">E · 面板加宽档</button>
+  <button data-opt="F">F · 拖拽改尺寸</button>
+  <button data-opt="Z" class="reco">推荐组合 B+D+A</button>
+</div>
+
+<div class="stage" id="stage" data-opt="base">
+  <div class="viewport">
+    <div class="panel">
+      <div class="head"><span class="dot"></span><b>划词解读</b><span class="sp"></span><span class="chip">🕘 最近</span><span class="chip">↗ 升格</span><span class="chip">✕</span></div>
+      <div class="quote">profile 是什么</div>
+      <div class="body">
+        <div class="sec"><b>翻译</b>　profile：运行配置档</div>
+        <div class="chat">
+          <div class="bubble me">没懂，用网页解释</div>
+          <div class="bubble">
+            <div class="preview">
+              <div class="pbar"><span class="tab on">预览</span><span class="tab">代码</span><span class="sp"></span><span class="tab">⤢ 放大</span></div>
+              <div class="frame">
+                <div class="page">
+                  <h3>profile 是什么</h3>
+                  <p>DSH 的运行配置档：决定这个实例装哪些插件、用什么模型路由。</p>
+                  <table><tr><th>档位</th><th>装了什么</th><th>模型路由</th></tr>
+                    <tr><td>web</td><td>base + web-app + 本插件</td><td>opencode-go / deepseek-v4.1-flash</td></tr>
+                    <tr><td>cli</td><td>base + tui</td><td>同左</td></tr></table>
+                </div>
+                <div class="overflow-hint">→ 页面按 1000px 设计，窄容器里只能左右拖</div>
+                <div class="handle"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay">
+    <div class="card">
+      <div class="pbar"><span class="tab on">预览</span><span class="tab">代码</span><span class="sp"></span><span class="tab">⛶ 退出全屏</span></div>
+      <div class="frame">
+        <div class="page">
+          <h3>profile 是什么（全屏 94vw × 88vh）</h3>
+          <p>同一份 HTML，放到帧级浮层里：宽度 ~1200px，长页面/图表/宽表格都舒服。</p>
+          <table><tr><th>档位</th><th>装了什么</th><th>模型路由</th><th>备注</th></tr>
+            <tr><td>web</td><td>base + web-app + 本插件</td><td>opencode-go / deepseek-v4.1-flash</td><td>默认档</td></tr>
+            <tr><td>cli</td><td>base + tui</td><td>同左</td><td>无 UI 插件</td></tr></table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="badge" id="badge" style="right:14px;bottom:14px">预览 445 × 240</div>
+</div>
+
+<table class="cmp">
+  <tr><th>方案</th><th>做法</th><th>预览尺寸（实测推算）</th><th>代价</th></tr>
+  <tr><td><b>A</b></td><td>预览块撑满面板内容宽（负 margin 抵消气泡内边距 + 解除 90% 上限）</td><td>445×240 → <b>510×240</b>（+15%）</td><td>气泡被"顶宽"，观感略变</td></tr>
+  <tr><td><b>B</b></td><td>默认高度 240 → 320；「放大」档改成面板可视高度的 78%</td><td>240 → <b>320</b>（放大 ~400）</td><td>两行 CSS，几乎无</td></tr>
+  <tr><td><b>C</b></td><td>工具栏加「⛶ 全屏」→ 帧级浮层预览</td><td>445×240 → <b>~1200×545</b>（×6 面积）</td><td>多一个浮层（Esc/定位/清理），~40 行</td></tr>
+  <tr><td><b>D</b></td><td>给预览页注入 viewport + 轻量 reset（img/table max-width、body max-width）</td><td>尺寸不变，但<b>不再横向溢出</b>（页面自己回流）</td><td>往页面加几条基础规则（可加个开关）</td></tr>
+  <tr><td><b>E</b></td><td>面板加宽档 540 → 720（内容有预览时自动）</td><td>445 → <b>~620</b>（×1.4），代码块/表格/详解同样受益</td><td>动面板骨架，历史浮层定位/拖拽边界要重测</td></tr>
+  <tr><td><b>F</b></td><td>预览块右下角拖拽改宽高</td><td>自由</td><td>最重（拖拽 + 记忆尺寸），~60 行</td></tr>
+</table>
+
+<div class="notes">
+  <div class="note"><h4>为什么"局促"主要是两件事</h4>
+    <p>① <b>宽度被吃掉 95px</b>：面板 540 → 消息区 497 → 气泡 471（90% 上限 + 左右各 11px padding）。</p>
+    <p>② <b>页面按宽屏设计</b>：模型给的页面常按 1000~1200px 排版，塞进 445px 就横向溢出，只能左右拖——点 <code>D</code> 看回流后的差别。</p>
+  </div>
+  <div class="note"><h4>推荐顺序</h4>
+    <p><b>B + D</b> 先做（低风险、立刻不那么局促）；<b>A</b> 再叠（+65px 宽）；想要"看得爽"再加 <b>C</b>。</p>
+    <p><b>E</b> 是全局改善但动骨架，<b>F</b> 灵活但最重——你要长期用大量网页预览的话，E 比 F 划算。</p>
+  </div>
+</div>
+
+<script>
+const stage = document.getElementById('stage')
+const badge = document.getElementById('badge')
+const buttons = Array.from(document.querySelectorAll('.toolbar button'))
+function frameSize(){
+  const opt = stage.getAttribute('data-opt')
+  const f = stage.querySelector(opt === 'C' ? '.overlay .frame' : '.panel .frame')
+  const s = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--scale')) || .6
+  return { w: Math.round(f.getBoundingClientRect().width / s), h: Math.round(f.getBoundingClientRect().height / s) }
+}
+function apply(opt){
+  stage.setAttribute('data-opt', opt)
+  buttons.forEach((b) => b.setAttribute('data-on', b.dataset.opt === opt ? '1' : '0'))
+  // 等过渡走完再量（过渡期间 getBoundingClientRect 拿到的是中间值）
+  badge.textContent = '预览 …'
+  badge.className = 'badge'
+  clearTimeout(window.__badgeTimer)
+  window.__badgeTimer = setTimeout(() => {
+    const size = frameSize()
+    badge.textContent = '预览 ' + size.w + ' × ' + size.h
+    badge.className = 'badge' + (opt === 'Z' || opt === 'A' || opt === 'E' ? ' ok' : '')
+  }, 260)
+}
+buttons.forEach((b) => b.addEventListener('click', () => apply(b.dataset.opt)))
+window.addEventListener('resize', () => apply(stage.getAttribute('data-opt')))
+apply('base')
+</script>
+</body>
+</html>

@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>日月+图标 · 交互对比（可点 / 同步播放 / 变速）</title>
+<style>
+  :root{
+    --bg:#0d1117; --card:#161b22; --line:#2a3038; --fg:#e6edf3; --dim:#8b949e;
+    --ok:#7ee787; --warn:#ffa657; --blue:#79c0ff; --pink:#f778ba; --teal:#12a594;
+    --speed:1;
+    --orbDur:780ms; --skyDur:800ms; --iconDur:450ms; --iconDelay:0ms;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.65 system-ui,-apple-system,"PingFang SC",sans-serif;padding:24px 26px 70px}
+  h1{font-size:19px;margin:0 0 6px}
+  h2{font-size:15px;margin:28px 0 4px;color:var(--blue);font-weight:600}
+  h2 span{color:var(--dim);font-weight:400;font-size:12.5px}
+  .lead{background:#161b22;border:1px solid var(--line);border-radius:14px;padding:13px 16px;margin-bottom:14px;font-size:12.8px;color:var(--dim)}
+  .lead b{color:var(--fg)} .lead code{color:#f778ba;font-size:12px}
+  /* 控制条 */
+  .bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    background:#12161d;border:1px solid var(--line);border-radius:14px;padding:11px 15px;margin-bottom:18px}
+  .bar button{border:1px solid var(--line);background:#1b2230;color:var(--fg);font:inherit;font-size:12.5px;
+    padding:7px 14px;border-radius:10px;cursor:pointer}
+  .bar button.primary{background:var(--teal);border-color:transparent;color:#fff;font-weight:600}
+  .bar label{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--dim)}
+  .bar input[type=range]{accent-color:var(--teal);width:130px}
+  .switchline{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--dim);cursor:pointer;user-select:none}
+  .switchline i{width:34px;height:18px;border-radius:9px;background:rgba(255,255,255,.16);position:relative;transition:background .2s}
+  .switchline i::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .2s}
+  .switchline.on i{background:var(--teal)}
+  .switchline.on i::after{left:18px}
+  /* 卡片 */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 16px 15px}
+  .card.reco{border-color:#238636}
+  .card h3{margin:0 0 3px;font-size:13.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .tag{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid currentColor;font-weight:600}
+  .tag.reco{color:var(--ok)} .tag.warn{color:var(--warn)} .tag.plain{color:var(--dim)}
+  .why{color:var(--dim);font-size:12.5px;margin:0 0 12px}
+  .why code{color:#f778ba;font-size:11.5px}
+  .stage{background:#0b0e14;border-radius:12px;padding:20px;display:flex;align-items:center;justify-content:center}
+  .nums{margin-top:10px;display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--dim)}
+  .nums b{color:var(--fg);font-weight:600}
+  /* ── 天空轨道 ── */
+  .sky{position:relative;overflow:hidden;border-radius:999px;width:126px;height:66px;flex:0 0 auto;cursor:pointer;
+    box-shadow:inset 0 0 26px rgba(0,0,0,.28)}
+  /* ① 原做法：gradient 参与 background 过渡（渐变不可插值 → 瞬切） */
+  .v1{background:linear-gradient(180deg,#cfe0ff,#9fc0f5);
+    transition:background calc(var(--skyDur) * var(--speed)) cubic-bezier(.4,0,.2,1)}
+  .v1.on{background:linear-gradient(180deg,#141a3a,#080a18)}
+  /* ② 纯色过渡 + 固定渐变叠加（纯色可插值） */
+  .v2{background-color:#9fc0f5;transition:background-color calc(var(--skyDur) * var(--speed)) cubic-bezier(.4,0,.2,1)}
+  .v2.on{background-color:#0b0e1c}
+  .v2::before{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,.42),rgba(255,255,255,0) 58%);pointer-events:none}
+  /* ③ 双层 opacity 交叉（渐变本身不动，动的是不透明度） */
+  .v3{background:linear-gradient(180deg,#cfe0ff,#9fc0f5)}
+  .v3 .night{position:absolute;inset:0;background:linear-gradient(180deg,#141a3a,#080a18);opacity:0;
+    transition:opacity calc(var(--skyDur) * var(--speed)) cubic-bezier(.4,0,.2,1)}
+  .v3.on .night{opacity:1}
+  /* 球体与图标（四种共用） */
+  .orb{position:absolute;top:9px;left:9px;width:48px;height:48px;border-radius:50%;display:grid;place-items:center;
+    background:radial-gradient(circle at 34% 32%,#fff5c9,#ffcf4d 62%,#f0a920);color:#7a4a00;
+    box-shadow:0 0 22px rgba(255,207,77,.7);
+    transition:transform calc(var(--orbDur) * var(--speed)) cubic-bezier(.44,0,.2,1),
+               background calc(var(--orbDur) * var(--speed)),
+               box-shadow calc(var(--orbDur) * var(--speed)),
+               color calc(var(--iconDur) * var(--speed)) ease}
+  .sky.on .orb{transform:translateX(60px);color:#232c4d;
+    background:radial-gradient(circle at 68% 32%,#fdfdff,#c3cbe4 60%,#8e97b5);
+    box-shadow:0 0 20px rgba(180,196,235,.4),inset -9px -3px 0 0 rgba(20,26,58,.92)}
+  .orb svg{grid-area:1/1;display:block;width:22px;height:22px;
+    transition:opacity calc(var(--iconDur) * var(--speed)) ease calc(var(--iconDelay) * var(--speed))}
+  .orb .ic-web{opacity:0}
+  .sky.on .orb .ic-md{opacity:0}
+  .sky.on .orb .ic-web{opacity:1}
+  /* ④ 对齐时序：图标延到球体走到一半才开始换 */
+  .v4{--iconDelay:380ms;--iconDur:400ms}
+  /* 时间轴 */
+  .timeline{margin-top:12px}
+  .tl{position:relative;height:34px;background:#0b0e14;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+  .tl i{position:absolute;top:6px;height:8px;border-radius:4px;display:block}
+  .tl i.sky{background:#5b8dd6;left:0;width:var(--skyW)}
+  .tl i.orb{background:#f0a920;left:0;width:var(--orbW)}
+  .tl i.ic{background:#12a594;left:var(--icL);width:var(--icW)}
+  .tl span{position:absolute;bottom:2px;font-size:9.5px;color:var(--dim)}
+  /* 对照：插件里的分段控件 */
+  .pref{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:#8b8f96}
+  .seg{position:relative;display:inline-flex;align-items:center;padding:2px;border-radius:13px;background:rgba(255,255,255,.07)}
+  .segpill{position:absolute;top:2px;left:2px;width:30px;height:22px;border-radius:11px;background:var(--teal);transition:transform .2s cubic-bezier(.3,1.2,.4,1)}
+  .seg.on .segpill{transform:translateX(30px)}
+  .segcell{position:relative;z-index:1;width:30px;height:22px;display:inline-flex;align-items:center;justify-content:center;color:#8b8f96;border:0;background:transparent;padding:0;cursor:pointer}
+  .segcell[aria-checked="true"]{color:#fff}
+  .segcell svg{width:13px;height:13px}
+  .foot{margin-top:22px;color:var(--dim);font-size:12.5px} .foot b{color:var(--fg)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}
+  th,td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:500;font-size:12px}
+  .lv{font-weight:600} .lv.c{color:var(--warn)}
+</style>
+</head>
+<body>
+<h1>日月 + 图标 · 交互对比</h1>
+<div class="sub">四种做法的动画都能点，也能<b>一起播放</b>对比节奏；速度可调。逐帧抓取时发现了两个时序问题，页面里做成了对比版本。</div>
+
+<div class="bar">
+  <button class="primary" id="allBtn">▶ 四个一起播放</button>
+  <label>速度 <input type="range" id="speed" min="0.25" max="2" step="0.25" value="1"><output id="speedOut">1×</output></label>
+  <span class="switchline" id="loopToggle"><i></i>循环（每 1.6s 来回）</span>
+  <button id="resetBtn">↺ 全部复位</button>
+</div>
+
+<div class="grid">
+
+  <div class="card">
+    <h3>① 原做法<span class="tag warn">底色谱瞬切</span></h3>
+    <p class="why">就是 09 卡原本的写法：<code>transition: background .8s</code> + <code>linear-gradient</code>。
+    但<b>渐变不可插值</b>，浏览器直接跳到终值 —— 逐帧抓取实测：<b>t=0ms 天空就已经是夜景</b>。</p>
+    <div class="stage"><div class="sky v1" id="d1"><span class="orb"><svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg><svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></span></div></div>
+    <div class="nums"><span>天空 <b>0ms（瞬切）</b></span><span>球体 <b>780ms</b></span><span>图标 <b>450ms</b></span></div>
+    <div class="timeline"><div class="tl" style="--skyW:1%;--orbW:97%;--icL:0%;--icW:56%"><i class="sky"></i><i class="orb"></i><i class="ic"></i><span style="left:2px">0</span><span style="right:2px">780ms</span></div></div>
+  </div>
+
+  <div class="card">
+    <h3>② 天空改纯色过渡<span class="tag plain">修法一</span></h3>
+    <p class="why">把底色换成<b>纯色 <code>background-color</code></b>（可插值，800ms 平滑），渐变只当一层固定的高光叠在上面。
+    视觉几乎一样，但天空是"慢慢暗下去"的。</p>
+    <div class="stage"><div class="sky v2" id="d2"><span class="orb"><svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg><svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></span></div></div>
+    <div class="nums"><span>天空 <b>800ms（真过渡）</b></span><span>球体 <b>780ms</b></span><span>图标 <b>450ms</b></span></div>
+    <div class="timeline"><div class="tl" style="--skyW:100%;--orbW:97%;--icL:0%;--icW:56%"><i class="sky"></i><i class="orb"></i><i class="ic"></i><span style="left:2px">0</span><span style="right:2px">800ms</span></div></div>
+  </div>
+
+  <div class="card">
+    <h3>③ 双层渐变交叉<span class="tag plain">修法二</span></h3>
+    <p class="why">保留<b>两层完整渐变</b>（白天层 + 夜晚层），过渡的是夜晚层的 <code>opacity</code>。
+    这是最保险的写法：无论浏览器对渐变怎么处理，交叉淡入一定平滑。</p>
+    <div class="stage"><div class="sky v3" id="d3"><span class="night"></span><span class="orb"><svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg><svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></span></div></div>
+    <div class="nums"><span>天空 <b>800ms（opacity 交叉）</b></span><span>球体 <b>780ms</b></span><span>图标 <b>450ms</b></span></div>
+    <div class="timeline"><div class="tl" style="--skyW:100%;--orbW:97%;--icL:0%;--icW:56%"><i class="sky"></i><i class="orb"></i><i class="ic"></i><span style="left:2px">0</span><span style="right:2px">800ms</span></div></div>
+  </div>
+
+  <div class="card reco">
+    <h3>④ 修法二 + 图标延后对齐<span class="tag reco">推荐</span></h3>
+    <p class="why">第二个问题：图标 450ms 就换完了，球体要 780ms 才到位 —— 中间有 <b>330ms「球还在走、图标已经换完」</b>的空档。
+    把图标延到 <b>380ms 才开始淡入</b>、时长 400ms，正好在球体落地时换完。</p>
+    <div class="stage"><div class="sky v3 v4" id="d4"><span class="night"></span><span class="orb"><svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg><svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></span></div></div>
+    <div class="nums"><span>天空 <b>800ms</b></span><span>球体 <b>780ms</b></span><span>图标 <b>380→780ms</b></span></div>
+    <div class="timeline"><div class="tl" style="--skyW:100%;--orbW:97%;--icL:48%;--icW:51%"><i class="sky"></i><i class="orb"></i><i class="ic"></i><span style="left:2px">0</span><span style="right:2px">780ms</span></div></div>
+  </div>
+
+</div>
+
+<h2>对照 · 我们插件里现在的分段控件<span>　点它换档（药丸 200ms，图标瞬时变白）</span></h2>
+<div class="card">
+  <div class="stage" style="padding:14px">
+    <span class="pref">输出偏好
+      <span class="seg" id="segNow">
+        <span class="segpill"></span>
+        <button class="segcell" aria-checked="true" data-i="0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg></button>
+        <button class="segcell" aria-checked="false" data-i="1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></button>
+      </span>
+    </span>
+  </div>
+  <div class="nums"><span>改动比：<b>200ms vs 780ms</b> —— 输入行里的控件不该有"天象级"的时长</span></div>
+</div>
+
+<h2>时序对照表</h2>
+<table>
+  <tr><th>做法</th><th>天空</th><th>球体</th><th>图标</th><th>观感</th></tr>
+  <tr><td>① 原做法</td><td class="lv c">0ms（瞬切，渐变不可插值）</td><td>780ms</td><td>0→450ms</td><td>开场像"啪"地换了底色，然后球自己滑过去</td></tr>
+  <tr><td>② 纯色过渡</td><td>800ms</td><td>780ms</td><td>0→450ms</td><td>天空慢慢暗下去，但图标仍比球早到 330ms</td></tr>
+  <tr><td>③ 双层交叉</td><td>800ms</td><td>780ms</td><td>0→450ms</td><td>同 ②，写法更保险</td></tr>
+  <tr><td><b>④ ③ + 图标对齐</b></td><td>800ms</td><td>780ms</td><td><b>380→780ms</b></td><td><b>三个动作同时收尾</b>，最完整</td></tr>
+</table>
+
+<div class="foot">
+  <b>怎么用这页</b>：点「▶ 四个一起播放」看节奏差；把速度拉到 0.25× 能清楚看出 ① 的底色是"啪"一下、
+  ④ 的图标是等球走一半才开始换；打开「循环」可以盯着看，不用来回点。<br>
+  <b>结论</b>：如果要把这套日月搬进来，至少要用 <b>④</b> —— 天空改双层交叉、图标延后对齐；
+  另外它的总时长 800ms 对输入行来说偏长（我们现在的分段控件是 200ms），所以更适合放<b>独立区块</b>而不是输入行。<br>
+  照旧：<b>插件代码没动</b>。
+</div>
+
+<script>
+  const ids = ['d1', 'd2', 'd3', 'd4']
+  // 单独点：每个天空自己切
+  ids.forEach((id) => {
+    const el = document.getElementById(id)
+    el.addEventListener('click', () => el.classList.toggle('on'))
+  })
+
+  document.getElementById('allBtn').addEventListener('click', () => {
+    const on = !ids.every((id) => document.getElementById(id).classList.contains('on'))
+    ids.forEach((id) => document.getElementById(id).classList.toggle('on', on))
+  })
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    ids.forEach((id) => document.getElementById(id).classList.remove('on'))
+    loopOn = false
+    loopEl.classList.remove('on')
+  })
+  const speedEl = document.getElementById('speed')
+  speedEl.addEventListener('input', () => {
+    const v = Number(speedEl.value)
+    document.documentElement.style.setProperty('--speed', String(v))
+    document.getElementById('speedOut').value = v + '×'
+  })
+  // 循环
+  let loopTimer = 0, loopOn = false
+  const loopEl = document.getElementById('loopToggle')
+  loopEl.addEventListener('click', () => {
+    loopOn = !loopOn
+    loopEl.classList.toggle('on', loopOn)
+    if (loopTimer) { clearInterval(loopTimer); loopTimer = 0 }
+    if (loopOn) loopTimer = setInterval(() => {
+      const on = !ids.every((id) => document.getElementById(id).classList.contains('on'))
+      ids.forEach((id) => document.getElementById(id).classList.toggle('on', on))
+    }, 1600)
+  })
+  // 对照：插件里的分段控件
+  const seg = document.getElementById('segNow')
+  const cells = Array.from(seg.querySelectorAll('.segcell'))
+  cells.forEach((c) => c.addEventListener('click', () => {
+    const i = Number(c.dataset.i)
+    cells.forEach((x, j) => x.setAttribute('aria-checked', i === j ? 'true' : 'false'))
+    seg.classList.toggle('on', i === 1)
+  }))
+</script>
+</body>
+</html>

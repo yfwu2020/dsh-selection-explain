@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>日月轮回 × 输出偏好 · 球体换成图标（可点）</title>
+<style>
+  :root{
+    --bg:#0d1117; --card:#161b22; --line:#2a3038; --fg:#e6edf3; --dim:#8b949e;
+    --ok:#7ee787; --warn:#ffa657; --blue:#79c0ff; --pink:#f778ba; --teal:#12a594;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.65 system-ui,-apple-system,"PingFang SC",sans-serif;padding:24px 26px 70px}
+  h1{font-size:19px;margin:0 0 6px}
+  h2{font-size:15px;margin:30px 0 4px;color:var(--blue);font-weight:600}
+  h2 span{color:var(--dim);font-weight:400;font-size:12.5px}
+  .lead{background:#161b22;border:1px solid var(--line);border-radius:14px;padding:13px 16px;margin-bottom:16px;font-size:12.8px;color:var(--dim)}
+  .lead b{color:var(--fg)} .lead code{color:var(--pink);font-size:12px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 16px 15px}
+  .card.reco{border-color:#238636}
+  .card h3{margin:0 0 3px;font-size:13.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .tag{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid currentColor;font-weight:600}
+  .tag.reco{color:var(--ok)} .tag.warn{color:var(--warn)} .tag.plain{color:var(--dim)}
+  .why{color:var(--dim);font-size:12.5px;margin:0 0 12px}
+  .why code{color:var(--pink);font-size:11.5px}
+  .stage{background:#0b0e14;border-radius:12px;padding:22px;display:flex;align-items:center;justify-content:center;gap:34px;flex-wrap:wrap}
+  /* ── 天空轨道：底色与 inset 完全沿用 09 卡 ── */
+  .sky{position:relative;cursor:pointer;overflow:hidden;flex:0 0 auto;user-select:none;
+    background:linear-gradient(180deg,#cfe0ff,#9fc0f5);box-shadow:inset 0 0 26px rgba(0,0,0,.28);
+    transition:background .8s cubic-bezier(.4,0,.2,1);border-radius:999px}
+  .sky.on{background:linear-gradient(180deg,#141a3a,#080a18)}
+  .sky .orb{position:absolute;border-radius:50%;display:grid;place-items:center;
+    background:radial-gradient(circle at 34% 32%,#fff5c9,#ffcf4d 62%,#f0a920);
+    box-shadow:0 0 22px rgba(255,207,77,.7);
+    transition:transform .78s cubic-bezier(.44,0,.2,1),background .78s,box-shadow .78s,color .6s}
+  .sky .orb svg{grid-area:1/1;display:block;transition:opacity .45s ease}
+  .sky .orb .ic-web{opacity:0}
+  .sky.on .orb .ic-md{opacity:0}
+  .sky.on .orb .ic-web{opacity:1}
+  /* A1：保留日/月渐变 + 月牙 */
+  .a1 .orb{color:#7a4a00}
+  .a1.on .orb{color:#232c4d;background:radial-gradient(circle at 68% 32%,#fdfdff,#c3cbe4 60%,#8e97b5);
+    box-shadow:0 0 20px rgba(180,196,235,.4),inset -9px -3px 0 0 rgba(20,26,58,.92)}
+  /* A2：保留渐变，去掉月牙 */
+  .a2 .orb{color:#7a4a00}
+  .a2.on .orb{color:#232c4d;background:radial-gradient(circle at 68% 32%,#fdfdff,#c3cbe4 60%,#8e97b5);
+    box-shadow:0 0 20px rgba(180,196,235,.4)}
+  /* A3：球体中性白球 */
+  .a3 .orb{background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.3);color:#0e7490}
+  .a3.on .orb{background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.5);color:var(--teal)}
+  /* A4：球体 = 档位配色徽章 */
+  .a4 .orb{background:linear-gradient(160deg,#ffb347,#f08a24);box-shadow:0 2px 10px rgba(240,138,36,.45);color:#3a2200}
+  .a4.on .orb{background:linear-gradient(160deg,#3ddad7,#12a594);box-shadow:0 2px 10px rgba(18,165,148,.5);color:#042b28}
+  /* 尺寸档 */
+  .sz-l{--w:126px;--h:66px;--orb:48px;--off:9px;--shift:60px;--icon:22px;--r:33px}
+  .sz-m{--w:92px;--h:48px;--orb:34px;--off:7px;--shift:44px;--icon:16px;--r:24px}
+  .sz-s{--w:64px;--h:34px;--orb:24px;--off:5px;--shift:30px;--icon:12px;--r:17px}
+  .sz-xs{--w:44px;--h:26px;--orb:18px;--off:4px;--shift:18px;--icon:9px;--r:13px}
+  .sky{width:var(--w);height:var(--h);border-radius:var(--r)}
+  .sky .orb{width:var(--orb);height:var(--orb);top:var(--off);left:var(--off)}
+  .sky.on .orb{transform:translateX(var(--shift))}
+  .sky .orb svg{width:var(--icon);height:var(--icon)}
+  /* 装饰 */
+  .sky .deco{position:absolute;inset:0;pointer-events:none}
+  .sky .rays{position:absolute;left:24px;top:24px;width:0;height:0;transition:opacity .5s,transform .78s}
+  .sky.on .rays{opacity:0;transform:scale(.4) rotate(60deg)}
+  .sky .rays i{position:absolute;width:2.5px;height:7px;border-radius:2px;background:#ffd76a;transform-origin:50% 12px;box-shadow:0 0 5px rgba(255,207,77,.8)}
+  .sky .cloud{position:absolute;border-radius:99px;background:rgba(255,255,255,.75);box-shadow:8px -4px 0 -1px rgba(255,255,255,.75);transition:opacity .5s,transform .8s}
+  .sky.on .cloud{opacity:0;transform:translateX(16px)}
+  .sky .stars{position:absolute;inset:0;opacity:0;transition:opacity .8s .2s}
+  .sky.on .stars{opacity:1}
+  .sky .stars i{position:absolute;width:2.2px;height:2.2px;border-radius:50%;background:#fff;animation:tw 2.4s ease-in-out infinite}
+  @keyframes tw{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1.25)}}
+  .item{display:flex;flex-direction:column;align-items:center;gap:8px}
+  .cap{font-size:11px;color:var(--dim);text-align:center}
+  .state{font-size:11.5px;color:var(--fg);text-align:center;margin-top:6px}
+  .state b{color:var(--ok)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}
+  th,td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:500;font-size:12px}
+  .lv{font-weight:600} .lv.a{color:var(--ok)} .lv.b{color:var(--blue)} .lv.c{color:var(--warn)}
+  .foot{margin-top:20px;color:var(--dim);font-size:12.5px} .foot b{color:var(--fg)}
+</style>
+</head>
+<body>
+<h1>日月轮回 × 输出偏好 · 球体换成图标</h1>
+<div class="sub">天空底色、<code>inset 0 0 26px</code> 内阴影、日/月渐变与月牙 <b>全部保留</b>，只是球体里换成图标：白天 <b>Markdown（M↓）</b>、夜晚 <b>网页（窗口 ▭）</b>。<b>每一个都可以点，点一下走一遍完整的日→月动画。</b></div>
+
+<div class="lead">
+  四个变体只差"球体怎么画"：<b>A1</b> 保留日/月渐变与月牙（最忠于原设计）、<b>A2</b> 保留渐变去掉月牙（图标最干净）、
+  <b>A3</b> 球体改中性白球、<b>A4</b> 球体改档位配色徽章（Markdown 暖橙 / 网页 青）。<br>
+  尺寸按原设计等比缩放：球 = 轨道高的 73%、位移 = 轨道宽 − 球 − 2×边距，所以缩小时不会跑形。
+</div>
+
+<h2>一、四个变体（原尺寸 126×66，点一下切换）<span>　底下那行会实时显示当前档位</span></h2>
+<div class="grid">
+
+  <div class="card reco">
+    <h3>A1 · 保留日/月渐变与月牙<span class="tag reco">推荐</span></h3>
+    <p class="why">球体还是那颗太阳 / 月亮（含 <code>inset -9px -3px 0 0 rgba(20,26,58,.92)</code> 咬出的月牙），图标叠在上面。<br>
+    白天用深琥珀色图标（暖底上对比够），夜晚用深蓝灰（冷底上够亮）。</p>
+    <div class="stage">
+      <div class="item">
+        <div class="sky sz-l a1" id="a1">
+          <span class="deco"><span class="rays"></span></span>
+          <span class="orb">
+            <svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg>
+            <svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg>
+          </span>
+        </div>
+        <div class="state" id="a1state">Markdown 档</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>A2 · 保留渐变，去掉月牙</h3>
+    <p class="why">去掉那枚咬形状的内阴影后，球体是完整的圆 —— 图标更居中、更干净，但少了"月"的巧思。</p>
+    <div class="stage">
+      <div class="item">
+        <div class="sky sz-l a2" id="a2">
+          <span class="orb">
+            <svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg>
+            <svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg>
+          </span>
+        </div>
+        <div class="state" id="a2state">Markdown 档</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>A3 · 球体改中性白球</h3>
+    <p class="why">球体不再有日/月身份，只是"载着图标的滑块"；白天/夜晚的区分完全交给天空底色。图标跟随两档主题色。</p>
+    <div class="stage">
+      <div class="item">
+        <div class="sky sz-l a3" id="a3">
+          <span class="orb">
+            <svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg>
+            <svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg>
+          </span>
+        </div>
+        <div class="state" id="a3state">Markdown 档</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>A4 · 球体改档位配色徽章</h3>
+    <p class="why">球体自己带颜色（Markdown 暖橙 / 网页 青），和插件主色系打通；天空底色仍在，所以还是"白天 / 夜晚"。</p>
+    <div class="stage">
+      <div class="item">
+        <div class="sky sz-l a4" id="a4">
+          <span class="orb">
+            <svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg>
+            <svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg>
+          </span>
+        </div>
+        <div class="state" id="a4state">Markdown 档</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<h2>二、尺寸阶梯（A1 等比缩）<span>　点每一个都能切，看图标缩到多小还认得出</span></h2>
+<div class="card">
+  <div class="stage">
+    <div class="item"><div class="sky sz-l a1" id="s1"><span class="orb"><svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg><svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></span></div><span class="cap">126×66 · 原尺寸<br>球 48 / 图标 22</span></div>
+    <div class="item"><div class="sky sz-m a1" id="s2"><span class="orb"><svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg><svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></span></div><span class="cap">92×48 · 舒适下限<br>球 34 / 图标 16</span></div>
+    <div class="item"><div class="sky sz-s a1" id="s3"><span class="orb"><svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg><svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></span></div><span class="cap">64×34<br>球 24 / 图标 12 开始糊</span></div>
+    <div class="item"><div class="sky sz-xs a1" id="s4"><span class="orb"><svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg><svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></span></div><span class="cap">44×26 · 输入行可用高度<br>球 18 / 图标 9 —— 糊</span></div>
+  </div>
+  <p class="why" style="margin:14px 0 0">
+    结论：<b>92×48 是舒适下限</b>（球 34、图标 16，M↓ 的两峰还分得开）；64×34 时图标 12px 已经发糊；
+    <b>44×26（我们输入行的高度）图标只有 9px，两枚都糊成一团</b> ——
+    所以这套"日月形状 + 图标"塞不进 26px 的输入行。
+  </p>
+</div>
+
+<h2>三、装饰留不留（A1 · 92×48）</h2>
+<div class="card">
+  <div class="stage">
+    <div class="item">
+      <div class="sky sz-m a1" id="d1">
+        <span class="deco">
+          <span class="rays"><i style="transform:rotate(0deg)"></i><i style="transform:rotate(45deg)"></i><i style="transform:rotate(90deg)"></i><i style="transform:rotate(135deg)"></i><i style="transform:rotate(180deg)"></i><i style="transform:rotate(225deg)"></i><i style="transform:rotate(270deg)"></i><i style="transform:rotate(315deg)"></i></span>
+          <span class="cloud" style="left:54px;top:11px;width:22px;height:8px"></span>
+          <span class="stars"><i style="left:18%;top:24%"></i><i style="left:58%;top:20%"></i><i style="left:80%;top:58%"></i></span>
+        </span>
+        <span class="orb"><svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg><svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></span>
+      </div>
+      <span class="cap">带装饰（云 · 光芒 · 星）</span>
+    </div>
+    <div class="item">
+      <div class="sky sz-m a1" id="d2">
+        <span class="orb"><svg class="ic-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg><svg class="ic-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></span>
+      </div>
+      <span class="cap">干净版（只有天空 + 球）</span>
+    </div>
+  </div>
+  <p class="why" style="margin:14px 0 0">装饰让"日→月"更有戏，但 90px 以下会显得拥挤，而且云和星会和图标抢注意力。建议只留<b>天空底色 + 球体图标</b>。</p>
+</div>
+
+<h2>四、结论</h2>
+<table>
+  <tr><th>变体</th><th>球体</th><th>图标可读性</th><th>判断</th></tr>
+  <tr><td><b>A1 日月渐变 + 月牙</b></td><td>暖球 / 冷球，右下咬一口</td><td>好（球面亮，对比足）</td><td><span class="lv a">推荐</span>：最忠于原设计，视觉最有戏</td></tr>
+  <tr><td>A2 渐变去月牙</td><td>完整圆</td><td>最好（没有月牙抢边）</td><td><span class="lv b">可选</span>：图标最清楚，但丢了"月"的巧思</td></tr>
+  <tr><td>A3 中性白球</td><td>纯白圆</td><td>好</td><td><span class="lv b">可选</span>：最干净，但天象味没了</td></tr>
+  <tr><td>A4 档位配色徽章</td><td>暖橙 / 青</td><td>中（深色图标压在饱和底上）</td><td><span class="lv c">看取向</span>：和主色系打通，但偏"功能"不偏"天象"</td></tr>
+</table>
+
+<div class="foot">
+  <b>建议</b>：要做就做 <b>A1</b>、尺寸 <b>92×48</b>、<b>不带装饰</b> —— 图标 16px 清楚、月牙的巧思还在、天空底色承担白天/夜晚。<br>
+  ⚠️ 但它<b>放不进输入行</b>：输入行只有 26px，等比缩进去图标只剩 9px（上面的尺寸阶梯就是证据），
+  而且它是"开关"形状，会把上一轮刚去掉的开关味带回来。<br>
+  <b>更合理的落点</b>：把它做成"输出偏好"的<b>独立区块或弹层</b>（放面板顶部 / 设置里，给到 92×48），
+  输入行继续用现在的图标分段控件。<br>
+  照旧：<b>插件代码没动</b>，等你定方向。
+</div>
+
+<script>
+  // 每个控件点一下切换；顺带把当前档位写在下面
+  const names = { a1: 'a1state', a2: 'a2state', a3: 'a3state', a4: 'a4state' }
+  for (const id of ['a1','a2','a3','a4','s1','s2','s3','s4','d1','d2']) {
+    const el = document.getElementById(id)
+    if (!el) continue
+    el.addEventListener('click', () => {
+      const on = !el.classList.contains('on')
+      el.classList.toggle('on', on)
+      const label = names[id] && document.getElementById(names[id])
+      if (label) label.textContent = on ? '网页 档' : 'Markdown 档'
+    })
+  }
+</script>
+</body>
+</html>

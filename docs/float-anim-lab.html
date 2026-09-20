@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>浮标浮现 · 动效与定位实验室</title>
+<style>
+  :root{
+    --bg:#0d1117; --card:#161b22; --line:#2a3038; --fg:#e6edf3; --dim:#8b949e;
+    --ok:#7ee787; --warn:#ffa657; --blue:#79c0ff; --teal:#12a594; --pink:#f778ba;
+    --dur:240ms; --over:.14; --rise:6px; --scale:.74;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.7 system-ui,-apple-system,"PingFang SC",sans-serif;padding:20px 22px 60px}
+  h1{font-size:19px;margin:0 0 6px}
+  h2{font-size:14.5px;margin:22px 0 8px;color:var(--blue);font-weight:600}
+  .sub{color:var(--dim);font-size:12.5px;margin-bottom:12px}
+  .layout{display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start}
+  @media (max-width:1050px){.layout{grid-template-columns:1fr}}
+  .doc{position:relative;background:#fbfaf7;color:#1d2126;border-radius:14px;padding:26px 30px;min-height:430px;
+    border:1px solid var(--line);user-select:text;font-size:15px;line-height:1.85}
+  .doc h3{margin:0 0 10px;font-size:17px}
+  .doc p{margin:0 0 14px}
+  .doc code{background:#eceff3;padding:1px 5px;border-radius:4px;font-size:13px}
+  .doc .hint{color:#6b7280;font-size:12.5px;margin-bottom:16px}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+  .panel + .panel{margin-top:12px}
+  .panel h3{margin:0 0 8px;font-size:13.5px;display:flex;justify-content:space-between;align-items:center}
+  .panel h3 span{color:var(--dim);font-weight:400;font-size:11.5px}
+  .opt{display:flex;gap:8px;align-items:flex-start;padding:7px 8px;border-radius:9px;cursor:pointer;font-size:12.5px}
+  .opt:hover{background:rgba(255,255,255,.04)}
+  .opt input{margin-top:4px;accent-color:var(--teal)}
+  .opt b{font-weight:600}
+  .opt small{display:block;color:var(--dim);font-size:11.5px;line-height:1.5}
+  .row{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--dim);margin-top:7px}
+  .row label{width:64px;text-align:right;flex:0 0 auto}
+  .row input[type=range]{flex:1 1 auto;accent-color:var(--teal)}
+  .row output{width:52px;color:var(--fg);font-variant-numeric:tabular-nums}
+  button.act{border:1px solid var(--line);background:#1b2230;color:var(--fg);font:inherit;font-size:12.5px;
+    padding:7px 14px;border-radius:10px;cursor:pointer;width:100%;margin-top:10px}
+  button.act.primary{background:var(--teal);border-color:transparent;color:#fff;font-weight:600}
+  /* 浮标 */
+  .btn{position:absolute;z-index:50;display:none;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;
+    background:#fff;color:#111827;border:1px solid rgba(0,0,0,.14);box-shadow:0 6px 20px rgba(0,0,0,.18);
+    font-size:12.5px;cursor:pointer;transform-origin:var(--ox,50%) var(--oy,100%);will-change:transform,opacity}
+  .btn .spark{width:15px;height:15px;flex:0 0 auto;color:var(--teal)}
+  .btn.on{display:inline-flex}
+  /* 动效：靠 JS 加 data-anim + 变量 */
+  .btn[data-anim="pop"]{animation:pop var(--dur) cubic-bezier(.34,1.56,.64,1) both}
+  .btn[data-anim="rise"]{animation:rise var(--dur) cubic-bezier(.22,1,.36,1) both}
+  .btn[data-anim="blur"]{animation:blur var(--dur) cubic-bezier(.22,1,.36,1) both}
+  .btn[data-anim="spring"]{animation:spring var(--dur) cubic-bezier(.2,1.25,.3,1) both}
+  .btn[data-anim="none"]{animation:none}
+  .btn.replay{animation:none}
+  @keyframes pop{
+    from{opacity:0;transform:scale(var(--scale)) translateY(var(--rise))}
+    to{opacity:1;transform:none}
+  }
+  @keyframes rise{
+    from{opacity:0;transform:translateY(var(--rise))}
+    to{opacity:1;transform:none}
+  }
+  @keyframes blur{
+    from{opacity:0;filter:blur(5px);transform:scale(.96)}
+    to{opacity:1;filter:blur(0);transform:none}
+  }
+  @keyframes spring{ /* 两段式：先过冲再回落，尾巴更"弹" */
+    0%{opacity:0;transform:scale(.62)}
+    62%{opacity:1;transform:scale(calc(1 + var(--over)))}
+    100%{opacity:1;transform:scale(1)}
+  }
+  /* 光标标记与选区提示 */
+  .cursor{position:absolute;width:9px;height:9px;border-radius:50%;pointer-events:none;display:none;z-index:60;
+    box-shadow:0 0 0 3px rgba(18,165,148,.25);background:var(--teal)}
+  .cursor.on{display:block}
+  .anchor{position:absolute;width:6px;height:6px;border-radius:50%;background:var(--warn);pointer-events:none;display:none;z-index:60}
+  .anchor.on{display:block}
+  .curve{width:100%;height:64px;background:#0b0e14;border:1px solid var(--line);border-radius:9px;margin-top:8px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}
+  th,td{border-bottom:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:500;font-size:12px}
+  .kbd{font:11.5px ui-monospace,Menlo,monospace;background:#1b2230;border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+  .readout{margin-top:10px;font:12px ui-monospace,Menlo,monospace;color:var(--dim);white-space:pre-wrap}
+  .foot{margin-top:18px;color:var(--dim);font-size:12.5px}
+  .foot b{color:var(--fg)}
+</style>
+</head>
+<body>
+<h1>浮标浮现 · 动效与定位实验室</h1>
+<div class="sub">左边是模拟文档，<b>用鼠标划选文字</b>就会按右边选中的规则浮现按钮。所有参数可调，改完再划一次即可对比。</div>
+
+<div class="layout">
+  <div>
+    <div class="doc" id="doc">
+      <h3>划选任意一段文字试试</h3>
+      <div class="hint">↓ 在这几段里按住鼠标拖动（从这一行的任何一个字开始、往任意方向拖都行）</div>
+      <p>划词解读小窗的入口按钮，以前是<b>贴着选区右上方</b>出现的。问题是：当你在段落中间往左上拖选时，光标停在左上，按钮却跑到右上——眼睛得先找它。</p>
+      <p>如果把位置改成<b>跟着最后一次鼠标位置</b>走，按钮就出现在你松手的地方附近，视线不用移动。但要注意别盖住光标，也别压住刚选中的字。</p>
+      <p>动效上，<code>scale + 透明度</code> 是最常见的一档；带一点<b>过冲</b>（先放大到 106% 再回落）会更"弹"，但如果过冲太多、时长太长，连续划选时会显得拖沓。</p>
+      <p>提示：<b>从下往上拖</b>时按钮更适合放在光标<b>上方</b>；<b>从上往下拖</b>时放在<b>下方</b>——这样可以顺着拖拽方向，不挡住你刚划过的内容。</p>
+    </div>
+    <div class="readout" id="readout">（还没划过词）</div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h3>① 浮现位置 <span>按最后一次鼠标位置</span></h3>
+      <label class="opt"><input type="radio" name="pos" value="sel" checked><span><b>现状对照：选区右上方</b><small>不看鼠标，永远贴选区右上角</small></span></label>
+      <label class="opt"><input type="radio" name="pos" value="mouse-above"><span><b>鼠标上方居中</b><small>光标正上方 14px，左右居中于光标</small></span></label>
+      <label class="opt"><input type="radio" name="pos" value="mouse-below"><span><b>鼠标下方居中</b><small>光标正下方 14px</small></span></label>
+      <label class="opt"><input type="radio" name="pos" value="mouse-corner"><span><b>光标右下角</b><small>右下各 14px：最不容易盖住光标与已选文字</small></span></label>
+      <label class="opt"><input type="radio" name="pos" value="drag-dir"><span><b>跟随拖拽方向</b><small>往上拖 → 放光标上方；往下拖 → 放光标下方（贴光标左右中）</small></span></label>
+      <label class="opt"><input type="radio" name="pos" value="midpoint"><span><b>鼠标与选区中点之间</b><small>水平取鼠标与选区右端的中点，垂直在光标上方</small></span></label>
+      <label class="opt"><input type="radio" name="pos" value="mouse-hybrid"><span><b>鼠标优先 + 防遮挡兜底</b><small>先按光标右下；若与选区相交，再退到选区上方</small></span></label>
+      <div class="row"><label>偏移</label><input type="range" id="gap" min="6" max="28" value="14"><output id="gapOut">14px</output></div>
+    </div>
+
+    <div class="panel">
+      <h3>② 浮现动效 <span>点「重播」可反复看</span></h3>
+      <label class="opt"><input type="radio" name="anim" value="pop" checked><span><b>弹性放大 · pop</b><small>从 74% 放大到 100%，缓动带过冲</small></span></label>
+      <label class="opt"><input type="radio" name="anim" value="spring"><span><b>两段式回弹 · spring</b><small>冲到 100%+过冲量 → 回落；尾巴最"弹"</small></span></label>
+      <label class="opt"><input type="radio" name="anim" value="rise"><span><b>上浮淡入 · rise</b><small>从下方 6px 浮上来，最克制</small></span></label>
+      <label class="opt"><input type="radio" name="anim" value="blur"><span><b>模糊淡入 · blur</b><small>blur 5px → 0，带一点缩小，最"柔"</small></span></label>
+      <label class="opt"><input type="radio" name="anim" value="none"><span><b>无动效（对照）</b><small>瞬现，用来对比"有没有必要做动效"</small></span></label>
+      <div class="row"><label>时长</label><input type="range" id="dur" min="120" max="420" step="10" value="240"><output id="durOut">240ms</output></div>
+      <div class="row"><label>过冲</label><input type="range" id="over" min="0" max="24" step="2" value="14"><output id="overOut">14%</output></div>
+      <div class="row"><label>位移</label><input type="range" id="rise" min="0" max="14" value="6"><output id="riseOut">6px</output></div>
+      <div class="row"><label>初始缩放</label><input type="range" id="scale" min="40" max="100" step="2" value="74"><output id="scaleOut">74%</output></div>
+      <div class="row"><label>缩放原点</label>
+        <select id="origin" style="flex:1;background:#1b2230;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;font-size:12px">
+          <option value="anchor">锚点（从光标那侧长出来）</option>
+          <option value="center">中心</option>
+          <option value="bottom">底部中心</option>
+        </select>
+      </div>
+      <svg class="curve" id="curve" viewBox="0 0 100 40" preserveAspectRatio="none"></svg>
+      <button class="act primary" id="replay">▶ 重播动效（不用重新划词）</button>
+    </div>
+
+    <div class="panel">
+      <h3>③ 当前状态 <span>实时</span></h3>
+      <div class="readout" id="stateOut" style="margin:0"></div>
+    </div>
+  </div>
+</div>
+
+<h2>各定位策略的取舍</h2>
+<table>
+  <tr><th style="width:170px">策略</th><th>优点</th><th>代价 / 风险</th></tr>
+  <tr><td><b>选区右上方</b>（现状）</td><td>位置稳定可预期，永远贴着文字</td><td>往左上拖选时按钮离光标很远，视线要跳</td></tr>
+  <tr><td><b>鼠标上方居中</b></td><td>顺着手，视线不用移</td><td>靠近视口顶部时要翻到下方；多重选择（双击词）时鼠标可能不在选区附近</td></tr>
+  <tr><td><b>鼠标下方居中</b></td><td>不挡光标上方内容</td><td>靠近底部要翻上去</td></tr>
+  <tr><td><b>光标右下角</b></td><td>最不遮挡：既不压光标也不压已选文字</td><td>贴右下时可能出界，需要夹回视口</td></tr>
+  <tr><td><b>跟随拖拽方向</b></td><td>顺着动作：往上拖放上边、往下拖放下边</td><td>逻辑要解释；双击选词时没有方向，要有默认值</td></tr>
+  <tr><td><b>鼠标与选区中点</b></td><td>兼顾"贴着文字"和"贴着手"</td><td>长选区时位置偏怪，可能落在无关区域</td></tr>
+  <tr><td><b>鼠标优先 + 防遮挡</b></td><td>两全：默认顺手，撞到选区就退到选区上方</td><td>规则最多，行为偶尔会"变"（需要在文档里写清）</td></tr>
+</table>
+
+<div class="foot">
+  <b>怎么用</b>：在上面文档里划一段 → 按钮会按当前策略浮现 → 换策略/调参数，<b>再划一次</b>；想反复看动效就点「▶ 重播动效」。<br>
+  <b>我的建议</b>：位置用 <b>光标右下角（14px）</b> 或 <b>跟随拖拽方向</b>，动效用 <b>spring（过冲 12~16%、240ms、缩放原点跟锚点）</b> ——
+  手感"弹"但不拖沓；时长超过 ~300ms 连续划选会开始觉得慢。<br>
+  这一页纯预览，<b>插件代码没有改动</b>。
+</div>
+
+<script>
+  const doc = document.getElementById('doc')
+  const state = { mouse: null, down: null, selRect: null, btn: null }
+  const $ = (id) => document.getElementById(id)
+
+  const btn = document.createElement('button')
+  btn.className = 'btn'
+  btn.type = 'button'
+  btn.innerHTML = '<svg class="spark" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.6l1.9 5.6 5.6 1.9-5.6 1.9L12 17.6l-1.9-5.6L4.5 10l5.6-1.9L12 2.6z"/></svg><span>划词解读</span>'
+  doc.appendChild(btn)
+
+  const cursorDot = document.createElement('div'); cursorDot.className = 'cursor'; doc.appendChild(cursorDot)
+  const anchorDot = document.createElement('div'); anchorDot.className = 'anchor'; doc.appendChild(anchorDot)
+
+  const readout = $('readout')
+  const stateOut = $('stateOut')
+
+  const opt = (name, fallback) => {
+    const el = document.querySelector(`input[name="${name}"]:checked`)
+    return el ? el.value : fallback
+  }
+
+  function applyVars() {
+    const dur = $('dur').value + 'ms'
+    const over = ($('over').value / 100).toFixed(2)
+    const rise = $('rise').value + 'px'
+    const scale = ($('scale').value / 100).toFixed(2)
+    document.documentElement.style.setProperty('--dur', dur)
+    document.documentElement.style.setProperty('--over', over)
+    document.documentElement.style.setProperty('--rise', rise)
+    document.documentElement.style.setProperty('--scale', scale)
+    $('durOut').value = dur
+    $('overOut').value = $('over').value + '%'
+    $('riseOut').value = rise
+    $('scaleOut').value = scale
+  }
+
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)) }
+
+  /** 按当前策略算按钮左上角；返回 {left, top, originX, originY}（相对文档容器） */
+  function computeSpot() {
+    const gap = Number($('gap').value)
+    const rect = doc.getBoundingClientRect()
+    const m = state.mouse || { x: rect.width / 2, y: rect.height / 2 }
+    const sel = state.selRect            // 相对视口
+    const w = btn.offsetWidth || 104
+    const h = btn.offsetHeight || 32
+    const mx = m.x - rect.left
+    const my = m.y - rect.top
+    const strategy = opt('pos', 'sel')
+    let left = 0
+    let top = 0
+    let ox = '50%'
+    let oy = '100%'
+
+    const selLocal = sel ? {
+      left: sel.left - rect.left,
+      right: sel.right - rect.left,
+      top: sel.top - rect.top,
+      bottom: sel.bottom - rect.top,
+    } : null
+
+    if (strategy === 'sel' && selLocal) {
+      left = selLocal.right - w
+      top = selLocal.top - h - 7
+      ox = '100%'; oy = '100%'
+    } else if (strategy === 'mouse-above') {
+      left = mx - w / 2
+      top = my - h - gap
+      ox = '50%'; oy = '100%'
+    } else if (strategy === 'mouse-below') {
+      left = mx - w / 2
+      top = my + gap
+      ox = '50%'; oy = '0%'
+    } else if (strategy === 'mouse-corner') {
+      left = mx + gap
+      top = my + gap
+      ox = '0%'; oy = '0%'
+    } else if (strategy === 'drag-dir') {
+      const up = state.down ? (m.y < state.down.y) : true
+      left = mx - w / 2
+      top = up ? my - h - gap : my + gap
+      ox = '50%'; oy = up ? '100%' : '0%'
+    } else if (strategy === 'midpoint' && selLocal) {
+      left = (mx + selLocal.right) / 2 - w / 2
+      top = my - h - gap
+      ox = '50%'; oy = '100%'
+    } else if (strategy === 'mouse-hybrid') {
+      left = mx + gap
+      top = my + gap
+      ox = '0%'; oy = '0%'
+      if (selLocal) {
+        const overlap = !(left + w + 6 <= selLocal.left || selLocal.right + 6 <= left ||
+          top + h + 6 <= selLocal.top || selLocal.bottom + 6 <= top)
+        if (overlap) {
+          left = selLocal.right - w
+          top = selLocal.top - h - 7
+          ox = '100%'; oy = '100%'
+        }
+      }
+    } else {
+      // 兜底（比如没有选区信息时）
+      left = mx - w / 2
+      top = my - h - gap
+      ox = '50%'; oy = '100%'
+    }
+
+    left = clamp(left, 6, rect.width - w - 6)
+    top = clamp(top, 6, rect.height - h - 6)
+    return { left, top, ox, oy }
+  }
+
+  function showButton(replayOnly) {
+    const spot = computeSpot()
+    btn.style.left = Math.round(spot.left) + 'px'
+    btn.style.top = Math.round(spot.top) + 'px'
+    const origin = $('origin').value
+    if (origin === 'anchor') {
+      btn.style.setProperty('--ox', spot.ox)
+      btn.style.setProperty('--oy', spot.oy)
+    } else if (origin === 'center') {
+      btn.style.setProperty('--ox', '50%')
+      btn.style.setProperty('--oy', '50%')
+    } else {
+      btn.style.setProperty('--ox', '50%')
+      btn.style.setProperty('--oy', '100%')
+    }
+    const anim = opt('anim', 'pop')
+    btn.classList.add('on')
+    btn.removeAttribute('data-anim')
+    void btn.offsetWidth // 强制重排，让动画能重播
+    if (!replayOnly || anim !== 'none') btn.setAttribute('data-anim', anim)
+    stateOut.textContent = [
+      '位置策略  ' + opt('pos', 'sel'),
+      '动效      ' + anim,
+      '按钮位置  left=' + Math.round(spot.left) + ' top=' + Math.round(spot.top),
+      '光标      x=' + Math.round((state.mouse ? state.mouse.x : 0) - doc.getBoundingClientRect().left) +
+        ' y=' + Math.round((state.mouse ? state.mouse.y : 0) - doc.getBoundingClientRect().top),
+      '原点      缩放原点 ' + btn.style.getPropertyValue('--ox') + ' ' + btn.style.getPropertyValue('--oy'),
+    ].join('\n')
+  }
+
+  function selectionRect() {
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null
+    const range = sel.getRangeAt(0)
+    const rects = range.getClientRects()
+    return rects && rects.length ? rects[rects.length - 1] : range.getBoundingClientRect()
+  }
+
+  function update() {
+    const text = String(window.getSelection() || '')
+    const rect = selectionRect()
+    state.selRect = rect
+    if (!text.trim() || !rect) {
+      btn.classList.remove('on')
+      cursorDot.classList.remove('on')
+      anchorDot.classList.remove('on')
+      readout.textContent = '（还没划过词）'
+      return
+    }
+    const docRect = doc.getBoundingClientRect()
+    cursorDot.classList.add('on')
+    cursorDot.style.left = (state.mouse.x - docRect.left - 4.5) + 'px'
+    cursorDot.style.top = (state.mouse.y - docRect.top - 4.5) + 'px'
+    const spot = computeSpot()
+    anchorDot.classList.add('on')
+    anchorDot.style.left = (spot.left + (spot.ox === '0%' ? 0 : spot.ox === '100%' ? (btn.offsetWidth || 104) : (btn.offsetWidth || 104) / 2) - docRect.left - 3) + 'px'
+    anchorDot.style.top = (spot.top + (spot.oy === '0%' ? 0 : btn.offsetHeight || 32) - docRect.top - 3) + 'px'
+    readout.textContent = [
+      '选中：' + text.trim().slice(0, 40) + (text.trim().length > 40 ? '…' : ''),
+      '选区：left=' + Math.round(rect.left) + ' top=' + Math.round(rect.top) + ' right=' + Math.round(rect.right) + ' bottom=' + Math.round(rect.bottom),
+      '光标：x=' + state.mouse.x + ' y=' + state.mouse.y + '（拖拽方向：' + (state.down ? (state.mouse.y < state.down.y ? '向上' : '向下') : '未知') + '）',
+    ].join('\n')
+    showButton(false)
+  }
+
+  doc.addEventListener('mousedown', (e) => { state.down = { x: e.clientX, y: e.clientY }; state.mouse = { x: e.clientX, y: e.clientY } })
+  doc.addEventListener('mousemove', (e) => { state.mouse = { x: e.clientX, y: e.clientY } })
+  doc.addEventListener('mouseup', (e) => {
+    state.mouse = { x: e.clientX, y: e.clientY }
+    // 松手后等一帧，让浏览器把选区定下来
+    requestAnimationFrame(update)
+  })
+  document.addEventListener('selectionchange', () => { /* 选区变化时不动，等 mouseup 再算，避免抖动 */ })
+
+  document.querySelectorAll('input[name="pos"]').forEach((el) => el.addEventListener('change', () => { if (btn.classList.contains('on')) showButton(false) }))
+  document.querySelectorAll('input[name="anim"]').forEach((el) => el.addEventListener('change', () => { if (btn.classList.contains('on')) showButton(true) }))
+  ;['gap', 'dur', 'over', 'rise', 'scale'].forEach((id) => $(id).addEventListener('input', () => {
+    applyVars()
+    drawCurve()
+    if (btn.classList.contains('on')) showButton(id === 'gap')
+  }))
+  $('origin').addEventListener('change', () => { if (btn.classList.contains('on')) showButton(false) })
+  $('replay').addEventListener('click', () => showButton(true))
+
+  /** 把当前缓动画成曲线（横轴时间、纵轴进度），过冲会露在 1 以上 */
+  function drawCurve() {
+    const svg = $('curve')
+    const anim = opt('anim', 'pop')
+    const curves = {
+      pop: [.34, 1.56, .64, 1],
+      spring: [.2, 1.25, .3, 1],
+      rise: [.22, 1, .36, 1],
+      blur: [.22, 1, .36, 1],
+      none: [0, 0, 1, 1],
+    }
+    const [x1, y1, x2, y2] = curves[anim] || curves.pop
+    const pt = (t, p1, p2) => {
+      const u = 1 - t
+      return 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t
+    }
+    let d = ''
+    for (let i = 0; i <= 40; i += 1) {
+      const t = i / 40
+      const x = pt(t, x1, x2) * 100
+      const y = 40 - pt(t, y1, y2) * 32      // 进度 0 → y=40，1 → y=8
+      d += (i ? ' L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1)
+    }
+    svg.innerHTML =
+      '<line x1="0" y1="8" x2="100" y2="8" stroke="#2a3038" stroke-width="0.6"/>' +
+      '<line x1="0" y1="40" x2="100" y2="40" stroke="#2a3038" stroke-width="0.6"/>' +
+      '<path d="' + d + '" fill="none" stroke="#12a594" stroke-width="1.6"/>'
+  }
+
+  applyVars()
+  drawCurve()
+
+  // 自检/调试钩子：便于在无头浏览器里逐条验证定位与动效（也方便你自己在控制台里试）
+  window.__lab = {
+    state: state,
+    update: update,
+    showButton: showButton,
+    computeSpot: computeSpot,
+    selectText: (paraIndex, from, to) => {
+      const node = document.querySelectorAll('#doc p')[paraIndex]
+      const textNode = (function find(n) {
+        if (n.nodeType === 3) return n
+        for (const c of n.childNodes) { const hit = find(c); if (hit) return hit }
+        return null
+      })(node)
+      if (!textNode) return ''
+      const range = document.createRange()
+      range.setStart(textNode, Math.min(from, textNode.nodeValue.length))
+      range.setEnd(textNode, Math.min(to, textNode.nodeValue.length))
+      const sel = window.getSelection()
+      sel.removeAllRanges()
+      sel.addRange(range)
+      return String(sel)
+    },
+    /** 模拟一次"松手"：给定光标位置与按下位置 */
+    release: (x, y, downX, downY) => {
+      state.down = { x: downX === undefined ? x : downX, y: downY === undefined ? y : downY }
+      state.mouse = { x: x, y: y }
+      update()
+    },
+  }
+</script>
+</body>
+</html>

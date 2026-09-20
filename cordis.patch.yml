@@ -1,0 +1,31 @@
+# dsh-selection-explain bundle patch
+#
+# 本文件是包的 dsh.bundle.patch 层：官方 CLI 装配
+#   dsh plugin --profile <name> add @dsh-external/dsh-selection-explain
+# 会把本包加进 profile 的 dsh.profile.bundles，启动时合并下面的 insert 行——
+# 无需手写 profile 的 cordis.patch.yml。运行时注入（dsh-super-injector 的
+# dev_inject_plugin / dev_install_package）同样使用这一行语义。
+#
+# 可调参数（改 profile 的 cordis.patch.yml 里同 id 行即可覆盖）：
+#   provider / model      固定模型路由；留空 = 跟随「默认模型」设置
+#   reasoningEffort       详解阶段的推理档位：off / low / high / max
+#   translationReasoningEffort  首轮「翻译」单独一档（默认 low）；实测 low≈high 都要 8~11s，
+#                         只有 off 是 1.7s（不思考）——想秒出就改成 off
+#   chatReasoningEffort   追问档位（默认 high；想更快就调 low）
+#   historyMaxEntries     小窗对话历史保留多少个「划词条目」（默认 20，0 = 关闭）；
+#                         每个条目内含它自己的全部追问轮次，升格过的不参与 LRU 淘汰
+#   maxSelectionChars     选中文字长度上限（默认 4000）
+#   maxContextChars       上下文长度上限（默认 12000）
+#   maxRequestsPerMinute  本地限流（默认 40）
+#   toolNames             工具白名单（默认 web_search,web_fetch,read,grep,glob）
+#   toolReadRoot          文件类工具（read/grep/glob）的读取边界：'' = 会话工作目录（默认），
+#                         '*' = 不限制，其他 = 写死的某个目录。越界在**执行前**被拒
+#   tools                 总开关（false = 完全不给工具）
+- insert:
+    - id: selection-explain
+      name: '@dsh-external/dsh-selection-explain'
+      config:
+        # 首字约 1.9s（实测，off 不思考）；要更深可改 low / high / max
+        reasoningEffort: off
+        # 想再快：把背景窗口调小（少 prefill）
+        # sessionContextMaxMessages: 8

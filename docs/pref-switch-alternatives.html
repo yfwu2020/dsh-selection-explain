@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>「输出偏好」· 二选一控件候选（深色主题）</title>
+<style>
+  :root{
+    --bg:#0d1117; --card:#161b22; --line:#2a3038; --fg:#e6edf3; --dim:#8b949e;
+    --ok:#7ee787; --warn:#ffa657; --blue:#79c0ff; --pink:#f778ba;
+    --teal:#0f9b8e; --teal-dim:rgba(15,155,142,.18);
+    /* 深色 composer（对齐 GUI 深色主题） */
+    --c-bg:#1b1c1f; --c-line:rgba(255,255,255,.13); --c-fg:#e5e7eb; --c-dim:#8b8f96; --c-chip:rgba(255,255,255,.07);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.65 system-ui,-apple-system,"PingFang SC",sans-serif;padding:24px 26px 70px}
+  h1{font-size:19px;margin:0 0 6px}
+  h2{font-size:14.5px;margin:26px 0 10px;color:var(--blue);font-weight:600}
+  .sub{color:var(--dim);font-size:12.5px;margin-bottom:14px}
+  .lead{background:#161b22;border:1px solid var(--line);border-radius:14px;padding:13px 16px;margin-bottom:16px;font-size:12.8px;color:var(--dim)}
+  .lead b{color:var(--fg)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(540px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 15px 14px}
+  .card.reco{border-color:#238636}
+  .card h3{margin:0 0 2px;font-size:13.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .tag{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid currentColor;font-weight:600}
+  .tag.reco{color:var(--ok)} .tag.warn{color:var(--warn)}
+  .card .why{color:var(--dim);font-size:12.5px;margin:0 0 10px}
+  /* 深色 composer */
+  .composer{width:516px;max-width:100%;display:flex;flex-direction:column;gap:6px;padding:10px 10px 8px 14px;
+    border-radius:22px;border:1px solid var(--c-line);background:var(--c-bg);color:var(--c-fg)}
+  .ph{font-size:13px;color:var(--c-dim)}
+  .row{display:flex;align-items:center;gap:8px;min-height:26px}
+  .space{flex:1 1 auto}
+  .send{width:26px;height:26px;border-radius:13px;background:var(--teal);color:#fff;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .send svg{width:14px;height:14px}
+  .st{padding:2px 0 0;color:var(--dim);font-size:11px}
+  /* A 分段滑块 */
+  .segslide{position:relative;display:inline-flex;align-items:center;height:26px;padding:2px;border-radius:13px;
+    background:var(--c-chip);font-size:11.5px;color:var(--c-dim)}
+  .segslide .pill{position:absolute;top:2px;left:2px;height:22px;border-radius:11px;background:var(--teal);
+    transition:transform .2s cubic-bezier(.3,1.2,.4,1),width .2s}
+  .segslide .opt{position:relative;z-index:1;display:inline-flex;align-items:center;gap:4px;padding:0 10px;height:22px;white-space:nowrap}
+  .segslide .opt.on{color:#fff;font-weight:600}
+  .segslide .opt svg{width:13px;height:13px}
+  /* B 分段（无滑动） */
+  .seg{display:inline-flex;align-items:center;height:26px;border-radius:13px;background:var(--c-chip);overflow:hidden;font-size:11.5px;color:var(--c-dim)}
+  .seg span{display:inline-flex;align-items:center;gap:4px;padding:0 11px;height:26px;white-space:nowrap}
+  .seg span svg{width:13px;height:13px}
+  .seg span.on{background:var(--teal);color:#fff;font-weight:600}
+  /* C 芯片组 */
+  .chips{display:inline-flex;gap:6px}
+  .chip{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 11px;border-radius:12px;font-size:11.5px;
+    border:1px solid var(--c-line);color:var(--c-dim);background:transparent}
+  .chip svg{width:13px;height:13px}
+  .chip.on{background:var(--teal-dim);border-color:var(--teal);color:#7fe3d8;font-weight:600}
+  /* D 单按钮翻转 */
+  .flipbtn{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 12px;border-radius:13px;font-size:11.5px;
+    border:1px solid var(--c-line);color:var(--c-fg)}
+  .flipbtn svg{width:13px;height:13px}
+  /* E 单选组 */
+  .radios{display:inline-flex;align-items:center;gap:14px;font-size:11.5px;color:var(--c-dim)}
+  .radios label{display:inline-flex;align-items:center;gap:5px}
+  .radios i{width:13px;height:13px;border-radius:50%;border:1.5px solid var(--c-line);display:inline-block;position:relative}
+  .radios i.on{border-color:var(--teal)}
+  .radios i.on::after{content:"";position:absolute;inset:2.5px;border-radius:50%;background:var(--teal)}
+  /* F 下拉 */
+  .select{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 11px;border-radius:13px;font-size:11.5px;
+    border:1px solid var(--c-line);color:var(--c-fg)}
+  .select svg{width:13px;height:13px}
+  .caret{font-size:9px;opacity:.7}
+  .menu{margin-top:6px;width:230px;border-radius:10px;background:#232427;border:1px solid var(--c-line);padding:4px;
+    box-shadow:0 10px 26px rgba(0,0,0,.45);font-size:12px;color:var(--c-fg)}
+  .menu div{display:flex;flex-direction:column;padding:6px 9px;border-radius:7px}
+  .menu div.cur{background:rgba(15,155,142,.16);font-weight:600}
+  .menu small{color:var(--c-dim);font-weight:400;font-size:11px}
+  /* 现状（开关） */
+  .sw{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--c-dim)}
+  .track{position:relative;width:34px;height:20px;border-radius:999px;background:rgba(255,255,255,.18);flex:0 0 auto}
+  .track.on{background:var(--teal)}
+  .knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;color:#6b7280;
+    display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,.35)}
+  .knob svg{width:11px;height:11px}
+  .track.on .knob{left:16px;color:var(--teal)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}
+  th,td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:middle}
+  th{color:var(--dim);font-weight:500;font-size:12px}
+  .lv{font-weight:600} .lv.a{color:var(--ok)} .lv.b{color:var(--blue)} .lv.c{color:var(--warn)}
+  .foot{margin-top:20px;color:var(--dim);font-size:12.5px} .foot b{color:var(--fg)}
+  code{color:var(--pink)}
+</style>
+</head>
+<body>
+<h1>「输出偏好」· 二选一控件候选</h1>
+<div class="sub">全部放在<b>深色主题</b>（和你 GUI 一致）的真实 composer 里，1:1；每个都给出<b>左档（Markdown）</b>与<b>右档（网页）</b>两种状态。</div>
+
+<div class="lead">
+  <b>为什么现在这版"开关味"重</b>：滑块（switch）在所有人的直觉里是 <b>开 / 关某个能力</b>——"输出偏好"打开了？关掉了？
+  而你要表达的是 <b>"两选一"</b>。下面 8 个候选都是"二选一"的通用语言，其中 A 保留了你要的滑动手感。
+</div>
+
+<h2>0. 现状（作为对照）</h2>
+<div class="card" style="border-color:#9e6a03">
+  <h3>开关式滑块 <span class="tag warn">开关味重</span></h3>
+  <p class="why">滑块位置 + 轨道颜色 + 内部图标，三重反馈其实很好；问题只在"开关"这个形状暗示了开/关，而不是"二选一"。</p>
+  <div class="row" style="gap:22px">
+    <span class="sw">输出偏好<span class="track"><span class="knob"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg></span></span></span>
+    <span class="sw">输出偏好<span class="track on"><span class="knob"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></span></span></span>
+  </div>
+</div>
+
+<h2>一、八个候选（深色主题 · 两态并排）</h2>
+<div class="grid">
+
+  <div class="card reco">
+    <h3>A · 分段滑块「Markdown ｜ 网页」<span class="tag reco">推荐</span></h3>
+    <p class="why">外观就是现在的滑块，但语义换成<b>二选一</b>：两块标签并排，选中块是一枚会滑动的实心药丸。保留你要的滑动手感与图标变化。</p>
+    <div class="row" style="gap:18px">
+      <span class="segslide">
+        <span class="pill" style="width:88px;transform:translateX(0)"></span>
+        <span class="opt on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg>Markdown</span>
+        <span class="opt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg>网页</span>
+      </span>
+      <span class="segslide">
+        <span class="pill" style="width:52px;transform:translateX(88px)"></span>
+        <span class="opt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg>Markdown</span>
+        <span class="opt on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg>网页</span>
+      </span>
+    </div>
+    <div class="composer" style="margin-top:10px">
+      <div class="ph">就这段文字继续追问…（Enter 发送，Shift+Enter 换行）</div>
+      <div class="row">
+        <span class="segslide">
+          <span class="pill" style="width:52px;transform:translateX(88px)"></span>
+          <span class="opt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg>Markdown</span>
+          <span class="opt on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg>网页</span>
+        </span>
+        <span class="space"></span>
+        <span class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.2V3.4"/><path d="M3.9 7.5 8 3.4l4.1 4.1"/></svg></span>
+      </div>
+    </div>
+    <div class="st">↑ 真实大小（网页档）：两档都写着名字，当前档实心 —— 没有第二种解读</div>
+  </div>
+
+  <div class="card">
+    <h3>B · 纯分段控件（无滑动）</h3>
+    <p class="why">最标准的二选一：两块，选中块实心。没有动效，也就最"朴素"。</p>
+    <div class="row" style="gap:18px">
+      <span class="seg"><span class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg>Markdown</span><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg>网页</span></span>
+      <span class="seg"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg>Markdown</span><span class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg>网页</span></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>C · 芯片组（两枚独立胶囊）</h3>
+    <p class="why">两枚分开的胶囊，选中那枚点亮。看起来更像"标签/筛选"，比分段更松散。</p>
+    <div class="row" style="gap:18px">
+      <span class="chips"><span class="chip on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg>Markdown</span><span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg>网页</span></span>
+      <span class="chips"><span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg>Markdown</span><span class="chip on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg>网页</span></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>D · 单按钮翻转（显示当前档，点击换）</h3>
+    <p class="why">最省地方：只显示"现在是什么"，点一下翻到另一档。代价：看不出另一档叫什么。</p>
+    <div class="row" style="gap:18px">
+      <span class="flipbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg>Markdown</span>
+      <span class="flipbtn" style="border-color:var(--teal);color:#7fe3d8"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg>网页</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>E · 单选点（◉ Markdown　○ 网页）</h3>
+    <p class="why">语义上最贴"偏好"——偏好本来就是单选。但在 composer 里出现"表单味"，且占宽。</p>
+    <div class="row" style="gap:18px">
+      <span class="radios"><label><i class="on"></i>Markdown</label><label><i></i>网页</label></span>
+      <span class="radios"><label><i></i>Markdown</label><label><i class="on"></i>网页</label></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>F · 下拉（当前值 + 菜单）</h3>
+    <p class="why">最省地方 & 菜单里能写清两种格式的差别；但要点两下才切换。</p>
+    <div class="row" style="gap:18px">
+      <span class="select"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg>Markdown<span class="caret">▼</span></span>
+      <div class="menu">
+        <div class="cur">Markdown<small>默认 · 普通段落，最省时间</small></div>
+        <div>网页<small>复杂问题生成一个 HTML 页面</small></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>G · 图标分段（只有图标，无文字）</h3>
+    <p class="why">最紧凑（约 76px）：两枚图标并排，选中实心。靠 hover 补语义。</p>
+    <div class="row" style="gap:18px">
+      <span class="seg"><span class="on" style="padding:0 10px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg></span><span style="padding:0 10px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></span></span>
+      <span class="seg"><span style="padding:0 10px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"/><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"/></svg></span><span class="on" style="padding:0 10px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9.6h18"/></svg></span></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>H · 短标签分段「简 ｜ 网页」</h3>
+    <p class="why">把 A 的文字压到最短（"简"="简洁文字"），宽度降到约 96px。代价：单字"简"要猜。</p>
+    <div class="row" style="gap:18px">
+      <span class="seg"><span class="on">简</span><span>网页</span></span>
+      <span class="seg"><span>简</span><span class="on">网页</span></span>
+    </div>
+  </div>
+
+</div>
+
+<h2>二、选型对照</h2>
+<table>
+  <tr><th>候选</th><th>还像"开关"吗</th><th>一眼看出"二选一"</th><th>一眼看出"当前档"</th><th>点击次数</th><th>宽度</th></tr>
+  <tr><td><b>A 分段滑块</b></td><td class="lv a">不像（有滑动但两档都在场）</td><td>强</td><td>强（实心药丸 + 图标）</td><td>1</td><td>≈150px</td></tr>
+  <tr><td>B 纯分段</td><td class="lv a">不像</td><td>强</td><td>强</td><td>1</td><td>≈150px</td></tr>
+  <tr><td>C 芯片组</td><td class="lv a">不像</td><td>中（像筛选标签）</td><td>强</td><td>1</td><td>≈150px</td></tr>
+  <tr><td>D 单按钮翻转</td><td class="lv a">不像</td><td class="lv c">弱（看不到另一档）</td><td>强</td><td>1</td><td>≈104px</td></tr>
+  <tr><td>E 单选点</td><td class="lv a">不像</td><td>强（但表单味）</td><td>强</td><td>1</td><td>≈170px</td></tr>
+  <tr><td>F 下拉</td><td class="lv a">不像</td><td>中</td><td>强</td><td>2</td><td>≈110px</td></tr>
+  <tr><td>G 图标分段</td><td class="lv a">不像</td><td>中</td><td>中（图标要认）</td><td>1</td><td>≈76px</td></tr>
+  <tr><td>H 短标签分段</td><td class="lv a">不像</td><td>中</td><td>强</td><td>1</td><td>≈96px</td></tr>
+</table>
+
+<div class="foot">
+  <b>我的建议</b>：<b>A 分段滑块</b>——它是"现在的样子 + 正确的语义"：药丸照样滑动、图标照样跟着变，
+  但两块标签同时在场，任何人一眼都读成"Markdown 或 网页"，不会再读成"开/关"。宽度约 150px，左侧空间够。<br>
+  若嫌宽：<b>G 图标分段</b>（76px，只留两枚图标）或 <b>H 短标签</b>（96px，"简 / 网页"）。<br>
+  若你觉得"偏好"就该是设置项、不必抢眼：<b>F 下拉</b>最克制（110px、要点两下，但菜单里能写清差别）。<br>
+  照旧：<b>代码没动，等你点</b>（A 只是把现在的 switch 换成 segmented，图标、颜色、持久化、提示语都沿用）。
+</div>
+
+</body>
+</html>
