@@ -1762,11 +1762,11 @@ await sleep(140)
 assert('用户往上翻之后不再被拽回底部', panelBody.scrollTop === 100, `scrollTop=${panelBody.scrollTop}`)
 assert('翻上去期间回答仍在继续渲染', textOf(chatLog).indexOf('第三段回答') >= 0 || textOf(chatLog).indexOf('第二段回答') >= 0, textOf(chatLog).slice(0, 40))
 
-// ───────────────────────── 关闭策略：追问后只有 ✕ 能关 ─────────────────────────
+// ───────────────────────── 关闭策略：点面板外永不关闭；✕ / Esc / 胶囊可关 ─────────────────────────
 hook.open('slow-ask-probe', '', '关闭策略-未追问')
 await sleep(80)
 documentStub.dispatch('mousedown', { target: new FakeEl('div') })
-assert('还没追问时点面板外仍会收起（轻量翻译卡不赖着不走）', panel.style.display === 'none', 'display=' + panel.style.display)
+assert('没追问时点面板外也不关闭（答案不能被误关掉）', panel.style.display === 'flex', 'display=' + panel.style.display)
 
 hook.open('slow-probe', '', '关闭策略')
 for (let i = 0; i < 80 && hook.state().phase !== 'done'; i += 1) await sleep(20)
@@ -1808,12 +1808,17 @@ assert('页面滚动会收回侧边栏', histList.style.display === 'none', 'dis
 histBtn.dispatch('click', { stopPropagation() {} })
 documentStub.dispatch('mousedown', { target: new FakeEl('div') })
 assert('追问后点面板外不关闭', panel.style.display === 'flex', 'display=' + panel.style.display)
-documentStub.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} })
-assert('追问后 Esc 也不关闭', panel.style.display === 'flex', 'display=' + panel.style.display)
 assert('面板外点击/滚动不会打断正在渲染的对话', textOf(chatLog).indexOf('这是对追问的回答') >= 0)
+assert('追问后点面板外仍然不关闭（对照：上面连点了两次）', panel.style.display === 'flex', 'display=' + panel.style.display)
+// Esc：任何时候都能关（这一版把"追问后不许 Esc"的限制去掉了）
+documentStub.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} })
+assert('追问后 Esc 也能关闭（不受"有没有追问过"限制）', panel.style.display === 'none', 'display=' + panel.style.display)
+// ✕ 仍然能关（换一个场景再验一次）
+hook.open('slow-probe', '', '关闭策略-✕')
+for (let i = 0; i < 80 && hook.state().phase !== 'done'; i += 1) await sleep(20)
 const closeBtn = Array.from(walk(panelHead)).find((n) => n.className === 'dsh-sel-icon')
 closeBtn.dispatch('click', { stopPropagation() {} })
-assert('追问后点右上角 ✕ 才关闭', panel.style.display === 'none', 'display=' + panel.style.display)
+assert('点右上角 ✕ 仍然能关闭', panel.style.display === 'none', 'display=' + panel.style.display)
 
 // ───────────────────────── 选中代码：逐句注释 + 代码块 + 小结 ─────────────────────────
 hook.open(CODE_SNIPPET, 'DSH 插件的文本截断逻辑', '代码')
@@ -1973,13 +1978,13 @@ await sleep(80)
 assert('点一条能把那段对话调回面板（不调模型）', sent.length === sentBeforeClick && textOf(sections[0]).indexOf('缓存测试内容') >= 0, `新增请求 ${sent.length - sentBeforeClick}`)
 assert('点完之后列表收起', histList.style.display === 'none', String(histList.style.display))
 
-// Esc 第一下只收列表，不关面板
+// Esc：一次到位 —— 面板与侧边栏一起收（原先"第一下只收列表"那一级已按需求合并）
 const escEv = { key: 'Escape', preventDefault() {}, stopPropagation() {} }
 histBtn.dispatch('click', { stopPropagation() {} })
 await sleep(60)
 assert('再次打开列表', histList.style.display === 'flex', String(histList.style.display))
 documentStub.dispatch('keydown', escEv)
-assert('Esc 先收列表', histList.style.display === 'none' && panel.style.display === 'flex', `list=${histList.style.display} panel=${panel.style.display}`)
+assert('Esc 一次关掉整个小窗（含侧边栏）', histList.style.display === 'none' && panel.style.display === 'none', `list=${histList.style.display} panel=${panel.style.display}`)
 
 // 稳定 key：选中文字**之后**的上下文变长（主会话追加了新消息），不该换 key
 hook.forget()

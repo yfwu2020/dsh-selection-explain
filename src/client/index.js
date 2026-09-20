@@ -2065,15 +2065,6 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 小窗是否已经"有内容"（追问过至少一次）。
-       * 一旦有对话，就不能再被点空白处/划词/滚动顺带关掉——那些都是"看别处"的动作，
-       * 关掉等于把刚问出来的答案丢了。此时只有右上角 ✕ 能关。
-       */
-      function chatLocked() {
-        return state.turns.length > 0
-      }
-
-      /**
        * 状态提示：**界面上不显示**（页脚那条和后来的浮层都去掉了）。
        * 保留函数是为了语义不丢——最近一条记进 state.lastStatus，自检钩子可读，17 处调用点也不用改。
        */
@@ -2203,7 +2194,7 @@ window.__ModuleLoader__.load({
         // 展开 CTA：翻译还在跑（含思考期）时先不出现——那时候该看的是等待特效，
         // 摆在下面只会是个灰着的按钮，反而像"没反应"；发过追问之后也收起（见 syncExpandCta）。
         syncExpandCta()
-        closeButton.title = chatLocked() ? '关闭' : '关闭（Esc）'
+        closeButton.title = '关闭（Esc）'
         // 「重新生成」是内容区里的临时按钮：正常路径上先收回，避免被上一次追加后留在正文里
         if (state.phase !== 'error' && state.phase !== 'paused' && retryButton.parentNode) {
           retryButton.parentNode.removeChild(retryButton)
@@ -3959,17 +3950,15 @@ window.__ModuleLoader__.load({
         if (historyList.contains(target)) return // 列表内部：行自己处理
         if (historyButton.contains(target)) return // 「最近」开关自己 toggle
         if (button.contains(target)) return // 浮标
-        // 状态胶囊：它自己就是开关，点它的 mousedown 不能被当成"点了外面"。
-        // 漏掉这一条的表现：真实点击先 mousedown（这里把面板关掉）再 click（又开回来）→
-        // 看着就是"点胶囊没反应"，只有当对话已锁（chatLocked）时才歪打正着地能收起。
+        // 状态胶囊：它自己就是开关，点它的 mousedown 不能被当成"点了外面"（否则先关后开，看着像没反应）
         if (pill.contains(target)) return
         // 到这里说明点的不是侧边栏本身：**含面板正文**（消息区/输入框/选中文字）在内，
         // 一律先把侧边栏收回——它是用完就走的导航，不该等你点了"外面"才收。
         hideHistoryList()
         if (panel.contains(target)) return // 面板内的点击只收侧边栏，不关面板
         hideButton()
-        // 追问过之后：点别处只是"去看别的东西"，不该把刚问出来的答案一起关掉
-        if (panelOpen && !chatLocked()) closePanel()
+        // 点面板外**不关小窗**（无论有没有追问过）：答案留在原地，只有 ✕ / Esc / 胶囊能收。
+        // 曾经的规则是"没追问过才关"，但那会让用户在读第一屏翻译时被误关（点一下别处就没了）。
       }, true)
 
       // 让按钮吞掉 mousedown：点击时不破坏选区高亮
@@ -4403,15 +4392,9 @@ window.__ModuleLoader__.load({
       })
 
       var offKeyDown = listen(document, 'keydown', function (event) {
-        // Esc：列表开着就先收列表（第一下不关面板）
-        if (event.key === 'Escape' && panelOpen && historyList.style.display === 'flex') {
-          event.preventDefault()
-          event.stopPropagation()
-          hideHistoryList()
-          return
-        }
-        // Esc 同样只在"还没追问过"（轻量翻译卡）时关；有对话了就只认右上角 ✕
-        if (event.key === 'Escape' && panelOpen && !chatLocked()) {
+        // Esc：**任何时候、一次到位**关掉小窗（不受"有没有追问过"限制）。
+        // closePanel() 内部会顺带收起模型菜单与「最近」侧边栏，所以不再需要"第一下只收侧边栏"那一级。
+        if (event.key === 'Escape' && panelOpen) {
           event.preventDefault()
           event.stopPropagation()
           closePanel()
