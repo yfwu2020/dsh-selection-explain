@@ -277,6 +277,8 @@ window.__ModuleLoader__.load({
       // 下面那行：左侧网页模式（圆形浅底，和主会话的 + 同款），右侧发送（圆形实心）
       '.dsh-sel-asktools{display:flex;align-items:center;gap:8px}',
       '.dsh-sel-askspace{flex:1 1 auto}',
+      // 页眉里的撑开占位（标题与右侧按钮之间）
+      '.dsh-sel-headspace{flex:1 1 auto;min-width:8px}',
       // 按钮统一缩小到 26px（原来 32 偏大）；图标 14px
       '.dsh-sel-iconbtn{flex:0 0 auto;height:26px;min-width:26px;padding:0;border:0;border-radius:13px;cursor:pointer;',
       'display:inline-flex;align-items:center;justify-content:center;gap:4px;background:transparent;',
@@ -1404,6 +1406,9 @@ window.__ModuleLoader__.load({
       var head = el('div', 'dsh-sel-head')
       head.appendChild(el('span', 'dsh-sel-mark'))
       head.appendChild(el('span', 'dsh-sel-title', '划词解读'))
+      // 撑开用：把右侧三个按钮（最近/升格/✕）顶到最右。
+      // 以前这一步是"模型名标签"的 margin-left:auto 兼任的，标签一删按钮就贴到标题后面了。
+      head.appendChild(el('span', 'dsh-sel-headspace'))
       var historyButton = el('button', 'dsh-sel-action', '🕘 最近')
       historyButton.type = 'button'
       historyButton.title = '最近聊过的划词（点一条把那段对话调回来）'

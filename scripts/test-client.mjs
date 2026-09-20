@@ -2180,6 +2180,13 @@ assert('点回来看到"已停止"的状态与可重试入口', hook.state().pha
     assert('页眉里没有模型胶囊（类名不撞车）', !inHead.some((c) => c.split(/\s+/).indexOf('dsh-sel-picker') >= 0), JSON.stringify(inHead))
     // 用户要求去掉页眉那个"opencode-go · deepseek-…"标签：类名与元素都应从代码里彻底消失
     assert('页眉不再有"当前模型"标签（元素与类名都已移除）', !inHead.some((c) => c.split(/\s+/).indexOf('dsh-sel-model') >= 0) && !/\.dsh-sel-model\{/.test(css), JSON.stringify(inHead))
+    // 原来把右侧按钮顶到最右的是模型标签的 margin-left:auto；标签删掉后必须换成 spacer，
+    // 否则「最近/升格/✕」会贴到标题后面（用户实测发现）
+    assert(
+      '页眉有撑开占位，右侧按钮仍贴右边',
+      inHead.some((c) => c.split(/\s+/).indexOf('dsh-sel-headspace') >= 0) && /\.dsh-sel-headspace\{flex:1 1 auto/.test(css),
+      JSON.stringify(inHead),
+    )
     assert('分节标题右侧的提示换成了独立类名（dsh-sel-hint，且不含 dsh-sel-sec 子串）',
       /\.dsh-sel-hint\{margin-left:auto/.test(css) && !/\.dsh-sel-sechint\{/.test(css), '')
     assert('CSS 契约：模型胶囊仍在（composer 里那个）', /\.dsh-sel-picker\{display:inline-flex/.test(css), '')
