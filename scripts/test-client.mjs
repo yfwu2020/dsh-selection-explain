@@ -1041,7 +1041,11 @@ assert(
 )
 assert('展开后出现追问输入框', !!askRow && askRow.style.display !== 'none', askRow ? askRow.style.display : '未找到')
 assert('DOM 渲染出两节标题', textOf(panel).indexOf('翻译') >= 0 && textOf(panel).indexOf('详解') >= 0)
-assert('面板显示模型（页眉）', /fixture/.test(textOf(panel)), textOf(panel).slice(0, 60))
+assert(
+  '页眉不再显示模型名（模型只在 composer 的胶囊里）',
+  !Array.from(walk(panelHead)).some((n) => /fixture/.test(textOf(n))),
+  Array.from(walk(panelHead)).map((n) => textOf(n)).join('|').slice(0, 60),
+)
 assert('耗时信息仍有记录（不再上界面，自检可读）', /耗时/.test(String(hook.state().status || '')), String(hook.state().status))
 
 // ───────────────────────── 渲染层次（固定输出，离线可验） ─────────────────────────
@@ -2173,10 +2177,12 @@ assert('点回来看到"已停止"的状态与可重试入口', hook.state().pha
   {
     const headEl = panelHead
     const inHead = Array.from(walk(headEl)).map((n) => String(n.className))
-    assert('页眉里没有模型胶囊（类名不再撞车）', !inHead.some((c) => c.split(/\s+/).indexOf('dsh-sel-picker') >= 0), JSON.stringify(inHead))
-    const label = Array.from(walk(headEl)).find((n) => String(n.className) === 'dsh-sel-model')
-    assert('页眉的"当前模型"label 仍是普通 span（不是胶囊）', !!label && label.tagName === 'SPAN' && !label.getAttribute('data-open'), label ? label.tagName : '未找到')
-    assert('两套类名的 CSS 都在，且各自独立', /\.dsh-sel-model\{margin-left:auto/.test(css) && /\.dsh-sel-picker\{display:inline-flex/.test(css), '')
+    assert('页眉里没有模型胶囊（类名不撞车）', !inHead.some((c) => c.split(/\s+/).indexOf('dsh-sel-picker') >= 0), JSON.stringify(inHead))
+    // 用户要求去掉页眉那个"opencode-go · deepseek-…"标签：类名与元素都应从代码里彻底消失
+    assert('页眉不再有"当前模型"标签（元素与类名都已移除）', !inHead.some((c) => c.split(/\s+/).indexOf('dsh-sel-model') >= 0) && !/\.dsh-sel-model\{/.test(css), JSON.stringify(inHead))
+    assert('分节标题右侧的提示换成了独立类名（dsh-sel-hint，且不含 dsh-sel-sec 子串）',
+      /\.dsh-sel-hint\{margin-left:auto/.test(css) && !/\.dsh-sel-sechint\{/.test(css), '')
+    assert('CSS 契约：模型胶囊仍在（composer 里那个）', /\.dsh-sel-picker\{display:inline-flex/.test(css), '')
   }
 
   assert('CSS 契约：模型胶囊紧挨发送键、菜单向上弹', /\.dsh-sel-picker\{display:inline-flex/.test(css) && /\.dsh-sel-pickermenu\{position:absolute;right:10px;bottom:calc\(100% \+ 8px\)/.test(css), '')

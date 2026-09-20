@@ -115,7 +115,8 @@ window.__ModuleLoader__.load({
       '.dsh-sel-head:active{cursor:grabbing}',
       '.dsh-sel-mark{width:7px;height:7px;border-radius:50%;background:var(--sel-a1,#0d9488);flex:0 0 auto}',
       '.dsh-sel-title{font-weight:600;font-size:12.5px;letter-spacing:.2px}',
-      '.dsh-sel-model{margin-left:auto;font-size:11px;opacity:.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}',
+      // 分节标题右侧的状态提示（检索中/思考尾巴/档位说明）——靠 margin-left:auto 贴右边
+      '.dsh-sel-hint{margin-left:auto;font-size:11px;opacity:.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}',
       '.dsh-sel-icon{flex:0 0 auto;width:24px;height:24px;display:grid;place-items:center;border:0;border-radius:8px;cursor:pointer;white-space:nowrap;',
       'background:transparent;color:inherit;font:inherit;opacity:.7}',
       '.dsh-sel-icon:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.16));opacity:1}',
@@ -1403,8 +1404,6 @@ window.__ModuleLoader__.load({
       var head = el('div', 'dsh-sel-head')
       head.appendChild(el('span', 'dsh-sel-mark'))
       head.appendChild(el('span', 'dsh-sel-title', '划词解读'))
-      var modelLabel = el('span', 'dsh-sel-model')
-      head.appendChild(modelLabel)
       var historyButton = el('button', 'dsh-sel-action', '🕘 最近')
       historyButton.type = 'button'
       historyButton.title = '最近聊过的划词（点一条把那段对话调回来）'
@@ -2200,7 +2199,6 @@ window.__ModuleLoader__.load({
         // 摆在下面只会是个灰着的按钮，反而像"没反应"；发过追问之后也收起（见 syncExpandCta）。
         syncExpandCta()
         closeButton.title = chatLocked() ? '关闭' : '关闭（Esc）'
-        modelLabel.textContent = state.model || ''
         // 「重新生成」是内容区里的临时按钮：正常路径上先收回，避免被上一次追加后留在正文里
         if (state.phase !== 'error' && state.phase !== 'paused' && retryButton.parentNode) {
           retryButton.parentNode.removeChild(retryButton)
@@ -4742,7 +4740,7 @@ window.__ModuleLoader__.load({
       header.appendChild(el('i'))
       var titleNode = el('span', null, title)
       header.appendChild(titleNode)
-      var hint = el('span', 'dsh-sel-model', '')
+      var hint = el('span', 'dsh-sel-hint', '')
       header.appendChild(hint)
       var content = el('div', 'dsh-sel-c')
       root.appendChild(header)
