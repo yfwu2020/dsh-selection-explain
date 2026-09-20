@@ -106,6 +106,44 @@
 | 同一个词、换了地方选 | 上下文不同 → 按设计重新请求，状态栏写「同词但上下文不同，重新生成」，不让人误以为缓存坏了 |
 | 选中超过 4000 字 | 不出现按钮（host 侧也会拦截并给出明确报错） |
 
+## 代码位置、安装方式与版本控制
+
+**位置**（2026-09-20 从 `通用任务/dsh-selection-explain` 迁到插件专用工作区）：
+
+```
+/Users/yfwu2025/Desktop/Code/DSH/Plugins/dsh-selection-explain/     ← 插件仓库根（独立 git 仓库）
+├── src/index.ts          host 半全部逻辑（路由 / 提示词 / 工具循环 / 历史落盘 / 过滤器）
+├── src/client/index.js   UI 半全部逻辑（手写 bundle，无打包器）
+├── scripts/              build.sh + 4 个测试 + dump-prompt
+├── docs/                 15 个 UI 试验页（浮标动效 / 模型选择器 / 折叠实验台…）
+├── skills/web-design/    网页模式注入的设计规范（运行时读取）
+├── README.md / PROMPTS.md
+└── lib/                  构建产物（**已 gitignore**，克隆后要 `npm run build`）
+```
+
+**它是怎么被 DSH 加载的**（三处，改路径时只需动前两处）：
+
+| 位置 | 内容 |
+| --- | --- |
+| `~/.dsh/profiles/web/package.json` | `"@dsh-external/dsh-selection-explain": "link:<插件目录绝对路径>"` |
+| `~/.dsh/profiles/web/node_modules/@dsh-external/dsh-selection-explain` | 软链 → 插件目录（`dev_heal_links` 可自愈） |
+| `~/.dsh/profiles/web/cordis.yml` | `- id: selection-explain` + `name: '@dsh-external/…'`（**按包名引用，与路径无关**） |
+
+**日常开发流程**：
+
+```bash
+cd /Users/yfwu2025/Desktop/Code/DSH/Plugins/dsh-selection-explain
+# 1) 改 src/index.ts（host）和/或 src/client/index.js（UI）
+npm run build      # → lib/index.js + lib/client.js（tsc 编译 host，client 是直接拷贝）
+npm test           # → 460 条断言（filters / client / transcript / guard）
+# 2) 热重载进正在跑的 DSH（等价于重建这个 fiber），客户端改动再刷新页面
+```
+
+**版本控制**：`git init` 于 2026-09-20，初始提交 32 个文件 / 17,444 行（`lib/` 与 `node_modules/` 排除）。
+**搬迁时的坑**：搬完目录后第一次热重载会失败（`The "type" argument must be of type string. Received an instance of ModuleJob`）
+—— 因为运行中的 loader entry 还挂着**旧路径**；处理顺序是「改 link → 重建软链 → `dev_heal_links` → 再热重载」。
+回滚：把目录搬回、`link:` 改回旧路径、重建软链、热重载即可（仓库跟着目录走，git 不受影响）。
+
 ## 工作原理
 
 ```
