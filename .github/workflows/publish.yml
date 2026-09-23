@@ -1,0 +1,69 @@
+name: publish
+
+# 发布到 npm —— 走 Trusted Publishing（OIDC），不需要任何长期 token。
+#
+# 用法：
+#   1) 改 package.json 的 version（例如 0.2.0）
+#   2) 打同名 tag 推上去：git tag v0.2.0 && git push origin v0.2.0
+#   3) 本 workflow 自动校验 → 构建 → 跑测试 → 发布（带 provenance 签名）
+#
+# 前置条件（npm 网页上配一次）：
+#   npmjs.com → 包设置 → Trusted Publisher → GitHub Actions
+#     Organization or user : yfwu2020
+#     Repository           : dsh-selection-explain
+#     Workflow filename    : publish.yml
+#     Allowed actions      : 勾选 npm publish（默认只允许 stage publish）
+#
+# 注意：workflow 文件名必须与 npm 上登记的一致（本文件 = publish.yml）。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # 也允许手动触发（用于演练/重发）
+
+permissions:
+  contents: read
+  id-token: write # ← OIDC 换取 npm 短期凭据所必需
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node ≥ 22.14、npm ≥ 11.5.1 才能用 trusted publishing
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: 升级 npm 到支持 OIDC 的版本
+        run: npm install -g npm@^11.5.1
+
+      - name: 校验 tag 与 package.json version 一致
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG="$(node -p "require('./package.json').version")"
+          echo "tag=$TAG  package.json=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG 与 package.json version $PKG 不一致"
+            exit 1
+          fi
+
+      - name: 安装 DSH 运行时依赖（构建需要 @deepseek-ai/* 类型）
+        run: npm install --no-save --no-audit --no-fund
+
+      - name: 构建（tsc 编译 host + 拷贝 client bundle）
+        run: bash scripts/build.sh
+
+      - name: 测试（463 条断言）
+        run: npm test
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      # 关键：不传 NODE_AUTH_TOKEN，让 npm CLI 自动检测 OIDC 环境
+      - name: 发布到 npm（Trusted Publishing + provenance）
+        run: npm publish --access public --provenance

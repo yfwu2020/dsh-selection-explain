@@ -81,7 +81,17 @@
 
 ## 安装
 
-### 方式一：从 Release 安装（推荐）
+### 方式一：从 npm 安装
+
+已发布到 npm registry：
+
+```bash
+npm install @yfwu2020/dsh-selection-explain
+# 或直接装配进 profile（npm 包名可直接用）
+dsh plugin --profile web add @yfwu2020/dsh-selection-explain
+```
+
+### 方式二：从 Release 安装
 
 每个 Release 都附了**构建好的 `.tgz`**（含 `lib/` 产物，装完即可用，无需 clone 源码）：
 
@@ -98,11 +108,14 @@ tar -xzf yfwu2020-dsh-selection-explain-0.1.0.tgz \
 dsh plugin --profile web add ~/.dsh/plugins/dsh-selection-explain
 ```
 
-### 方式二：从源码安装
+### 方式三：从源码安装
 
 ```bash
 git clone git@github.com:yfwu2020/dsh-selection-explain.git
 cd dsh-selection-explain
+
+# 装依赖（编译用的 @deepseek-ai/* 类型与 tsc 都在 devDependencies 里）
+npm install
 
 # 构建（自动探测 DSH 运行时；host 走 tsc，client 是手写 bundle 直接拷贝）
 bash scripts/build.sh
@@ -111,7 +124,8 @@ bash scripts/build.sh
 dsh plugin --profile web add .
 ```
 
-> `scripts/build.sh` 会自动探测 DSH 运行时（`DSH_CHECKOUT` → PATH 上的 `dsh` → 常见 checkout → npx 缓存）。
+> `scripts/build.sh` 会按顺序探测 DSH 运行时：**项目自己的 `node_modules`**（CI/`npm install` 走这条）
+> → `DSH_CHECKOUT` → PATH 上的 `dsh` → 常见 checkout → npx 缓存。
 > 探测不到时可以显式指定：`DSH_CHECKOUT=/path/to/dsh-harness bash scripts/build.sh`。
 
 装好后**刷新页面**，选中文字试试。浏览器控制台会打印 `[dsh-selection-explain] 划词解读已就绪（选中文字试试）`。
@@ -280,6 +294,24 @@ npm run typecheck   # tsc --noEmit
 node scripts/dump-prompt.mjs <sessionId> "<选中文字>"
 node scripts/dump-prompt.mjs --no-session "<选中文字>"   # 不带会话背景的对照组
 ```
+
+## 发布（维护者）
+
+发布走 **Trusted Publishing**（GitHub OIDC），**不需要任何长期 npm token**：
+
+```bash
+# 1) 改 package.json 的 version（例如 0.2.0）
+# 2) 打同名 tag 推上去
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+`.github/workflows/publish.yml` 会自动：校验 tag 与 `version` 一致 → `npm install` → 构建 → 跑 463 条测试 → 类型检查 → `npm publish --provenance`（附 provenance 签名）。
+
+npm 侧只需配一次：包设置 → **Trusted Publisher** → GitHub Actions，填 `yfwu2020` / `dsh-selection-explain` / `publish.yml`，并勾选允许 **`npm publish`**（默认只允许 `npm stage publish`）。
+
+> 注意：`devDependencies` 里的 `@deepseek-ai/*` 钉在 **`0.1.5-rc.3`**（与插件开发所依据的运行时一致）。
+> npm 上这些包的 `latest` 还停在 `0.0.1-rc.x`，API 更旧（缺 `WebServer`、`createSystemMessage` 等），
+> 用 `latest` 会编译失败——升级运行时时要同步改这里。
 
 ## 目录
 

@@ -14,12 +14,29 @@
     "README.md"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yfwu2020/dsh-selection-explain.git"
+  },
+  "homepage": "https://github.com/yfwu2020/dsh-selection-explain#readme",
+  "bugs": {
+    "url": "https://github.com/yfwu2020/dsh-selection-explain/issues"
+  },
   "peerDependencies": {
-    "@deepseek-ai/cordis": ">=4 <5",
-    "@deepseek-ai/dsh-agent-default-model": ">=0.0.1-rc <2",
-    "@deepseek-ai/dsh-host-webserver": ">=0.0.1-rc <2",
-    "@deepseek-ai/dsh-llm": ">=0.0.1-rc <2",
-    "@deepseek-ai/schemastery": ">=3 <4"
+    "@deepseek-ai/cordis": ">=4.0.2 <5",
+    "@deepseek-ai/dsh-agent-default-model": ">=0.1.5-rc <2",
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.5-rc <2",
+    "@deepseek-ai/dsh-llm": ">=0.1.5-rc <2",
+    "@deepseek-ai/schemastery": ">=3.18 <4"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-agent-default-model": "0.1.5-rc.3",
+    "@deepseek-ai/dsh-host-webserver": "0.1.5-rc.3",
+    "@deepseek-ai/dsh-llm": "0.1.5-rc.3",
+    "@deepseek-ai/schemastery": "3.18.2",
+    "@types/node": "^22.14.0",
+    "typescript": "^5.9.3"
   },
   "scripts": {
     "build": "bash scripts/build.sh",
