@@ -1353,7 +1353,30 @@ user  ：【会话背景】…        ← 半稳定：同一会话内不变（�
 
 ## 安装 / 注入
 
+### 从 Release 安装（推荐，无需 clone 源码）
+
+每个 GitHub Release 都附了构建好的 `.tgz`（含 `lib/` 产物，装完即可用）：
+
 ```bash
+# 下载最新 release 的 tgz
+gh release download --repo yfwu2020/dsh-selection-explain --pattern '*.tgz'
+# 或直接：
+curl -LO https://github.com/yfwu2020/dsh-selection-explain/releases/latest/download/dsh-external-dsh-selection-explain-0.1.0.tgz
+
+# 解包到插件目录
+mkdir -p ~/.dsh/plugins/dsh-selection-explain
+tar -xzf dsh-external-dsh-selection-explain-0.1.0.tgz -C ~/.dsh/plugins/dsh-selection-explain --strip-components=1
+
+# 官方装配（写入 profile bundles，重启后由官方接管）
+dsh plugin --profile web add ~/.dsh/plugins/dsh-selection-explain
+```
+
+### 从源码安装（开发）
+
+```bash
+git clone git@github.com:yfwu2020/dsh-selection-explain.git
+cd dsh-selection-explain
+
 # ① 构建（host: tsc；client: 手写 ModuleLoader bundle 直接拷贝）
 bash scripts/build.sh
 
