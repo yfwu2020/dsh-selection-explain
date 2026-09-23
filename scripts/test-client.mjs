@@ -848,7 +848,7 @@ const ctx = {
   },
 }
 modules.apply(ctx)
-assert('槽注册带 id/order', !!registration && registration.options.id === '@dsh-external/dsh-selection-explain' && registration.options.order === 20, JSON.stringify(registration && registration.options))
+assert('槽注册带 id/order', !!registration && registration.options.id === '@yfwu2020/dsh-selection-explain' && registration.options.order === 20, JSON.stringify(registration && registration.options))
 
 // React 渲染 → ref 挂载 layer
 const mount = new FakeEl('div')

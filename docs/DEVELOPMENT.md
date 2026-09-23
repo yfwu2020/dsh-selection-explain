@@ -8,6 +8,11 @@
 > `toolNames` 已换成 free-search 的工具），**请以代码为准**。
 >
 > 面向使用者的安装、用法与配置说明，见根目录 `README.md`。
+>
+> **2026-09-23 改名**：包名从 `@dsh-external/dsh-selection-explain` 改为
+> **`@yfwu2020/dsh-selection-explain`**（`@dsh-external` 是第三方在 npm 上持有的 scope，
+> 用它发布会 403）。下文所有 `@dsh-external/dsh-selection-explain` 的引用均按新名理解，
+> 安装包文件名同步变为 `yfwu2020-dsh-selection-explain-<version>.tgz`。
 
 ---
 

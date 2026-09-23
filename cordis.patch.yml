@@ -1,7 +1,7 @@
 # dsh-selection-explain bundle patch
 #
 # 本文件是包的 dsh.bundle.patch 层：官方 CLI 装配
-#   dsh plugin --profile <name> add @dsh-external/dsh-selection-explain
+#   dsh plugin --profile <name> add @yfwu2020/dsh-selection-explain
 # 会把本包加进 profile 的 dsh.profile.bundles，启动时合并下面的 insert 行——
 # 无需手写 profile 的 cordis.patch.yml。运行时注入（dsh-super-injector 的
 # dev_inject_plugin / dev_install_package）同样使用这一行语义。
@@ -23,7 +23,7 @@
 #   tools                 总开关（false = 完全不给工具）
 - insert:
     - id: selection-explain
-      name: '@dsh-external/dsh-selection-explain'
+      name: '@yfwu2020/dsh-selection-explain'
       config:
         # 首字约 1.9s（实测，off 不思考）；要更深可改 low / high / max
         reasoningEffort: off

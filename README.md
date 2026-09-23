@@ -87,11 +87,11 @@
 
 ```bash
 # 下载最新 release 的安装包
-curl -LO https://github.com/yfwu2020/dsh-selection-explain/releases/download/v0.1.0/dsh-external-dsh-selection-explain-0.1.0.tgz
+curl -LO https://github.com/yfwu2020/dsh-selection-explain/releases/download/v0.1.0/yfwu2020-dsh-selection-explain-0.1.0.tgz
 
 # 解包到插件目录
 mkdir -p ~/.dsh/plugins/dsh-selection-explain
-tar -xzf dsh-external-dsh-selection-explain-0.1.0.tgz \
+tar -xzf yfwu2020-dsh-selection-explain-0.1.0.tgz \
   -C ~/.dsh/plugins/dsh-selection-explain --strip-components=1
 
 # 装配到 profile（重启后由官方接管）
@@ -119,7 +119,7 @@ dsh plugin --profile web add .
 ### 卸载
 
 ```bash
-dsh plugin --profile web remove @dsh-external/dsh-selection-explain
+dsh plugin --profile web remove @yfwu2020/dsh-selection-explain
 ```
 
 ---
@@ -182,7 +182,7 @@ curl -s http://127.0.0.1:3080/selection-explain/api/ping
 ```yaml
 - insert:
     - id: selection-explain
-      name: '@dsh-external/dsh-selection-explain'
+      name: '@yfwu2020/dsh-selection-explain'
       config:
         reasoningEffort: high
         sessionContextMaxMessages: 24

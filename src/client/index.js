@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-selection-explain — 浏览器端（划词解读 UI）。
+ * @yfwu2020/dsh-selection-explain — 浏览器端（划词解读 UI）。
  *
  * 交互：在页面任意位置选中文字 → 选区末端浮出「解读」按钮 → 点击弹出面板，
  * 面板流式显示两节：① 专业中英翻译 ② 这段文字在当前上下文中的含义详解。
@@ -16,7 +16,7 @@
  * 自检钩子：window.__dshSelectionExplain（仅供调试/自动化验证）。
  */
 window.__ModuleLoader__.load({
-  id: '@dsh-external/dsh-selection-explain',
+  id: '@yfwu2020/dsh-selection-explain',
   factory: (require) => {
     var module = { exports: {} }
     var exports = module.exports
@@ -1362,7 +1362,7 @@ window.__ModuleLoader__.load({
 
       // —— DOM ——
       var styleEl = el('style')
-      styleEl.setAttribute('data-plugin', '@dsh-external/dsh-selection-explain')
+      styleEl.setAttribute('data-plugin', '@yfwu2020/dsh-selection-explain')
       styleEl.textContent = CSS
       document.head.appendChild(styleEl)
 
@@ -1510,7 +1510,7 @@ window.__ModuleLoader__.load({
           offSlot = ctx.slots.inject('shell.overlay', function () {
             return ctx.slots.register({
               name: 'shell.overlay',
-              id: '@dsh-external/dsh-selection-explain',
+              id: '@yfwu2020/dsh-selection-explain',
               order: 20,
               label: function () {
                 return '划词解读'
@@ -4717,7 +4717,7 @@ window.__ModuleLoader__.load({
             window.__dshSelectionExplain = undefined
           }
         }
-      }, '@dsh-external/dsh-selection-explain: 划词解读 UI')
+      }, '@yfwu2020/dsh-selection-explain: 划词解读 UI')
     }
 
     /** 头部小节容器（卡片式；序号 + 标题 + 右侧提示位）。 */

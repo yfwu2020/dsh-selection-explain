@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-selection-explain — host half（划词解读）。
+ * @yfwu2020/dsh-selection-explain — host half（划词解读）。
  *
  * 为浏览器端的「划词解读」提供两个同源 HTTP 路由：
  *   POST /selection-explain/api/analyze   选中文字 + 上下文 → SSE 流式返回
@@ -25,7 +25,7 @@ import type { ContentBlock, Message, ToolSchema } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 
 /** 插件名（= package.json name，客户端 bundle 的模块 id 也是它）。 */
-export const name = '@dsh-external/dsh-selection-explain'
+export const name = '@yfwu2020/dsh-selection-explain'
 
 /** 路由注册与模型调用所需的服务。 */
 export const inject = ['webServer', 'llm']

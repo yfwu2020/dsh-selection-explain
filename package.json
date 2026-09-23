@@ -1,5 +1,5 @@
 {
-  "name": "@dsh-external/dsh-selection-explain",
+  "name": "@yfwu2020/dsh-selection-explain",
   "version": "0.1.0",
   "description": "DSH 划词解读：选中文字浮出按钮，点击弹窗流式显示专业中英翻译 + 该文字在当前上下文中的含义详解",
   "type": "module",
