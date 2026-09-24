@@ -64,8 +64,11 @@ jobs:
       - name: 类型检查
         run: npm run typecheck
 
-      # 关键：不传 NODE_AUTH_TOKEN，让 npm CLI 自动检测 OIDC 环境
+      # 关键：不传 NODE_AUTH_TOKEN，让 npm CLI 自动检测 OIDC 环境。
+      # 只在 tag 上发布：workflow_dispatch 不带 tag 时跳过 —— 否则手动触发会绕过
+      # 上面的"tag 与 version 一致"校验，直接按 package.json 的版本发出去。
       - name: 发布到 npm（Trusted Publishing + provenance）
+        if: startsWith(github.ref, 'refs/tags/')
         run: npm publish --access public --provenance
 
       # 打 npm 包（与刚发布的完全同一份产物），作为 Release 附件
