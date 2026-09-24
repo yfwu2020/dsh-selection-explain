@@ -2,7 +2,8 @@
 
 > 在 [DSH](https://github.com/deepseek-ai) Web 界面里**选中任意文字**，就地得到**专业翻译** + **这段文字在当前上下文里到底是什么意思**，还能接着追问、或一键升格成正式会话。
 
-[![version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/yfwu2020/dsh-selection-explain/releases)
+[![release](https://img.shields.io/github/v/release/yfwu2020/dsh-selection-explain?label=release)](https://github.com/yfwu2020/dsh-selection-explain/releases)
+[![npm](https://img.shields.io/npm/v/@yfwu2020/dsh-selection-explain?label=npm)](https://www.npmjs.com/package/@yfwu2020/dsh-selection-explain)
 [![license](https://img.shields.io/badge/license-MIT-green)](./package.json)
 [![DSH plugin](https://img.shields.io/badge/DSH-plugin-8b5cf6)](https://github.com/yfwu2020/dsh-selection-explain)
 
@@ -93,20 +94,25 @@ dsh plugin --profile web add @yfwu2020/dsh-selection-explain
 
 ### 方式二：从 Release 安装
 
-每个 Release 都附了**构建好的 `.tgz`**（含 `lib/` 产物，装完即可用，无需 clone 源码）：
+每个 Release 都附了**构建好的 `.tgz`**（含 `lib/` 产物，装完即可用，无需 clone 源码）。
+用 `latest` 路径可以不写版本号、永远取最新：
 
 ```bash
-# 下载最新 release 的安装包
-curl -LO https://github.com/yfwu2020/dsh-selection-explain/releases/download/v0.1.0/yfwu2020-dsh-selection-explain-0.1.0.tgz
+# 下载最新 release 的安装包（无需知道版本号）
+VER=$(curl -sI https://github.com/yfwu2020/dsh-selection-explain/releases/latest | grep -i '^location:' | sed 's|.*/tag/v||' | tr -d '\r\n')
+curl -LO "https://github.com/yfwu2020/dsh-selection-explain/releases/download/v$VER/yfwu2020-dsh-selection-explain-$VER.tgz"
 
 # 解包到插件目录
 mkdir -p ~/.dsh/plugins/dsh-selection-explain
-tar -xzf yfwu2020-dsh-selection-explain-0.1.0.tgz \
+tar -xzf "yfwu2020-dsh-selection-explain-$VER.tgz" \
   -C ~/.dsh/plugins/dsh-selection-explain --strip-components=1
 
 # 装配到 profile（重启后由官方接管）
 dsh plugin --profile web add ~/.dsh/plugins/dsh-selection-explain
 ```
+
+> 也可以直接下某个固定版本，把上面的 `$VER` 换成版本号即可，例如
+> `.../releases/download/v0.1.2/yfwu2020-dsh-selection-explain-0.1.2.tgz`。
 
 ### 方式三：从源码安装
 

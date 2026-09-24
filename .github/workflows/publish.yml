@@ -23,7 +23,7 @@ on:
   workflow_dispatch: # 也允许手动触发（用于演练/重发）
 
 permissions:
-  contents: read
+  contents: write # ← 建 GitHub Release 需要（原来只读）
   id-token: write # ← OIDC 换取 npm 短期凭据所必需
 
 jobs:
@@ -58,7 +58,7 @@ jobs:
       - name: 构建（tsc 编译 host + 拷贝 client bundle）
         run: bash scripts/build.sh
 
-      - name: 测试（463 条断言）
+      - name: 测试（489 条断言）
         run: npm test
 
       - name: 类型检查
@@ -67,3 +67,34 @@ jobs:
       # 关键：不传 NODE_AUTH_TOKEN，让 npm CLI 自动检测 OIDC 环境
       - name: 发布到 npm（Trusted Publishing + provenance）
         run: npm publish --access public --provenance
+
+      # 打 npm 包（与刚发布的完全同一份产物），作为 Release 附件
+      - name: 打包（Release 附件）
+        if: startsWith(github.ref, 'refs/tags/')
+        id: pack
+        run: echo "tgz=$(npm pack --silent)" >> "$GITHUB_OUTPUT"
+
+      # 建 GitHub Release（tag 已存在 → 用 --verify-tag；重复运行用 --clobber 覆盖附件）
+      # 说明自动取自 annotated tag 的注解（本地 `git tag -a v0.2.0 -m "..."` 写什么就是什么），
+      # 没有注解时退回 GitHub 自动生成。
+      - name: 建 GitHub Release 并附 tgz
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          TGZ="${{ steps.pack.outputs.tgz }}"
+          NOTES_FILE="$(mktemp)"
+          if git cat-file -t "$TAG" 2>/dev/null | grep -q tag; then
+            git tag -l --format='%(contents)' "$TAG" > "$NOTES_FILE"
+            NOTES_ARG=(--notes-file "$NOTES_FILE")
+          else
+            NOTES_ARG=(--generate-notes)
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在 → 只覆盖附件"
+            gh release upload "$TAG" "$TGZ" --clobber
+          else
+            gh release create "$TAG" "$TGZ" --verify-tag --title "$TAG" "${NOTES_ARG[@]}"
+          fi
+          echo "Release: $(gh release view "$TAG" --json url --jq .url)"
