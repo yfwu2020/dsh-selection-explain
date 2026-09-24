@@ -13,6 +13,11 @@
 > **`@yfwu2020/dsh-selection-explain`**（`@dsh-external` 是第三方在 npm 上持有的 scope，
 > 用它发布会 403）。下文所有 `@dsh-external/dsh-selection-explain` 的引用均按新名理解，
 > 安装包文件名同步变为 `yfwu2020-dsh-selection-explain-<version>.tgz`。
+>
+> **2026-09-24 实验台移出公开仓库**：下文多处引用的 `docs/*.html`（浮标动效实验室、模型选择器比选、
+> 折叠实验台、配色方案等 17 个 UI 实验台）已**从本仓库移除并加入 `.gitignore`，仅在开发者本地保留**。
+> 克隆本仓库后这些链接会指向不存在的文件 —— 它们只是"当初为什么这么设计"的过程留档，
+> 与插件运行无关（`package.json` 的 `files` 里也从未包含 `docs/`）。
 
 ---
 

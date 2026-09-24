@@ -321,10 +321,13 @@ src/client/index.js     client 半：划词浮标 + 面板 + 渲染器（手写 
 scripts/                build.sh + 4 个测试 + dump-prompt
 skills/web-design/      网页模式注入的设计规范（运行时读取）
 docs/DEVELOPMENT.md     内部开发文档（实现细节 / 实测记录 / 踩坑）
-docs/*.html             UI 试验页（浮标动效 / 模型选择器 / 配色方案等）
 cordis.patch.yml        官方装配用的 bundle patch
 lib/                    构建产物（已 gitignore，克隆后需 npm run build）
 ```
+
+> 开发期还留有一批 UI 比选实验台（`docs/*.html`：浮标动效 / 模型选择器 / 折叠实验台 / 配色方案等），
+> 是"当初为什么这么设计"的过程留档。它们是**本地开发资产，不进本仓库、也不进 npm 包**
+> （已在 `.gitignore` 中排除）。
 
 ## 已知限制
 
