@@ -90,18 +90,35 @@ const callout = (tag, text) => `          <div class="dsh-sel-callout"><span cla
 
 const expand = `      <button class="dsh-sel-expand"><span>↓ 展开详解</span></button>`
 
-const askRow = (webOn) => `      <div class="dsh-sel-ask" style="display:flex">
+/** 真实图标（照 src/client/index.js 的 markdownIcon / windowIcon / sendIcon）。 */
+const mdIcon = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 17.5V7.5l4.4 5 4.4-5v10"></path><path d="M17.4 7v9.6M14.3 13.6l3.1 3.1 3.1-3.1"></path></svg>`
+const webIcon = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="3"></rect><path d="M3 9.6h18"></path></svg>`
+const sendIcon = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13.2V3.4"></path><path d="M3.9 7.5 8 3.4l4.1 4.1"></path></svg>`
+
+/**
+ * 输入区（结构照 src/client/index.js 的真实构建顺序）：
+ *   .dsh-sel-ask > textarea.dsh-sel-askbox + .dsh-sel-asktools
+ *   asktools = 输出偏好(文字 + 分段开关 + 滑动药丸) + askspace(撑开) + 模型胶囊 + 发送键
+ */
+const askRow = (webOn, model = 'deepseek-v4.1-flash', tier = '高') => `      <div class="dsh-sel-ask">
         <textarea class="dsh-sel-askbox" rows="1" placeholder="就这段文字继续追问…（Enter 发送，Shift+Enter 换行）"></textarea>
-        <span class="dsh-sel-asktools">
+        <div class="dsh-sel-asktools">
           <span class="dsh-sel-pref" data-on="${webOn ? '1' : '0'}">
             <span class="dsh-sel-preftext">输出偏好</span>
-            <span class="dsh-sel-seg" role="radiogroup">
-              <span class="dsh-sel-segopt" data-on="${webOn ? '0' : '1'}">文字</span>
-              <span class="dsh-sel-segopt" data-on="${webOn ? '1' : '0'}">网页</span>
+            <span class="dsh-sel-seg" role="radiogroup" aria-label="输出偏好">
+              <span class="dsh-sel-segpill"></span>
+              <button class="dsh-sel-segcell" role="radio" aria-label="Markdown：普通段落，最省时间"${webOn ? '' : ' data-on="1"'}>${mdIcon}</button>
+              <button class="dsh-sel-segcell" role="radio" aria-label="网页：复杂问题生成一个 HTML 页面"${webOn ? ' data-on="1"' : ''}>${webIcon}</button>
             </span>
           </span>
-          <button class="dsh-sel-send" title="发送">↑</button>
-        </span>
+          <span class="dsh-sel-askspace"></span>
+          <button class="dsh-sel-picker" type="button" aria-haspopup="menu" aria-expanded="false">
+            <span class="dsh-sel-picker-name">${model}</span>
+            <span class="dsh-sel-picker-tier">· ${tier}</span>
+            <span class="dsh-sel-picker-caret">▼</span>
+          </button>
+          <button class="dsh-sel-iconbtn dsh-sel-asksend" type="button" aria-label="发送">${sendIcon}</button>
+        </div>
       </div>`
 
 const chatBubble = (role, html) =>
@@ -197,12 +214,73 @@ const codeDemo = panel(
   ].join('\n'),
 )
 
+/** 网页模式：回答里嵌一张可交互的 HTML 页面（.dsh-sel-preview 结构照渲染器）。 */
+const previewBlock = (srcdoc) => `      <div class="dsh-sel-preview" data-view="preview" data-full="1">
+        <div class="dsh-sel-previewbar">
+          <div class="dsh-sel-previewtabs">
+            <button class="dsh-sel-previewtab" data-on="1">预览</button>
+            <button class="dsh-sel-previewtab" data-on="0">源码</button>
+          </div>
+          <button class="dsh-sel-previewzoom">⤡ 还原</button>
+        </div>
+        <div class="dsh-sel-previewbody">
+          <iframe class="dsh-sel-previewframe" srcdoc="${srcdoc.replace(/"/g, '&quot;')}"></iframe>
+        </div>
+      </div>`
+
+const DEMO_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
+body{margin:0;padding:14px 16px;font:13px/1.6 -apple-system,"PingFang SC",sans-serif;color:#1a1a1a;background:#fff}
+h3{margin:0 0 4px;font-size:14px}
+p.sub{margin:0 0 12px;color:#6b7280;font-size:12px}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{border-bottom:1px solid #e6e8eb;padding:7px 8px;text-align:left}
+th{background:#f6f8f9;font-weight:600;color:#374151}
+td.y{color:#0f766e;font-weight:600}
+td.n{color:#b45309}
+.bars{display:flex;align-items:flex-end;gap:10px;height:74px;margin:14px 0 4px}
+.bar{flex:1;border-radius:5px 5px 0 0;background:#0d9488;position:relative}
+.bar span{position:absolute;bottom:-19px;left:0;right:0;text-align:center;font-size:11px;color:#6b7280}
+.b1{height:34px;background:#99f6e4}.b2{height:58px}.b3{height:74px;background:#0f766e}
+</style></head><body>
+<h3>三种缓存策略的取舍</h3>
+<p class="sub">按"命中率 / 一致性风险 / 实现成本"三个维度对比</p>
+<table>
+  <tr><th>策略</th><th>命中率</th><th>一致性风险</th><th>实现成本</th></tr>
+  <tr><td>不缓存</td><td class="n">—</td><td class="y">无</td><td class="y">最低</td></tr>
+  <tr><td>进程内 LRU</td><td class="y">高</td><td class="n">中（多实例不一致）</td><td class="y">低</td></tr>
+  <tr><td>共享缓存 + TTL</td><td class="y">最高</td><td class="y">低（可配 TTL）</td><td class="n">中</td></tr>
+</table>
+<div class="bars"><div class="bar b1"><span>不缓存</span></div><div class="bar b2"><span>LRU</span></div><div class="bar b3"><span>共享缓存</span></div></div>
+</body></html>`
+
+// ───────────────────────── 状态四：网页模式（输出偏好拨到「网页」）─────────────────────────
+const webDemo = panel(
+  'detail',
+  [
+    quote('缓存策略'),
+    section(
+      'detail',
+      '详解',
+      [
+        p('三种做法各有取舍，下面这页把差别放在一张表里，条形长度是相对命中率。'),
+        previewBlock(DEMO_HTML),
+        callout('小结', '要"一眼看出差别"就用网页模式；只是要一段说明，留在 Markdown 更快。'),
+      ].join('\n'),
+    ),
+    `      <div class="dsh-sel-chatlog" style="display:flex">`,
+    chatBubble('user', '帮我把这三种缓存策略的差别画成一页对比'),
+    '      </div>',
+    askRow(true, 'deepseek-v4.1-flash', '高'),
+  ].join('\n'),
+)
+
 const css = extractCss()
 mkdirSync(resolve(ROOT, 'docs', 'demo'), { recursive: true })
 const out = {
   'stage1.html': PAGE('划词解读 · 首轮翻译', css, stage1),
   'stage2.html': PAGE('划词解读 · 详解与追问', css, stage2),
   'code.html': PAGE('划词解读 · 代码注释', css, codeDemo),
+  'web.html': PAGE('划词解读 · 网页模式', css, webDemo),
 }
 for (const [name, html] of Object.entries(out)) {
   writeFileSync(resolve(ROOT, 'docs', 'demo', name), html, 'utf8')
