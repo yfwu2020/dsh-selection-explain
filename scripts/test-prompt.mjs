@@ -19,7 +19,6 @@ const PROMPTS_TS = resolve(HERE, '..', 'src', 'prompts.ts')
 
 const NAMES = [
   'PROMPT_HEAD',
-  'TWO_LAYER_RULE',
   'TRANSLATION_PROMPT',
   'CODE_PROMPT',
   'DETAIL_PROMPT',
@@ -56,7 +55,7 @@ try {
   loader = `源码文本解析回退（类型剥离不可用：${error && error.message}）`
   P = loadFromSource()
 }
-const { CHAT_SYSTEM_PROMPT, CODE_PROMPT, DETAIL_PROMPT, PROMPT_HEAD, TRANSLATION_PROMPT, TWO_LAYER_RULE } = P
+const { CHAT_SYSTEM_PROMPT, CODE_PROMPT, DETAIL_PROMPT, PROMPT_HEAD, TRANSLATION_PROMPT } = P
 console.log(`提示词来源：${loader}\n`)
 
 let failed = 0
@@ -158,21 +157,19 @@ assert(
   `总长 ${ALL.length}`,
 )
 
-// ───────────────────────── 已知问题（回归守卫）─────────────────────────
-// TWO_LAYER_RULE 是「专业 + 说人话、别套模板」的写作规则，设计文档里把它当作刻意设计。
-// 但自 2026-09 起它**从未被任何提示词数组引用**（只定义、不使用），即这条规则
-// 实际上没有被注入给模型。这里先把它固化成断言：一旦有人接上引用，这个断言会失败，
-// 提醒同时更新本测试与文档；反之如果它继续悬空，也永远看得见。
+// ───────────────────────── 防复活：已弃用的规则不得重新接回 ─────────────────────────
+// TWO_LAYER_RULE（「专业 + 说人话、别套模板」的写作规则）**已弃用**：提示词瘦身时
+// 把"别写成同一个模子"那五条写法砍掉了，只留两条硬约束（只出 `## 详解` 一节 + 音标）。
+// 它曾作为常量残留（只定义、不使用），已于 2026-09-24 删除。
+// 这条断言防止有人把那段文字重新塞回提示词里 —— 那是被明确废弃的设计。
 {
-  const wired = [TRANSLATION_PROMPT, CODE_PROMPT, DETAIL_PROMPT, CHAT_SYSTEM_PROMPT].some((p) =>
-    p.includes(TWO_LAYER_RULE),
+  const resurrected = [TRANSLATION_PROMPT, CODE_PROMPT, DETAIL_PROMPT, CHAT_SYSTEM_PROMPT].some((p) =>
+    p.includes('别写成同一个模子') || p.includes('**写法：内容有要求，形式随内容走。**'),
   )
   assert(
-    '已知问题：TWO_LAYER_RULE 目前未被任何提示词引用（悬空常量）',
-    !wired,
-    wired
-      ? '已被引用 —— 说明这条规则接上了，请把本断言改成"必须被引用"并同步文档'
-      : `规则全文 ${TWO_LAYER_RULE.length} 字，仅定义未使用`,
+    '已弃用的「两层写法规则」没有被重新塞回提示词',
+    !resurrected,
+    resurrected ? '检测到已废弃规则的原文，请确认是否有意恢复该设计' : '符合当前设计（该规则已弃用并删除）',
   )
 }
 

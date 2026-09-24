@@ -31,7 +31,6 @@ import {
   DETAIL_PROMPT,
   PROMPT_HEAD,
   TRANSLATION_PROMPT,
-  TWO_LAYER_RULE,
 } from './prompts.js'
 
 /** 插件名（= package.json name，客户端 bundle 的模块 id 也是它）。 */
