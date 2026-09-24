@@ -25,6 +25,8 @@
 
 点开面板**先只出翻译**（上下文窗口收窄到 8 条消息，首字最快）；翻译出来后才出现 **`↓ 展开详解`**，点了才用完整会话背景（24 条消息）做深度解读。想要快就停在第一段，想要透就展开——**不强迫你为深度等首字**。
 
+<img src="assets/stage1.png" alt="首轮：只有翻译一节 + 展开详解按钮" width="440">
+
 ### 翻译：按选中内容的语言和形态自适应
 
 不是无脑翻译，而是先判断这段文字是什么，只给对应的那一种：
@@ -50,6 +52,8 @@
 
 如果选中的是代码（在 `<pre>/<code>` 里，或文本特征像代码），首轮标题变成「**注释**」：整个回答是一个代码块，里面是**注释 + 原代码交替**的批注清单——每条语句**前面**一行该语言的注释符号（`//`、`#`、`--`、`<!--`…），原代码逐字不变。注释行弱化显示，一眼分得清哪行是代码、哪行是批注。缩进按原行起始列对齐，折行也不会跑到注释左边。
 
+<img src="assets/code.png" alt="选中代码：注释与原代码交替的批注清单" width="440">
+
 ### 临时对话小窗
 
 翻译一出来就能直接追问，不必先展开详解：
@@ -59,6 +63,8 @@
 - 追问可以**联网查证**，但工具日志不进小窗——只给你模型消化后的结论。
 - 生成中可以点**停止**打断；没有可用结果时给「重新生成」。
 - 关掉面板**不会丢**：点右下角胶囊原样回来，不重新请求。
+
+<img src="assets/stage2.png" alt="展开详解后：翻译与详解两节卡片，下方可继续追问" width="540">
 
 ### 「最近聊过的」历史
 
@@ -77,6 +83,15 @@
 ### 零依赖渲染
 
 面板自带 Markdown 渲染器（段落、多级列表、小标题、表格、引用、代码块）和**语法高亮 tokenizer**（自研，零依赖）：注释 / 字符串 / 数字 / 关键字 / 函数名 / 类型 / 标签 / 属性 / 变量 / 运算符分色，按围栏语言标记选规则。配色跟随**面板实际底色**判定，不是看系统偏好——所以 App 深色 + 系统浅色也不会出现深底配深字。文字对比度实测全部 ≥ WCAG AA 4.5。
+
+<!--
+  上面几张演示图的来源（要换图看这里）：
+  · 图由 scripts/build-demo-pages.mjs 生成演示页 —— 样式直接从 lib/client.js 抽取真实 CSS，
+    DOM 结构与文案照 src/client/index.js 的渲染器写，所以和真实面板一致（非手绘示意图）。
+  · 截图：Chrome 无头（--headless --screenshot --force-device-scale-factor=2）
+  · 裁边：node scripts/crop-png.mjs <in.png> assets/<name>.png 24
+  · 想换成真实环境截图，直接用同名文件覆盖 assets/ 下的图片即可。
+-->
 
 ---
 
@@ -283,13 +298,14 @@ curl -s http://127.0.0.1:3080/selection-explain/api/ping
 
 ```bash
 npm run build       # 构建（= bash scripts/build.sh）
-npm test            # 463 条断言（filters / client / transcript / guard）
+npm test            # 489 条断言（filters / prompt / client / transcript / guard）
 npm run typecheck   # tsc --noEmit
 ```
 
 | 脚本 | 用途 |
 | --- | --- |
-| `scripts/test-client.mjs` | 无浏览器集成测试：真实 host 路由 + 最小 DOM 桩，覆盖槽注册 → 划词浮标 → 点击 → SSE 流式渲染 → 两节内容 → 清理 |
+| `scripts/test-client.mjs` | 无浏览器集成测试：真实 host 路由 + 最小 DOM 桩，覆盖槽注册 → 划词浮标 → 点击 → SSE 流式渲染 → 两节内容 → 清理（host 不在跑时自动跳过在线断言） |
+| `scripts/test-prompt.mjs` | **提示词契约测试**：把两节结构标题、结论条格式、音标规则、详解来源判断、追问网页模式要求等关键约束固化成断言，误删即 CI 红 |
 | `scripts/test-filters.mjs` | host 侧流式过滤器单测（思考泄漏、工具调用残渣等） |
 | `scripts/test-transcript.mjs` | 会话背景窗口的离线测试（锚点 / 条数 / 不截断 / 噪音剔除 / 退化路径） |
 | `scripts/test-guard.mjs` | 文件工具读取边界的路径校验 |
@@ -311,7 +327,7 @@ node scripts/dump-prompt.mjs --no-session "<选中文字>"   # 不带会话背�
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-`.github/workflows/publish.yml` 会自动：校验 tag 与 `version` 一致 → `npm install` → 构建 → 跑 463 条测试 → 类型检查 → `npm publish --provenance`（附 provenance 签名）。
+`.github/workflows/publish.yml` 会自动：校验 tag 与 `version` 一致 → `npm install` → 构建 → 跑 489 条测试 → 类型检查 → `npm publish --provenance`（附 provenance 签名）。
 
 npm 侧只需配一次：包设置 → **Trusted Publisher** → GitHub Actions，填 `yfwu2020` / `dsh-selection-explain` / `publish.yml`，并勾选允许 **`npm publish`**（默认只允许 `npm stage publish`）。
 
@@ -322,10 +338,12 @@ npm 侧只需配一次：包设置 → **Trusted Publisher** → GitHub Actions�
 ## 目录
 
 ```
-src/index.ts            host 半：SSE 路由 / 模型调用 / 提示词 / 会话背景 / 历史落盘 / 过滤器
+src/index.ts            host 半：SSE 路由 / 模型调用 / 会话背景 / 历史落盘 / 过滤器
+src/prompts.ts          提示词与写作规则（纯字符串常量，无逻辑）
 src/client/index.js     client 半：划词浮标 + 面板 + 渲染器（手写 ModuleLoader bundle，无打包器）
-scripts/                build.sh + 4 个测试 + dump-prompt
+scripts/                build.sh + 5 个测试 + dump-prompt + 演示图生成
 skills/web-design/      网页模式注入的设计规范（运行时读取）
+assets/                 README 的演示图（由 scripts/build-demo-pages.mjs 生成）
 cordis.patch.yml        官方装配用的 bundle patch
 lib/                    构建产物（已 gitignore，克隆后需 npm run build）
 ```
