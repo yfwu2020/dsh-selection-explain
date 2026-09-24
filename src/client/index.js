@@ -2953,11 +2953,15 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 取一条历史回放。anchor 省略时**默认贴着胶囊上方**——
-       * 以前这里只调 keepInsideViewport()，面板从没被摆过位置，
-       * 于是"就绪状态点胶囊"（内存里没有小窗、走历史回放）会跑到屏幕左上角。
+       * 取一条历史回放。anchor 省略时：
+       *   · 从「最近」列表里点一条 → **面板不挪位置**：列表本来就贴着面板摆，
+       *     把面板重新锚到胶囊上会让人眼看着面板"跳到右下角胶囊上方"（实测反馈的 bug）。
+       *   · 就绪状态点胶囊回放 → 锚到胶囊上方；否则面板从没被摆过位置，会跑到屏幕左上角。
+       *
+       * 注意：`applyHistoryEntry` 内部会收起列表，所以"是否从列表进入"必须在调用**之前**判断。
        */
       function loadHistoryEntry(key, anchor) {
+        var fromList = historyList.style.display === 'flex'
         fetch(HISTORY + '?key=' + encodeURIComponent(key))
           .then(function (response) {
             return response.json()
@@ -2968,7 +2972,9 @@ window.__ModuleLoader__.load({
             panel.style.display = 'flex'
             applyHistoryEntry(data.entry, 'history')
             // 先画内容再摆位置：showPanel 要量面板高度才能决定放上面还是下面
-            showPanel(anchor || rectOfPill())
+            if (!fromList) showPanel(anchor || rectOfPill())
+            // 内容换了、面板高度可能变 → 列表跟着重摆（列表此时已被 applyHistoryEntry 收起，按需再开）
+            if (historyList.style.display === 'flex') placeHistoryList()
           })
           .catch(function () {
             /* noop */

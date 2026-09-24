@@ -1994,9 +1994,20 @@ assert(
 )
 assert('标题文字完整（未被截断成省略号的短写）', textOf(rowParts[0]).indexOf('缓存探测词') >= 0, textOf(rowParts[0]))
 const sentBeforeClick = sent.length
+// 回归：点「最近」列表里的一条时，面板**不能**被重新锚到右下角胶囊上方。
+// 给胶囊一个特征坐标（左下角 10,860），若面板被挪到那里，下面的位置断言会立刻失败。
+const pillEl = Array.from(walk(panel.parentNode)).find((n) => n.className === 'dsh-sel-pill')
+if (pillEl) pillEl.getBoundingClientRect = () => ({ left: 10, top: 860, right: 150, bottom: 890, width: 140, height: 30 })
+const panelLeftBefore = panel.style.left
+const panelTopBefore = panel.style.top
 targetRow.dispatch('click', { stopPropagation() {} })
 await sleep(80)
 assert('点一条能把那段对话调回面板（不调模型）', sent.length === sentBeforeClick && textOf(sections[0]).indexOf('缓存测试内容') >= 0, `新增请求 ${sent.length - sentBeforeClick}`)
+assert(
+  '点列表条目时面板不跳到胶囊上方（保持原位）',
+  panel.style.left === panelLeftBefore && panel.style.top === panelTopBefore,
+  `before=${panelLeftBefore}/${panelTopBefore} after=${panel.style.left}/${panel.style.top}`,
+)
 assert('点完之后列表收起', histList.style.display === 'none', String(histList.style.display))
 
 // Esc：一次到位 —— 面板与侧边栏一起收（原先"第一下只收列表"那一级已按需求合并）
