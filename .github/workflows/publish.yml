@@ -75,8 +75,9 @@ jobs:
         run: echo "tgz=$(npm pack --silent)" >> "$GITHUB_OUTPUT"
 
       # 建 GitHub Release（tag 已存在 → 用 --verify-tag；重复运行用 --clobber 覆盖附件）
-      # 说明自动取自 annotated tag 的注解（本地 `git tag -a v0.2.0 -m "..."` 写什么就是什么），
-      # 没有注解时退回 GitHub 自动生成。
+      # 说明取自 tag 的 %(contents)：annotated tag 用你写的注解，轻量 tag 会回落到该 commit
+      # 的提交信息 —— 两种都能给出有内容的说明（比 --generate-notes 的 "Full Changelog" 有用）。
+      # 想自己控制说明，就用 annotated tag：git tag -a v0.2.0 -m "..."。
       - name: 建 GitHub Release 并附 tgz
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -85,8 +86,8 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           TGZ="${{ steps.pack.outputs.tgz }}"
           NOTES_FILE="$(mktemp)"
-          if git cat-file -t "$TAG" 2>/dev/null | grep -q tag; then
-            git tag -l --format='%(contents)' "$TAG" > "$NOTES_FILE"
+          git tag -l --format='%(contents)' "$TAG" > "$NOTES_FILE"
+          if [ -s "$NOTES_FILE" ]; then
             NOTES_ARG=(--notes-file "$NOTES_FILE")
           else
             NOTES_ARG=(--generate-notes)
