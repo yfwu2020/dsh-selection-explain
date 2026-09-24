@@ -45,16 +45,19 @@ const THEME_VARS = `
 const PAGE = (title, css, body) => `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>${title}</title>
 <style>
-  html,body{margin:0;padding:0;background:#eef1f4;font-family:-apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif}
-  .demo-wrap{padding:26px 22px;display:flex;justify-content:center}
+  /* 只渲染小窗本体：纯白底、无外边距，宽度固定 540 —— 截图后统一裁切 */
+  html,body{margin:0;padding:0;background:#ffffff;font-family:-apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif}
+  body{display:block;width:540px}
   ${THEME_VARS}
 ${css}
   /* 演示页专用：把浮层定位改成静态排版、并显示面板（真实面板默认 display:none，由 JS 打开） */
   .dsh-sel-layer{position:static !important;pointer-events:auto}
-  .dsh-sel-panel{position:static !important;display:flex !important;max-height:none !important}
-  .dsh-sel-panel[data-stage="translation"]{width:440px}
+  .dsh-sel-panel{position:static !important;display:flex !important;max-height:none !important;width:540px !important}
+  /* 首轮：真实行为是「翻译一出来输入框就出现」（askRow.style.display = wide || translationReady），
+     所以演示页也照实显示，不再隐藏 */
+  .dsh-sel-ask{display:flex !important}
 </style></head>
-<body><div class="demo-wrap">${body}</div></body></html>
+<body>${body}</body></html>
 `
 
 const panel = (stage, inner) => `<div class="dsh-sel-layer">
@@ -141,6 +144,7 @@ const stage1 = panel(
       ].join('\n'),
     ),
     expand,
+    askRow(false),
   ].join('\n'),
 )
 
@@ -254,6 +258,7 @@ td.n{color:#b45309}
 </body></html>`
 
 // ───────────────────────── 状态四：网页模式（输出偏好拨到「网页」）─────────────────────────
+// 场景要能体现"为什么该用网页"：需要对比 + 图示的问题 → 直接给一页 HTML。
 const webDemo = panel(
   'detail',
   [
@@ -262,13 +267,12 @@ const webDemo = panel(
       'detail',
       '详解',
       [
-        p('三种做法各有取舍，下面这页把差别放在一张表里，条形长度是相对命中率。'),
+        p('三种做法的差别是并列的，画成一页更好看：'),
         previewBlock(DEMO_HTML),
-        callout('小结', '要"一眼看出差别"就用网页模式；只是要一段说明，留在 Markdown 更快。'),
       ].join('\n'),
     ),
     `      <div class="dsh-sel-chatlog" style="display:flex">`,
-    chatBubble('user', '帮我把这三种缓存策略的差别画成一页对比'),
+    chatBubble('user', '把三种缓存策略的差别画成一页对比'),
     '      </div>',
     askRow(true, 'deepseek-v4.1-flash', '高'),
   ].join('\n'),

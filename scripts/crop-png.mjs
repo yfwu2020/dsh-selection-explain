@@ -9,12 +9,14 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { inflateSync, deflateSync } from 'node:zlib'
 
-const [, , inPath, outPath, padArg] = process.argv
+const [, , inPath, outPath, padArg, tolArg] = process.argv
 if (!inPath || !outPath) {
-  console.error('用法: node scripts/crop-png.mjs <in.png> <out.png> [边距px]')
+  console.error('用法: node scripts/crop-png.mjs <in.png> <out.png> [边距px] [背景容差]')
   process.exit(1)
 }
 const PAD = Number(padArg ?? 0)
+// 容差要能吃掉面板投影造成的渐变（实测同一张图背景在 247~255 之间浮动）
+const TOL = Number(tolArg ?? 8)
 
 // ── 读 PNG（假定 Chrome 输出的 8bit RGB/RGBA 非隔行）──
 const buf = readFileSync(inPath)
@@ -77,7 +79,7 @@ const bg = [img[0], img[1], img[2]]
 const isBg = (x, y) => {
   const o = y * stride + x * bpp
   return (
-    Math.abs(img[o] - bg[0]) <= 3 && Math.abs(img[o + 1] - bg[1]) <= 3 && Math.abs(img[o + 2] - bg[2]) <= 3
+    Math.abs(img[o] - bg[0]) <= TOL && Math.abs(img[o + 1] - bg[1]) <= TOL && Math.abs(img[o + 2] - bg[2]) <= TOL
   )
 }
 let top = 0
