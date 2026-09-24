@@ -41,9 +41,10 @@
   "scripts": {
     "build": "bash scripts/build.sh",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node scripts/test-filters.mjs && node scripts/test-client.mjs && node scripts/test-transcript.mjs && node scripts/test-guard.mjs",
+    "test": "node scripts/test-filters.mjs && node scripts/test-prompt.mjs && node scripts/test-client.mjs && node scripts/test-transcript.mjs && node scripts/test-guard.mjs",
     "test:transcript": "node scripts/test-transcript.mjs",
-    "test:guard": "node scripts/test-guard.mjs"
+    "test:guard": "node scripts/test-guard.mjs",
+    "test:prompt": "node scripts/test-prompt.mjs"
   },
   "exports": {
     ".": {

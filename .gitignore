@@ -8,3 +8,7 @@ lib/
 #   · DEVELOPMENT.md —— 本机开发快照（含本机绝对路径、逐轮踩坑与实测记录）
 # 想纳入版本控制时用 git add -f 显式添加。
 docs/
+
+# 提示词快照（dump-prompt.mjs 的产物，含真实注入文本）：只在本地开发时刷新与查阅。
+# 仓库里的真相以 src/prompts.ts 为准；契约由 scripts/test-prompt.mjs 守卫。
+PROMPTS.md
