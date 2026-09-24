@@ -52,10 +52,13 @@ const PAGE = (title, css, body) => `<!doctype html>
 ${css}
   /* 演示页专用：把浮层定位改成静态排版、并显示面板（真实面板默认 display:none，由 JS 打开） */
   .dsh-sel-layer{position:static !important;pointer-events:auto}
-  .dsh-sel-panel{position:static !important;display:flex !important;max-height:none !important;width:540px !important}
+  /* 截图只要"小窗本体"：去掉投影、边框、圆角 —— 否则裁切后会在上下边缘留下一圈灰线
+     （真实面板的投影是给浮层用的，单独截图时只会变成灰边） */
+  .dsh-sel-panel{position:static !important;display:flex !important;max-height:none !important;width:540px !important;
+    box-shadow:none !important;border:0 !important;border-radius:0 !important}
   /* 首轮：真实行为是「翻译一出来输入框就出现」（askRow.style.display = wide || translationReady），
      所以演示页也照实显示，不再隐藏 */
-  .dsh-sel-ask{display:flex !important}
+  .dsh-sel-ask{display:flex !important;border:0 !important}
 </style></head>
 <body>${body}</body></html>
 `
