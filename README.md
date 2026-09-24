@@ -320,14 +320,13 @@ src/index.ts            host 半：SSE 路由 / 模型调用 / 提示词 / 会�
 src/client/index.js     client 半：划词浮标 + 面板 + 渲染器（手写 ModuleLoader bundle，无打包器）
 scripts/                build.sh + 4 个测试 + dump-prompt
 skills/web-design/      网页模式注入的设计规范（运行时读取）
-docs/DEVELOPMENT.md     内部开发文档（实现细节 / 实测记录 / 踩坑）
 cordis.patch.yml        官方装配用的 bundle patch
 lib/                    构建产物（已 gitignore，克隆后需 npm run build）
 ```
 
-> 开发期还留有一批 UI 比选实验台（`docs/*.html`：浮标动效 / 模型选择器 / 折叠实验台 / 配色方案等），
-> 是"当初为什么这么设计"的过程留档。它们是**本地开发资产，不进本仓库、也不进 npm 包**
-> （已在 `.gitignore` 中排除）。
+> **`docs/` 不在本仓库中**：开发期的资料（UI 比选实验台——浮标动效 / 模型选择器 / 折叠实验台 /
+> 配色方案等，以及含本机路径与逐轮实测记录的内部开发文档）**仅保留在开发者本地**，已在 `.gitignore`
+> 中整体排除，也从未进入 npm 包。它们记录的是"当初为什么这么设计"，与插件运行无关。
 
 ## 已知限制
 
