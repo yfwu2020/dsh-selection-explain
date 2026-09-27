@@ -30,7 +30,12 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 是**必须**的：默认的浅克隆（depth 1）抓 tag 时只留一个指向 commit 的
+      # 轻量引用，`git tag -l --format='%(contents)'` 于是读不到 annotated tag 的注解，
+      # Release 说明会回落成 commit message（0.2.0 实测踩到）。取全量历史才拿得到真注解。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Node ≥ 22.14、npm ≥ 11.5.1 才能用 trusted publishing
       - uses: actions/setup-node@v4
