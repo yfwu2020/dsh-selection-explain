@@ -328,6 +328,13 @@ function withAbort(response, signal) {
 
 const routeFetch = (input, init) => {
   const url = typeof input === 'string' ? input : ''
+  // blob:（划词桥的交互式预览用例）：从内存表里读回我们自己建的那份文档。
+  // content-type 跟着 blob 的 type 走（真实浏览器就是这么给的）——插件要靠它搬 charset。
+  if (url.startsWith('blob:')) {
+    const blob = blobStore.get(url)
+    if (!blob) return Promise.reject(new Error('unknown blob: ' + url))
+    return Promise.resolve(new Response(blob, { headers: { 'content-type': blob.type || 'text/html' } }))
+  }
   // 模型清单：用 fixture（真实 host 有 41 个模型，跑用例时不该依赖它）
   if (url.indexOf('/selection-explain/api/models') >= 0) {
     const body = globalThis.__modelCatalogFixture || { ok: true, current: null, stages: null, models: [] }
@@ -759,12 +766,26 @@ const routeFetch = (input, init) => {
   }
   return fetch(typeof input === 'string' && input.startsWith('/') ? ORIGIN + input : input, init)
 }
-
 const browserFetch = (input, init) => {
   const out = routeFetch(input, init)
   const signal = init && init.signal
   if (!signal || !out || typeof out.then !== 'function') return out
   return out.then((response) => (response && response.body ? withAbort(response, signal) : response))
+}
+/**
+ * 划词桥的 blob 桩：宿主交互式预览的外层文档就是 `blob:`（见 ui-sidebar-documentpreview
+ * 的 HtmlFrame）——桥要 fetch 它、再把注入过脚本的那份重新发成一个 blob 换上去。
+ */
+const blobStore = new Map()
+let blobSeq = 0
+URL.createObjectURL = (blob) => {
+  blobSeq += 1
+  const url = `blob:stub/${blobSeq}`
+  blobStore.set(url, blob)
+  return url
+}
+URL.revokeObjectURL = (url) => {
+  blobStore.delete(url)
 }
 new Function('window', 'document', 'location', 'navigator', 'requestAnimationFrame', 'fetch', source)(
   windowStub,
@@ -2503,6 +2524,204 @@ assert('点回来看到"已停止"的状态与可重试入口', hook.state().pha
   assert('删除键不会误触发回放（回放会重新写历史，这里应为 0 次）', replayHits.length === 0, String(replayHits.length))
 }
 
+// ───────────────────────── 侧边栏网页（iframe）划词桥 ─────────────────────────
+// 侧边栏 HTML 预览是不透明源沙箱 iframe：父页面读不到里面的选区，
+// 所以桥由帧内主动上报。这一段验的是**父侧接线**：注入、来源校验、坐标换算、
+// 上下文与标签走通、帧内清空选区后收浮标。
+let bridgeOwnedBlob = ''
+{
+  // 上一段（历史列表）是开着面板测的；划词桥按老规矩"面板开着时不另开一个"，
+  // 先收起来，否则下面每条消息都会被 panelOpen 挡掉（那就测了个寂寞）。
+  hook.close()
+  const beforeBridge = hook.selection()
+
+  /** 宿主基础预览（BasicHtmlFrame）：DOMPurify 清洗 + script-src 'none'，srcdoc + sandbox=""。 */
+  const SANITIZED =
+    '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; ' +
+    "script-src 'none'; style-src 'unsafe-inline'\"><style>body{color:red}</style></head>" +
+    '<body><p>the migration ran long, so we ship Wednesday</p></body></html>'
+  const frame = new FakeEl('iframe')
+  frame.setAttribute('data-html-preview', 'true')
+  frame.setAttribute('sandbox', '')
+  frame.setAttribute('srcdoc', SANITIZED)
+  frame.isConnected = true
+  const frameWindow = { name: 'sidebar-frame' }
+  frame.contentWindow = frameWindow
+
+  documentStub.querySelectorAll = (selector) => (selector === 'iframe' ? [frame] : [])
+  const scanned = hook.bridgeScan()
+  assert('扫到侧边栏预览帧并桥上', scanned.frames.length === 1 && scanned.frames[0].srcdoc === true, JSON.stringify(scanned.frames))
+
+  const injected = frame.getAttribute('srcdoc')
+  assert('桥脚本注入了 srcdoc（内容没被替换掉）', injected.indexOf('data-dsh-sel-bridge') > 0 && injected.indexOf('the migration ran long, so we ship Wednesday') > 0)
+  assert('基础预览的 CSP 只放宽 script-src', /script-src 'unsafe-inline'/.test(injected) && /default-src 'none'/.test(injected))
+  assert('沙箱补 allow-scripts，但不给 allow-same-origin', frame.getAttribute('sandbox') === 'allow-scripts', String(frame.getAttribute('sandbox')))
+
+  // 陌生窗口发来的同款消息一律不理（消息可以被任意页面伪造，来源必须对得上）
+  windowStub.dispatch('message', { source: { name: 'attacker' }, data: { __dshSel: 1, kind: 'selection', sel: { text: '伪造', context: '', rect: { x: 0, y: 0, right: 10, bottom: 10, w: 10, h: 10 } } } })
+  const afterForged = hook.selection()
+  assert(
+    '陌生来源的消息被忽略（选区没被改写）',
+    (beforeBridge === null && afterForged === null) || (!!afterForged && afterForged.text === beforeBridge.text && afterForged.source === beforeBridge.source),
+    JSON.stringify(afterForged),
+  )
+  assert('陌生来源的消息不会点亮 bridge()', hook.bridge().active === false)
+
+  // 帧内报来一条选区：帧内视口坐标 + iframe 自身的 getBoundingClientRect（桩：left 40 / top 100）
+  windowStub.dispatch('message', {
+    source: frameWindow,
+    data: {
+      __dshSel: 1,
+      kind: 'selection',
+      sel: {
+        text: 'the migration ran long',
+        context: 'PM: 这周能发布吗？ Dev: 【the migration ran long】, so we ship Wednesday.',
+        keyContext: 'PM: 这周能发布吗？ Dev:',
+        label: '',
+        rect: { x: 10, y: 20, right: 120, bottom: 38, w: 110, h: 18 },
+      },
+    },
+  })
+  const bridgeSelection = hook.selection()
+  assert('帧内选区让浮标出现在「帧偏移 + 帧内坐标」处', button.style.display === 'inline-flex' && button.style.left === '98px' && button.style.top === '85px', button.style.left + '/' + button.style.top)
+  assert('选区记成 iframe 来源', !!bridgeSelection && bridgeSelection.source === 'iframe' && bridgeSelection.text === 'the migration ran long', JSON.stringify(bridgeSelection))
+  assert('标签按帧来源给（侧边栏网页）', bridgeSelection.label === '侧边栏网页', bridgeSelection.label)
+  assert('上下文由帧内带来（含【】标记）', bridgeSelection.context.indexOf('【the migration ran long】') > 0, bridgeSelection.context)
+  assert('bridge() 报 active', hook.bridge().active === true)
+
+  // 交互式预览：外层是宿主 bootstrap（blob: + document.write），桥要换一份带脚本的 blob 上去
+  const BOOTSTRAP =
+    '<!doctype html><meta charset="utf-8"><script>(()=>{document.open();document.write("<p>the migration ran long, so we ship Wednesday</p>");document.close()})()</scr' + 'ipt>'
+  const originalBlob = URL.createObjectURL(new Blob([BOOTSTRAP], { type: 'text/html;charset=utf-8' }))
+  const blobFrame = new FakeEl('iframe')
+  blobFrame.setAttribute('data-html-preview', 'true')
+  blobFrame.setAttribute('sandbox', 'allow-scripts')
+  blobFrame.setAttribute('src', originalBlob)
+  blobFrame.isConnected = true
+  const blobWindow = { name: 'sidebar-blob-frame' }
+  blobFrame.contentWindow = blobWindow
+  documentStub.querySelectorAll = (selector) => (selector === 'iframe' ? [frame, blobFrame] : [])
+  hook.bridgeScan()
+  await sleep(20) // fetch(blob) → 注入 → 换 src 是异步的
+  bridgeOwnedBlob = blobFrame.getAttribute('src')
+  assert('交互式预览：src 换成我们重发的那份 blob', bridgeOwnedBlob !== originalBlob && bridgeOwnedBlob.startsWith('blob:'), bridgeOwnedBlob)
+  assert('交互式预览：换上去的文档里有桥脚本', String(await (await browserFetch(bridgeOwnedBlob)).text()).indexOf('data-dsh-sel-bridge') > 0)
+  assert(
+    '交互式预览：重发时把原 blob 的 content-type 搬过来（charset 不能丢，否则整页乱码）',
+    (blobStore.get(bridgeOwnedBlob) || {}).type === 'text/html;charset=utf-8',
+    String((blobStore.get(bridgeOwnedBlob) || {}).type),
+  )
+  assert('交互式预览：宿主原来那份 blob 不归我们动（它自己回收）', blobStore.has(originalBlob))
+  assert('交互式预览：我们自己那份 blob 登记在册（清理时回收）', hook.bridge().frames.some((item) => item.own === true))
+
+  // 帧内清空选区 → 收浮标（顶层选区不会塌，所以只能靠这条消息）
+  windowStub.dispatch('message', { source: frameWindow, data: { __dshSel: 1, kind: 'clear' } })
+  assert('帧内清空选区后收浮标', button.style.display === 'none' && hook.bridge().active === false)
+
+  // ── 消失时机：帧内的"按下"也要收浮标（父页面收不到帧里的 mousedown）──
+  windowStub.dispatch('message', {
+    source: frameWindow,
+    data: {
+      __dshSel: 1,
+      kind: 'selection',
+      sel: { text: '按住前那一段', context: '【按住前那一段】', keyContext: '', label: '', rect: { x: 4, y: 6, right: 40, bottom: 24, w: 36, h: 18 } },
+    },
+  })
+  assert('（准备）选区先让浮标亮着', button.style.display === 'inline-flex')
+  windowStub.dispatch('message', { source: frameWindow, data: { __dshSel: 1, kind: 'press' } })
+  assert('帧内按下：浮标立刻收起', button.style.display === 'none')
+  assert('帧内按下：这条选区本身还留着（松手后可能还要用）', hook.selection() !== null && hook.selection().source === 'iframe', JSON.stringify(hook.selection()))
+
+  // 按下的若是**另一个**网页：那条选区已经不是用户在看的东西了，状态一起清
+  windowStub.dispatch('message', {
+    source: frameWindow,
+    data: {
+      __dshSel: 1,
+      kind: 'selection',
+      sel: { text: '另一个帧的词', context: '【另一个帧的词】', keyContext: '', label: '', rect: { x: 4, y: 6, right: 40, bottom: 24, w: 36, h: 18 } },
+    },
+  })
+  windowStub.dispatch('message', { source: blobWindow, data: { __dshSel: 1, kind: 'press' } })
+  assert('在另一个网页里按下：浮标收起且旧选区状态清掉', button.style.display === 'none' && hook.selection() === null && hook.bridge().active === false)
+
+  // 交互式预览那一帧报来的选区 → 点浮标 → 面板用的就是桥给的上下文
+  windowStub.dispatch('message', {
+    source: blobWindow,
+    data: {
+      __dshSel: 1,
+      kind: 'selection',
+      sel: {
+        text: 'slipped',
+        context: 'the deadline 【slipped】 to Wednesday',
+        keyContext: 'the deadline',
+        label: '代码块',
+        rect: { x: 8, y: 12, right: 60, bottom: 30, w: 52, h: 18 },
+      },
+    },
+  })
+  assert('第二帧的选区也能认（多标签页）', button.style.display === 'inline-flex' && hook.selection().text === 'slipped', JSON.stringify(hook.selection()))
+  assert('帧内给的标签优先（代码块）', hook.selection().label === '代码块', hook.selection().label)
+  button.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+  const bridgePayload = hook.payload()
+  assert('点浮标后面板用桥给的上下文（不读顶层 DOM）', !!bridgePayload && bridgePayload.context === 'the deadline 【slipped】 to Wednesday', bridgePayload && bridgePayload.context)
+  assert('面板标签也是桥给的', bridgePayload.label === '代码块', bridgePayload && bridgePayload.label)
+  hook.close()
+
+  // ── 别的插件在侧边栏渲染的生成网页（「图解」那种：blob: + allow-scripts，没有宿主标记）──
+  const visualFrame = new FakeEl('iframe')
+  visualFrame.setAttribute('class', 'dsv-frame')
+  visualFrame.setAttribute('title', '图解')
+  visualFrame.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-popups')
+  visualFrame.setAttribute('src', URL.createObjectURL(new Blob(['<!doctype html><html><head><meta charset="utf-8"></head><body><p>图解页</p></body></html>'], { type: 'text/html' })))
+  visualFrame.isConnected = true
+  const visualWindow = { name: 'reply-visual-frame' }
+  visualFrame.contentWindow = visualWindow
+
+  // 反面用例：不该被动的帧
+  const opaqueFrame = new FakeEl('iframe') // 没有 allow-scripts 的第三方帧：不给它加权限
+  opaqueFrame.setAttribute('sandbox', '')
+  opaqueFrame.setAttribute('srcdoc', '<!doctype html><p>别人的沙箱</p>')
+  opaqueFrame.isConnected = true
+  const remoteFrame = new FakeEl('iframe') // 远端站点：没有任何注入手段
+  remoteFrame.setAttribute('sandbox', 'allow-scripts')
+  remoteFrame.setAttribute('src', 'https://example.com/')
+  remoteFrame.isConnected = true
+  const ownFrame = new FakeEl('iframe') // 我们自己小窗里的网页答案预览
+  ownFrame.setAttribute('data-preview-id', 'pv1')
+  ownFrame.setAttribute('sandbox', 'allow-scripts')
+  ownFrame.setAttribute('srcdoc', '<!doctype html><p>生成的网页</p>')
+  ownFrame.isConnected = true
+  panel.appendChild(ownFrame)
+
+  documentStub.querySelectorAll = (selector) =>
+    selector === 'iframe' ? [frame, blobFrame, visualFrame, opaqueFrame, remoteFrame, ownFrame] : []
+  hook.bridgeScan()
+  await sleep(20) // visualFrame 的 blob 分支也是异步的
+  const bridgedNow = hook.bridge().frames
+  assert(
+    '「图解」那种 blob 帧也被桥上（不只认宿主标记）',
+    bridgedNow.length === 3 && visualFrame.getAttribute('data-dsh-sel-bridged') === '1',
+    JSON.stringify(bridgedNow),
+  )
+  assert('第三方没有 allow-scripts 的沙箱帧不动它（不给别人加权限）', opaqueFrame.getAttribute('data-dsh-sel-bridged') === null && opaqueFrame.getAttribute('sandbox') === '')
+  assert('远端站点 iframe 不动它', remoteFrame.getAttribute('data-dsh-sel-bridged') === null)
+  assert('我们小窗里的网页答案预览不桥（面板开着也不会用它）', ownFrame.getAttribute('data-dsh-sel-bridged') === null)
+  assert('「图解」帧的 src 换成了我们重发的那份', visualFrame.getAttribute('src').indexOf('blob:') === 0 && visualFrame.getAttribute('src') !== null)
+
+  windowStub.dispatch('message', {
+    source: visualWindow,
+    data: {
+      __dshSel: 1,
+      kind: 'selection',
+      sel: { text: '图解里的词', context: '【图解里的词】的上下文', keyContext: '', label: '', rect: { x: 5, y: 6, right: 40, bottom: 22, w: 35, h: 16 } },
+    },
+  })
+  const visualSelection = hook.selection()
+  assert('「图解」帧的选区也认', !!visualSelection && visualSelection.text === '图解里的词', JSON.stringify(visualSelection))
+  assert('位置标签取帧自己的 title（图解）', visualSelection.label === '图解', visualSelection.label)
+  hook.close()
+}
+
 // ───────────────────────── 关闭 / 清理 ─────────────────────────
 hook.close()
 assert('Esc/关闭后隐藏', panel.style.display === 'none')
@@ -2514,6 +2733,7 @@ for (const dispose of disposers.reverse()) {
   }
 }
 assert('清理后 DOM 归零', mount.children.length === 0 && body.children.indexOf(container) >= 0)
+assert('清理后划词桥自己建的预览 blob 被回收', bridgeOwnedBlob !== '' && !blobStore.has(bridgeOwnedBlob), bridgeOwnedBlob)
 assert('清理后钩子移除', windowStub.__dshSelectionExplain === undefined)
 console.log('\n=== 客户端集成测试结束 ===')
 

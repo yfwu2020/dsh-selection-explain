@@ -90,6 +90,16 @@ export interface Config {
   toolReadRoot: string
   /** 追问（对话小窗）用的推理档位：通常比首次解读轻，响应更快。 */
   chatReasoningEffort: string
+  /**
+   * 侧边栏 HTML 预览里的划词桥（默认开）。
+   *
+   * 侧边栏的预览是不透明源沙箱 iframe，父页面读不到里面的选区 —— 只有往被预览的
+   * 文档里注入一段桥脚本才能划词。代价：预览帧要多一个 `allow-scripts`
+   * （仍然**没有** `allow-same-origin`，预览页读不到 GUI 数据），基础预览那份
+   * 已清洗过的 HTML 的 CSP 会从 `script-src 'none'` 放宽到 `'unsafe-inline'`。
+   * 关掉 = 侧边栏网页里不弹「解读」按钮。
+   */
+  bridgeSidebarPreview: boolean
 }
 
 /** 配置 schema（缺省值即推荐值）。 */
@@ -145,6 +155,11 @@ export const Config = z.object({
   toolResultMaxChars: z.number().min(200).max(20000).default(3000),
   toolReadRoot: z.string().default(''),
   chatReasoningEffort: z.string().default('high'),
+  /**
+   * 侧边栏 HTML 预览里的划词桥。关掉就不往预览帧里注入桥脚本，
+   * 侧边栏网页里选中文字不会再弹「解读」。
+   */
+  bridgeSidebarPreview: z.boolean().default(true),
 })
 
 /** 联网类工具名：用来判断"首选里的联网工具在不在"。 */
@@ -843,6 +858,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     toolResultMaxChars: rawConfig?.toolResultMaxChars ?? 3000,
     toolReadRoot: rawConfig?.toolReadRoot ?? '',
     chatReasoningEffort: rawConfig?.chatReasoningEffort ?? 'high',
+    bridgeSidebarPreview: rawConfig?.bridgeSidebarPreview ?? true,
   }
 
   /** 兜底路由：第一次真实 LLM 调用后捕获。 */
@@ -1401,6 +1417,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
           fetchBlocked,
         },
         sessionContext: config.sessionContext && typeof sessionQuery?.readSurface === 'function',
+        // 侧边栏 HTML 预览里的划词桥开关：客户端据此决定要不要往预览帧注入桥脚本
+        bridgeSidebarPreview: config.bridgeSidebarPreview,
         limits: {
           maxSelectionChars: config.maxSelectionChars,
           maxContextChars: config.maxContextChars,

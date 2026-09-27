@@ -21,6 +21,10 @@
 #   toolReadRoot          文件类工具（read/grep/glob）的读取边界：'' = 会话工作目录（默认），
 #                         '*' = 不限制，其他 = 写死的某个目录。越界在**执行前**被拒
 #   tools                 总开关（false = 完全不给工具）
+#   bridgeSidebarPreview  侧边栏 HTML 预览里的划词桥（默认 true）：预览帧会被补上
+#                         allow-scripts 并注入一段桥脚本（**不会**加 allow-same-origin，
+#                         预览页仍读不到 GUI 数据），这样在预览网页里划词也能解读。
+#                         false = 侧边栏网页里不弹「解读」按钮
 - insert:
     - id: selection-explain
       name: '@yfwu2020/dsh-selection-explain'

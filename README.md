@@ -102,6 +102,41 @@
 
 右下角一枚胶囊显示"最近一次划词现在什么状态"（进行中报阶段和秒数、其余报结果），点一下回到那个小窗。它会自动贴到费用胶囊上方。
 
+### 侧边栏网页里也能划词
+
+侧边栏里显示的**网页**里选中文字，同样会浮出 `✦ 解读` 按钮：解释用**那个网页自己的上下文**（选区前后各 1500 字，`【】`标出选中部分），追问、历史、升格都照常。覆盖两类：
+
+| 谁渲染的网页 | 例子 |
+| --- | --- |
+| 内置「文档预览」的 HTML 文件预览 | 在侧边栏点开一个 `.html` 文件（预览模式） |
+| 其它插件在侧边栏渲染的生成网页 | **「图解」**（`dsh-reply-visual`：模型产出的单文件 HTML 在侧边栏渲染）等 |
+
+为什么需要专门做一层：这些网页都渲染在不透明源沙箱 iframe 里（`sandbox="allow-scripts"`，刻意**没有** `allow-same-origin`），父页面拿不到它的文档，顶层 `window.getSelection()` 永远是空的——划词在那里天然是瞎的。所以插件往被渲染的文档里注入一段**桥脚本**：它在帧内读选区、就地采上下文，再 `postMessage` 报出来；父页面把「帧内坐标 + iframe 的位置」换算成视口坐标，复用同一套浮标与面板。
+
+| 网页形态 | 桥怎么进去 |
+| --- | --- |
+| **基础预览**（默认，`srcdoc` + `sandbox=""`，宿主已用 DOMPurify 清洗过：无脚本、无外链） | 重写 `srcdoc`：插入桥脚本，把 CSP 的 `script-src 'none'` 放宽成 `'unsafe-inline'`（`default-src 'none'` / `connect-src 'none'` 等其余限制一条不动），沙箱补 `allow-scripts` |
+| **交互式预览**（开发者工具打开后：外层是 `blob:` bootstrap + `document.write`） | 取回那份 blob → 插入桥脚本 → 换成一个新的 blob 装上去；桥的监听挂在 `window` 上并用轮询兜底，`document.write` 冲不掉它 |
+| **其它插件的生成网页**（如「图解」的 `blob:` 帧） | 同上（取回 blob → 注入 → 换新 blob），但**只桥本来就允许脚本的帧**——不给别人的沙箱加权限 |
+
+**浮现与消失的时机都与主会话一致**：
+
+| 动作 | 结果 |
+| --- | --- |
+| 拖拽划词（按住鼠标） | **期间不弹**；松手后才浮出，位置是**最终**选区末端 |
+| 键盘扩选（`Shift`+方向键） | 松键即弹 |
+| 在网页里点一下（取消选区 / 点别处） | **按下就收**（不等松手），选区真没了再补一条清空 |
+| 点另一个网页 | 也收（跨帧点击同样算"点了别处"） |
+| 点主界面别处 / 滚主界面 / 改窗口大小 | 收（与主会话同一套规则） |
+| 页面重绘、动画、字体回流导致的**瞬时**读不到选区 | **不**收（连续 6 拍 ≈1.5s 都读不到才算真没了） |
+| 选区滚出网页可视区 | 收（滚回来会重新浮出） |
+
+**安全边界没有退让**：帧始终是不透明源，**不会**加 `allow-same-origin`——网页读不到 GUI 的 DOM / Cookie / localStorage，也不能导航顶层窗口。桥只往外报「选中了什么 + 周围那点文本」。给宿主预览补 `allow-scripts` 是因为那份 HTML 已被清洗成"无脚本"，放宽 `script-src` 之后真正会跑的只有桥自己；别人插件的沙箱一概不碰（只桥它们自己已经开了脚本的帧）。
+
+不想要这个行为就关掉：`bridgeSidebarPreview: false`（见下面的配置表）。
+
+> 不在覆盖范围内：**内置浏览器标签页里的外部站点**（那是远端 URL 的 iframe，插件没有任何注入手段）、以及宿主的**源码视图**（没有 iframe，切回「预览」即可）。用**路由 URL**（而非 `srcdoc`/`blob`）的第三方预览器（如 better-sidebar 自己的 HTML 预览）也不动它——那些的资源配置归它们自己管。
+
 ### 零依赖渲染
 
 面板自带 Markdown 渲染器（段落、多级列表、小标题、表格、引用、代码块）和**语法高亮 tokenizer**（自研，零依赖）：注释 / 字符串 / 数字 / 关键字 / 函数名 / 类型 / 标签 / 属性 / 变量 / 运算符分色，按围栏语言标记选规则。配色跟随**面板实际底色**判定，不是看系统偏好——所以 App 深色 + 系统浅色也不会出现深底配深字。文字对比度实测全部 ≥ WCAG AA 4.5。
@@ -185,7 +220,7 @@ dsh plugin --profile web remove @yfwu2020/dsh-selection-explain
 
 | 动作 | 结果 |
 | --- | --- |
-| **鼠标划选** / `Shift` + 方向键 | 选区末端浮出 `✦ 解读` 药丸按钮（✦ 是图标，按钮文字是「解读」；输入框内的选择不触发，避免干扰打字） |
+| **鼠标划选** / `Shift` + 方向键 | 选区末端浮出 `✦ 解读` 药丸按钮（✦ 是图标，按钮文字是「解读」；输入框内的选择不触发，避免干扰打字）。侧边栏的 HTML 文件预览里同样生效 |
 | 点击按钮 | 弹出面板：顶部是选中文字，正文是「翻译」卡片 |
 | 点 `↓ 展开详解` | 加载完整会话背景，追加「详解」卡片 |
 | 面板底部输入框 | 就这段文字继续追问（`Enter` 发送 / `Shift+Enter` 换行） |
@@ -210,6 +245,8 @@ dsh plugin --profile web remove @yfwu2020/dsh-selection-explain
 window.__dshSelectionExplain.open('the migration ran long', 'Dev: the migration ran long, so we ship Wednesday.')
 window.__dshSelectionExplain.state()   // { phase, chars, model, sections }
 window.__dshSelectionExplain.ping()    // 当前模型路由与限制
+window.__dshSelectionExplain.bridge()  // 侧边栏网页划词桥：{ on, frames:[{connected,own,srcdoc,sandbox}], active, selection }
+window.__dshSelectionExplain.selection() // 当前选区：{ text, source:'document'|'iframe', label, context }
 ```
 
 ### HTTP 接口
@@ -275,6 +312,7 @@ curl -s http://127.0.0.1:3080/selection-explain/api/ping
 | `resultCacheTtlMs` | `600000` | 共享结果缓存 TTL（毫秒）；`0` = 关闭 |
 | `historyMaxEntries` | `20` | 小窗对话历史保留多少个划词条目；`0` = 关闭历史 |
 | `maxRequestsPerMinute` | `40` | 本地限流，防误触发刷爆额度 |
+| `bridgeSidebarPreview` | `true` | 侧边栏 HTML 预览里的划词桥。关掉 = 预览网页里选中文字不再弹按钮（预览帧不再补 `allow-scripts`，也不注入桥脚本） |
 
 ### 工具（联网 / 文件）
 
@@ -313,6 +351,7 @@ curl -s http://127.0.0.1:3080/selection-explain/api/ping
 - **不建会话**：小窗对话落在插件自己的 `history.json` 里。会话是重型对象，高频功能那样做只会堆死会话列表。
 - **缓存 key 不含选中文字之后的内容**：否则主会话后面追加新消息时，同一个词的 key 就变了，表现为"找不着上次的小窗、又生成一个"。
 - **上下文窗口锚定选中文字所在的那条消息**，向上取——不是简单取最近 N 条，这样"这个词在这段对话里什么意思"才有前提。
+- **侧边栏预览里的选区由帧内桥上报**：那段上下文是在**帧内**用同一套算法（容器 ≥120 字、前后各 1500 字、`【】`标记、key 只取选中前 300 字）算出来的，所以侧边栏网页里的解释质量与主会话里一致，而不是退化成"只有选中文字、没有上下文"。
 
 ---
 
@@ -320,13 +359,16 @@ curl -s http://127.0.0.1:3080/selection-explain/api/ping
 
 ```bash
 npm run build       # 构建（= bash scripts/build.sh）
-npm test            # 489 条断言（filters / prompt / client / transcript / guard）
+npm test            # 576 条断言（filters / prompt / bridge / smoke / client / transcript / guard）
+npm run test:smoke  # 只跑真浏览器冒烟（本机 Chrome；找不到自动 SKIP）
 npm run typecheck   # tsc --noEmit
 ```
 
 | 脚本 | 用途 |
 | --- | --- |
-| `scripts/test-client.mjs` | 无浏览器集成测试：真实 host 路由 + 最小 DOM 桩，覆盖槽注册 → 划词浮标 → 点击 → SSE 流式渲染 → 两节内容 → 清理（host 不在跑时自动跳过在线断言） |
+| `scripts/test-client.mjs` | 无浏览器集成测试：真实 host 路由 + 最小 DOM 桩，覆盖槽注册 → 划词浮标 → 点击 → SSE 流式渲染 → 两节内容 → 侧边栏网页划词桥（注入 / 来源校验 / 坐标换算 / 帧内清空）→ 清理（host 不在跑时自动跳过在线断言） |
+| `scripts/test-bridge.mjs` | **划词桥单测**（无需宿主）：从 bundle 里抠出桥脚本与注入函数单独跑 —— 插在哪、CSP 只放宽哪一条、沙箱补哪个 token、帧内报出来的文字 / `【】`上下文 / `keyContext` / 坐标对不对 |
+| `scripts/smoke-bridge.mjs` | **划词桥真浏览器冒烟**（本机 Chrome，找不到就 SKIP）：起临时 http 服务，用两种预览形态（`srcdoc` / `blob` bootstrap）验沙箱 + CSP + 跨不透明源 postMessage + `document.write` 冲不掉监听 |
 | `scripts/test-prompt.mjs` | **提示词契约测试**：把两节结构标题、结论条格式、音标规则、详解来源判断、追问网页模式要求等关键约束固化成断言，误删即 CI 红 |
 | `scripts/test-filters.mjs` | host 侧流式过滤器单测（思考泄漏、工具调用残渣等） |
 | `scripts/test-transcript.mjs` | 会话背景窗口的离线测试（锚点 / 条数 / 不截断 / 噪音剔除 / 退化路径） |
@@ -349,7 +391,7 @@ node scripts/dump-prompt.mjs --no-session "<选中文字>"   # 不带会话背�
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-`.github/workflows/publish.yml` 会自动：校验 tag 与 `version` 一致 → `npm install` → 构建 → 跑 489 条测试 → 类型检查 → `npm publish --provenance`（附 provenance 签名）。
+`.github/workflows/publish.yml` 会自动：校验 tag 与 `version` 一致 → `npm install` → 构建 → 跑全量测试（`npm test`，含真浏览器冒烟，CI 里自动 SKIP）→ 类型检查 → `npm publish --provenance`（附 provenance 签名）。
 
 npm 侧只需配一次：包设置 → **Trusted Publisher** → GitHub Actions，填 `yfwu2020` / `dsh-selection-explain` / `publish.yml`，并勾选允许 **`npm publish`**（默认只允许 `npm stage publish`）。
 
@@ -376,8 +418,10 @@ lib/                    构建产物（已 gitignore，克隆后需 npm run buil
 
 ## 已知限制
 
-- 只覆盖**同源页面内**的选中文字；跨域 iframe（如内置浏览器标签页里的外部站点）内部的选择不触发。
-- 面板**不跟随页面滚动**（滚动即收起浮标 / 面板），符合「划完即看」的一次性使用预期。
+- 主会话（以及 DSH 界面本身）里只覆盖**同源页面内**的选中文字。
+- 侧边栏 **HTML 文件预览**已覆盖（靠帧内桥，见上）；但**内置浏览器标签页里的外部站点**（远端 URL 的 iframe，插件没有任何注入手段）与**源码视图**（没有 iframe）不触发。
+- 预览帧被换成路由 URL 而非 `srcdoc`/`blob` 的第三方预览器不接管（不动别人的资源改写与生命周期）。
+- 面板**不跟随页面滚动**（滚动即收起浮标 / 面板），符合「划完即看」的一次性使用预期；侧边栏网页内部滚动会重新上报位置，浮标跟着走。
 - 结论来自当前模型，专业领域术语请以人工判断为准。
 - 依赖 DSH 的 `webServer` 与 `llm` 服务；宿主版本过旧可能不兼容（peerDependencies 见 `package.json`）。
 

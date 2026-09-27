@@ -1276,6 +1276,359 @@ window.__ModuleLoader__.load({
       return String(text || '').replace(/\s+/g, ' ').trim()
     }
 
+    // ────────────────────── 侧边栏网页：iframe 划词桥 ──────────────────────
+
+    /**
+     * 侧边栏的 HTML 预览是**不透明源**沙箱 iframe（`sandbox="allow-scripts"`，
+     * 刻意不给 `allow-same-origin`）：父页面拿不到 contentDocument，
+     * 顶层 `window.getSelection()` 永远是空的 —— 划词在那里等于瞎的。
+     *
+     * 解法只有一个方向：**让帧内自己上报**。下面这段脚本被注入进被预览的文档，
+     * 在帧内读选区、就地采集上下文（算法与父页面 `collectContext` 完全一致），
+     * 再用 postMessage 报出来；父页面把"帧内坐标 + iframe 的 getBoundingClientRect()"
+     * 换算成视口坐标，复用同一套浮标与面板。
+     *
+     * 安全边界（不能退让）：**不加 `allow-same-origin`**，帧仍是不透明源 ——
+     * 预览页照样读不到 GUI 的 DOM / Cookie / localStorage，也照样不能导航顶层窗口。
+     * 桥只往外报"选中了什么 + 周围那点文本"，别的什么都不给。
+     *
+     * 两处细节不能省：
+     *   ① 监听挂在 **window** 上、并且用轮询兜底 —— 交互式预览的外层文档是 bootstrap，
+     *      它 `document.open()/write()/close()` 会把 document 上的监听全部冲掉，
+     *      只有 window 上的监听能活下来（见宿主 ui-sidebar-documentpreview 的 createHtmlDocument）。
+     *   ② 报的是**帧内视口坐标**（range.getClientRects 的最后一段），父页面再加偏移。
+     */
+    function bridgeBody() {
+      if (window.__dshSelBridge) return
+      window.__dshSelBridge = 1
+      var WINDOW_CHARS = 1500
+      var KEY_CHARS = 300
+      var MAX_SELECTION = 4000
+      /** 鼠标按着超过这么久还没等到 mouseup，就当松手落在帧外了（别永久卡住上报）。 */
+      var STALE_PRESS_MS = 6000
+      /** 轮询连续这么多拍都读不到选区，才认为选区真没了（约 1.5s；瞬时读不到不清）。 */
+      var NULL_TICKS_TO_CLEAR = 6
+      /** 上一次报出去的选区指纹（文字 + 位置），用来去重。 */
+      var last = ''
+      /** 鼠标是不是按着（拖拽划词进行中）。 */
+      var pressed = false
+      var pressedAt = 0
+      /** 上一拍轮询看到的指纹：用于"稳定一拍再报"。 */
+      var pollKey = ''
+      /** 轮询连续读不到选区的拍数。 */
+      var nullTicks = 0
+
+      function norm(text) {
+        return String(text || '').replace(/\s+/g, ' ').trim()
+      }
+
+      function send(kind, sel) {
+        try {
+          parent.postMessage({ __dshSel: 1, kind: kind, sel: sel || null }, '*')
+        } catch (error) {
+          /* 顶层被导航走了之类：报不出去就算了，不能因为报错把预览页搞坏 */
+        }
+      }
+
+      /** 选区所在的语义容器：与父页面 pickContainer 同一套规则（往上找到第一个够长的元素）。 */
+      function containerOf(node) {
+        var element = node && node.nodeType === 1 ? node : node && node.parentElement
+        while (element && element !== document.body) {
+          var length = (element.innerText || '').length
+          if (length >= 120) return element
+          element = element.parentElement
+        }
+        return element || document.body
+      }
+
+      function labelOf(element) {
+        try {
+          if (element && element.closest && element.closest('pre,code')) return '代码块'
+          if (element && element.closest && element.closest('table')) return '表格'
+        } catch (error) {
+          /* 孤立节点上 closest 会抛，忽略 */
+        }
+        return ''
+      }
+
+      /** 这些标签的文本不算正文（脚本源码 / 样式 / 模板 / 文档头）。 */
+      var SKIP_TAGS = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, HEAD: 1, TITLE: 1, META: 1, LINK: 1 }
+
+      /**
+       * 走 DOM 收集容器的可见文本，并给出 `target`（选区起点）在这段文本里的偏移。
+       * 比 `Range.toString()` 多一步：跳过 script/style 等——否则页面里的 JS 源码会混进上下文。
+       * target 是元素节点（整段选中的情况）时，取"进入该元素那一刻"的长度作为偏移；
+       * 是文本节点时还要加上 `targetOffset`（选区在文本节点内的字符偏移）。
+       */
+      function collectText(root, target, targetOffset) {
+        var text = ''
+        var offset = -1
+        function walk(node) {
+          if (!node) return
+          if (node.nodeType === 3) {
+            if (node === target) offset = text.length + (targetOffset || 0)
+            text += node.nodeValue || ''
+            return
+          }
+          if (node.nodeType !== 1) return
+          if (SKIP_TAGS[node.tagName]) return
+          if (node === target) offset = text.length
+          var kids = node.childNodes || []
+          for (var i = 0; i < kids.length; i += 1) walk(kids[i])
+        }
+        walk(root)
+        return { text: text, offset: offset }
+      }
+
+      /** 读一次选区：文字 + 上下文窗口 + 帧内坐标；没有有效选区返回 null。 */
+      function read() {
+        var selection = window.getSelection && window.getSelection()
+        if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null
+        var text = String(selection.toString() || '')
+        if (!text.trim() || text.length > MAX_SELECTION) return null
+        var range
+        try {
+          range = selection.getRangeAt(0)
+        } catch (error) {
+          return null
+        }
+        var start = range.startContainer
+        var startElement = start && start.nodeType === 1 ? start : start && start.parentElement
+        try {
+          if (startElement && startElement.closest && startElement.closest('input,textarea')) return null
+        } catch (error) {
+          /* 输入框判断失败不致命 */
+        }
+        var container = containerOf(startElement)
+        var out = { text: text.trim(), context: '', keyContext: '', label: labelOf(container) }
+        try {
+          // 容器正文：**走 DOM 取文本**，跳过 script / style / noscript / template / head。
+          // 不能用 Range.toString()：它把 <script> 里的源码也算进正文——实测（真浏览器冒烟）
+          // 交互式预览里的上下文会带上整段页面 JS，喂给模型纯属噪音。
+          var walked = collectText(container, range.startContainer, range.startOffset)
+          var rawFull = walked.text
+          var offset = walked.offset
+          if (offset < 0) {
+            // 选区起点不在这个容器里（跨容器选区之类）：退回 Range 的算法，至少别丢上下文
+            var prefix = document.createRange()
+            prefix.selectNodeContents(container)
+            prefix.setEnd(range.startContainer, range.startOffset)
+            offset = prefix.toString().length
+          }
+          var from = Math.max(0, offset - WINDOW_CHARS)
+          var to = Math.min(rawFull.length, offset + text.length + WINDOW_CHARS)
+          var windowText = rawFull.slice(from, to)
+          var relative = offset - from
+          var probe = windowText.slice(relative, relative + text.length)
+          var marked
+          if (norm(probe) === norm(text)) {
+            marked = windowText.slice(0, relative) + '【' + probe + '】' + windowText.slice(relative + text.length)
+          } else {
+            var found = rawFull.indexOf(text)
+            if (found >= 0) {
+              var f2 = Math.max(0, found - WINDOW_CHARS)
+              var t2 = Math.min(rawFull.length, found + text.length + WINDOW_CHARS)
+              var w2 = rawFull.slice(f2, t2)
+              var r2 = found - f2
+              marked = w2.slice(0, r2) + '【' + w2.slice(r2, r2 + text.length) + '】' + w2.slice(r2 + text.length)
+            } else {
+              marked = text + '\n---\n' + windowText
+            }
+          }
+          out.context = marked
+            .replace(/\u00a0/g, ' ')
+            .replace(/[ \t]+/g, ' ')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim()
+          out.keyContext = rawFull
+            .slice(Math.max(0, offset - KEY_CHARS), offset)
+            .replace(/\u00a0/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+        } catch (error) {
+          /* 取不到上下文就给空串：父页面照样能开面板，只是少了背景 */
+        }
+        var rect = null
+        try {
+          var rects = range.getClientRects()
+          rect = rects && rects.length > 0 ? rects[rects.length - 1] : null
+        } catch (error) {
+          rect = null
+        }
+        if (!rect) {
+          try {
+            rect = range.getBoundingClientRect()
+          } catch (error) {
+            rect = null
+          }
+        }
+        if (!rect || (!rect.width && !rect.height)) return null
+        out.rect = {
+          x: rect.left,
+          y: rect.top,
+          right: rect.right,
+          bottom: rect.bottom,
+          w: rect.width,
+          h: rect.height,
+        }
+        return out
+      }
+
+      /** 选区指纹：文字 + 帧内位置（位置变了也要重报，父页面据此挪浮标）。 */
+      function fingerprint(now) {
+        if (!now) return ''
+        return now.text + '\u0000' + now.rect.x + ',' + now.rect.y + ',' + now.rect.bottom + ',' + now.rect.right
+      }
+
+      /**
+       * 读一次并上报。
+       *
+       * `allowClear === false` 时**只报选区、不报"选区没了"**：滚动/改尺寸/轮询这些
+       * "顺手重报一下位置"的路径不该有清空权 —— 页面重绘、动画、字体回流时
+       * `getClientRects()` 会短暂拿不到矩形，一抖就 clear 会把浮标误收掉
+       * （用户看到的就是"浮标自己消失了"）。真正的清空信号来自 mouseup / keyup /
+       * selectionchange 这些**用户动作**。
+       */
+      function report(allowClear) {
+        var now = read()
+        if (!now) {
+          if (last && allowClear !== false) {
+            last = ''
+            send('clear', null)
+          }
+          return
+        }
+        var key = fingerprint(now)
+        if (key === last) return
+        last = key
+        send('selection', now)
+      }
+
+      /**
+       * 轮询兜底（250ms）：只负责"没人通知我们"的情况。
+       *
+       * 三道闸门都是为了**时机**跟主会话一致（主会话只在 mouseup / keyup 后弹）：
+       *   ① 鼠标按着（拖拽划词进行中）一律不报 —— 否则拖到一半浮标就冒出来，还跟着手指跑；
+       *   ② 选区还在变（这一拍与上一拍指纹不同）先记账，**稳定一拍**再报；
+       *   ③ 连续 NULL_TICKS_TO_CLEAR 拍都读不到选区才认为它真没了 —— 一次瞬时读不到
+       *      只当页面在重绘，不清浮标（瞬时误清的表现就是"浮标自己消失"）。
+       * 松手落在帧外时不会有 mouseup：超过 STALE_PRESS_MS 就当已经松开，别把上报永久卡死。
+       */
+      function tick() {
+        if (pressed) {
+          if (Date.now() - pressedAt < STALE_PRESS_MS) return
+          pressed = false
+        }
+        var now = read()
+        if (!now) {
+          pollKey = ''
+          nullTicks += 1
+          if (nullTicks >= NULL_TICKS_TO_CLEAR && last) {
+            last = ''
+            send('clear', null)
+          }
+          return
+        }
+        nullTicks = 0
+        var key = fingerprint(now)
+        if (key !== pollKey) {
+          pollKey = key
+          return
+        }
+        if (key === last) return
+        last = key
+        send('selection', now)
+      }
+
+      window.addEventListener('mousedown', function () {
+        pressed = true
+        pressedAt = Date.now()
+        // 帧内按下 = 用户开始新动作 → 让父页面先把浮标收掉。
+        // 主会话那边 document 的 mousedown 就是"点哪都先收起浮标"；帧内的点击父页面收不到，
+        // 不补这一条的话：在网页里点一下（取消选区/点别处）浮标会赖着不走。
+        send('press', null)
+      }, true)
+      // 松手才是"划完了"：与主会话一致（那边也是 mouseup 之后才弹浮标）
+      window.addEventListener('mouseup', function () {
+        pressed = false
+        setTimeout(report, 0)
+      }, true)
+      window.addEventListener('keyup', function () { setTimeout(report, 0) }, true)
+      // 焦点离开这一帧（点去别处）＝ 拖拽状态作废，免得 pressed 卡住
+      window.addEventListener('blur', function () { pressed = false }, true)
+      // 帧内滚动/改尺寸 → 位置变了，重报一次（父页面据此挪浮标）。这两条不许 clear
+      window.addEventListener('scroll', function () {
+        if (pressed) return
+        setTimeout(function () {
+          report(false)
+        }, 60)
+      }, true)
+      window.addEventListener('resize', function () {
+        if (!pressed) report(false)
+      })
+      window.addEventListener('message', function (event) {
+        var data = event && event.data
+        if (!data || data.__dshSel !== 1) return
+        if (data.kind === 'ping') {
+          send('hello', null)
+          report()
+        }
+        if (data.kind === 'rescan') report()
+      })
+      try {
+        document.addEventListener('selectionchange', function () {
+          // 拖拽中不报；键盘扩选（Shift+方向键）没有 mousedown，照旧即时上报
+          if (!pressed) report()
+        })
+      } catch (error) {
+        /* 老环境没有 selectionchange：轮询兜着 */
+      }
+      setInterval(tick, 250)
+      setTimeout(report, 60)
+    }
+
+    /** 注入标记：既用来认"这份 HTML 已经桥过"，也是 iframe 元素上的记号。 */
+    var BRIDGE_MARK = 'data-dsh-sel-bridge'
+
+    /**
+     * 把桥脚本插进一份 HTML（返回新串；没有可插的地方 / 已经插过 → null）。
+     *
+     * 基础预览（srcdoc）那份 HTML 已经过宿主 DOMPurify 清洗：无脚本、无外链，
+     * 且带一条 `script-src 'none'` 的 CSP。我们**只放宽这一条**到 'unsafe-inline'
+     * （好让桥跑起来），`default-src 'none'` / `connect-src 'none'` / `img-src data:`
+     * 等其余限制原样保留 —— 预览页依然联不了网、加载不了外部资源。
+     */
+    function bridgeIntoHtml(html) {
+      var text = String(html || '')
+      if (!text || text.indexOf(BRIDGE_MARK) >= 0) return null
+      text = text.replace(/script-src\s+'none'/i, "script-src 'unsafe-inline'")
+      var tag = '<scr' + 'ipt ' + BRIDGE_MARK + '>(' + String(bridgeBody) + ')();</scr' + 'ipt>'
+      return insertIntoHtml(text, tag)
+    }
+
+    /**
+     * 插入位置按"尽量靠前、但别破坏文档"排序：
+     * charset（中文标签不能变乱码）→ head → html → 第一个 script 之前 → doctype 之后 → 最前。
+     */
+    function insertIntoHtml(html, tag) {
+      var anchors = [/<meta[^>]+charset[^>]*>/i, /<head[^>]*>/i, /<html[^>]*>/i]
+      for (var i = 0; i < anchors.length; i += 1) {
+        var hit = anchors[i].exec(html)
+        if (hit) {
+          var cut = hit.index + hit[0].length
+          return html.slice(0, cut) + tag + html.slice(cut)
+        }
+      }
+      var script = /<script/i.exec(html)
+      if (script) return html.slice(0, script.index) + tag + html.slice(script.index)
+      var doctype = /^\s*<!doctype[^>]*>/i.exec(html)
+      if (doctype) {
+        var end = doctype.index + doctype[0].length
+        return html.slice(0, end) + tag + html.slice(end)
+      }
+      return tag + html
+    }
+
     // ────────────────────── 主逻辑 ──────────────────────
 
     function apply(ctx) {
@@ -1289,6 +1642,11 @@ window.__ModuleLoader__.load({
         raw: '',
         /** 'idle' | 'loading' | 'streaming' | 'done' | 'error'。 */
         phase: 'idle',
+        /**
+         * 当前选区是不是来自**侧边栏网页里的桥**（iframe 帧内上报）。
+         * 为 true 时顶层选区塌掉不算"选区没了"——那种塌陷是我们点浮标造成的。
+         */
+        bridgeActive: false,
         /** 计时与统计。 */
         startedAt: 0,
         elapsed: 0,
@@ -1585,9 +1943,15 @@ window.__ModuleLoader__.load({
         if (panelOpen) return
         var selection = window.getSelection()
         if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+          // 侧边栏网页里的选区**不在本文档**：点浮标会让本文档的选区塌掉
+          // （于是每次点浮标都会先跑到这里），所以只要帧内那条选区还活着就别收浮标。
+          // 帧内清空选区时桥会发 clear，那里才是真正的"该收"信号。
+          if (state.bridgeActive && state.selection && state.selection.source === 'iframe') return
           hideButton()
           return
         }
+        // 本文档里出现了真选区：帧内那条让位（两处同时有选区时以本文档为准）
+        state.bridgeActive = false
         // 划到自己界面上（胶囊/面板/历史列表）时什么都不做
         try {
           var ownRange = selection.getRangeAt(0)
@@ -1614,7 +1978,7 @@ window.__ModuleLoader__.load({
           hideButton()
           return
         }
-        state.selection = { text: text.trim(), range: range.cloneRange(), rect: rect }
+        state.selection = { text: text.trim(), range: range.cloneRange(), rect: rect, source: 'document' }
         showButton(rect)
       }
 
@@ -1648,6 +2012,290 @@ window.__ModuleLoader__.load({
         button.style.display = 'none'
         setButtonPop(false)
       }
+
+      // —— 侧边栏网页（iframe）划词桥的父侧接线 ——
+
+      /**
+       * 我们桥过的帧：frame → 自己建的 blob url（'' = srcdoc 帧，没有 blob 要回收）。
+       * 用 Map 而不是数组：既要按帧查自己的 url，也要遍历找回消息来源对应的帧。
+       */
+      var bridged = new Map()
+      /** 总开关：host 的 bridgeSidebarPreview 说关就关（见下面 ping 分支）。 */
+      var bridgeOn = true
+      /** 扫描节流用的定时器 id。 */
+      var bridgeScanId = 0
+      var bridgeObserver = null
+
+      function ownedUrl(frame) {
+        var url = bridged.get(frame)
+        return url === undefined ? '' : url
+      }
+
+      /** 消息来源 → 帧（只认我们桥过的帧，别的窗口发来的消息一概不理）。 */
+      function frameBySource(source) {
+        var found = null
+        bridged.forEach(function (url, frame) {
+          if (found) return
+          try {
+            if (frame.contentWindow && frame.contentWindow === source) found = frame
+          } catch (error) {
+            /* 跨源取 contentWindow 可能抛，忽略 */
+          }
+        })
+        return found
+      }
+
+      /** 沙箱补一个 allow-scripts（**绝不补 allow-same-origin**）：桥要跑起来。 */
+      function ensureScriptsAllowed(frame) {
+        var sandbox = frame.getAttribute('sandbox')
+        if (sandbox === null) return // 没有 sandbox 属性 = 同源帧，不归这条路管
+        if (!/(^|\s)allow-scripts(\s|$)/.test(sandbox)) {
+          frame.setAttribute('sandbox', (sandbox + ' allow-scripts').trim())
+        }
+      }
+
+      /** 帧内坐标 → 视口坐标；选区滚出帧的可视区就返回 null（免得浮标飘到主会话上）。 */
+      function mapFrameRect(frame, reported) {
+        if (!reported) return null
+        var box
+        try {
+          box = frame.getBoundingClientRect()
+        } catch (error) {
+          return null
+        }
+        if (!box || (!box.width && !box.height)) return null
+        var left = box.left + Number(reported.x || 0)
+        var top = box.top + Number(reported.y || 0)
+        var right = box.left + Number(reported.right || 0)
+        var bottom = box.top + Number(reported.bottom || 0)
+        if (!(right > left)) right = left + Number(reported.w || 0)
+        if (!(bottom > top)) bottom = top + Number(reported.h || 0)
+        if (bottom < box.top + 2 || top > box.bottom - 2) return null
+        top = clamp(top, box.top, box.bottom)
+        bottom = clamp(bottom, box.top, box.bottom)
+        left = clamp(left, box.left, box.right)
+        right = clamp(right, box.left, box.right)
+        return {
+          left: left,
+          top: top,
+          right: right,
+          bottom: bottom,
+          width: Math.max(0, right - left),
+          height: Math.max(0, bottom - top),
+        }
+      }
+
+      /** 面板里的位置标签：帧内认出来的（代码块/表格）优先，否则按帧的来源给。 */
+      function labelForFrame(frame, frameLabel) {
+        if (frameLabel === '代码块' || frameLabel === '表格') return frameLabel
+        if (frame.getAttribute('data-html-preview') !== null) return '侧边栏网页'
+        // 其他插件的网页（例如「图解」）：用帧自己的 title 当位置标签，比笼统的"网页内容"有用
+        var title = String(frame.getAttribute('title') || '')
+          .replace(/\s+/g, ' ')
+          .trim()
+        return title ? title.slice(0, 24) : '网页内容'
+      }
+
+      /**
+       * 这一帧能不能桥。
+       *
+       * 只认"文档确实是我们能改写的那两种"：`srcdoc` 或 `blob:` —— 远端站点 iframe 与
+       * 路由 URL 的预览器（如 better-sidebar 的 HTML 预览）一概不动，它们的资源改写
+       * 与生命周期归它们自己。
+       *
+       * 沙箱上分两档，因为"补 allow-scripts"是有代价的：
+       *   · 宿主自己的 HTML 预览（`data-html-preview`）：内容已由宿主 DOMPurify 清洗成
+       *     "无脚本、无外链"，补 allow-scripts 之后真正会跑的只有桥自己，可以补；
+       *   · 其他插件的网页（如「图解」的 `blob:` 帧）：**只桥本来就允许脚本的**——
+       *     不给别人的沙箱加权限，免得把一份刻意不跑脚本的文档变成会跑脚本。
+       */
+      function bridgeableFrame(frame) {
+        if (!frame || frame.nodeType !== 1 || !frame.isConnected) return false
+        if (panel.contains(frame)) return false // 我们自己的小窗（含网页答案预览）不桥
+        var hasSrcdoc = frame.getAttribute('srcdoc') !== null
+        var src = frame.getAttribute('src') || ''
+        if (!hasSrcdoc && !/^blob:/i.test(src)) return false
+        var sandbox = frame.getAttribute('sandbox')
+        if (sandbox === null) return false
+        if (frame.getAttribute('data-html-preview') !== null) return true
+        return /(^|\s)allow-scripts(\s|$)/.test(sandbox)
+      }
+
+      function bridgeFrame(frame) {
+        if (!bridgeOn || !bridgeableFrame(frame)) return
+        var srcdoc = frame.getAttribute('srcdoc')
+        if (srcdoc !== null && srcdoc !== undefined) {
+          if (srcdoc.indexOf(BRIDGE_MARK) >= 0) return // 已经桥过（我们自己写回去的那份）
+          var next = bridgeIntoHtml(srcdoc)
+          if (!next) return
+          // 顺序有讲究（Chrome 153 实测）：**先补沙箱、再改 srcdoc，且必须在同一个任务里**。
+          // 先改 srcdoc 再补沙箱、或者分两个任务改，帧都不会带着 allow-scripts 重新加载
+          // （脚本静默不跑，表现为"注入了但没反应"）。
+          ensureScriptsAllowed(frame)
+          frame.setAttribute('data-dsh-sel-bridged', '1')
+          frame.setAttribute('srcdoc', next)
+          bridged.set(frame, '')
+          return
+        }
+        var src = frame.getAttribute('src') || ''
+        // 只动 blob:（宿主与「图解」这类插件都是用它装生成页的）。
+        // 路由 URL / 远端地址一概不碰：那些的资源改写与生命周期归宿主，插手只会弄坏预览。
+        if (!/^blob:/i.test(src)) return
+        if (src === ownedUrl(frame)) return // 已经是我们换上去的那份
+        fetch(src)
+          .then(function (response) {
+            // 原 blob 的 MIME **要跟着搬**：blob: 文档没有"父文档编码"可继承，
+            // 编码只来自这个 content-type（或页面里的 meta）。「图解」建 blob 时写的是
+            // `text/html;charset=utf-8`，我们若退回裸 `text/html`，页面又没写 meta charset 的话，
+            // 整页中文会变成乱码（实测过：`鍥捐В椤?`）。
+            var type = 'text/html'
+            try {
+              var header = response.headers && response.headers.get && response.headers.get('content-type')
+              if (header) type = header
+            } catch (error) {
+              /* 取不到就退回 text/html：与原行为一致 */
+            }
+            return response.text().then(function (text) {
+              return { text: text, type: type }
+            })
+          })
+          .then(function (loaded) {
+            if (!bridgeOn || !frame.isConnected) return
+            var bridgedHtml = bridgeIntoHtml(loaded.text)
+            if (!bridgedHtml) return
+            var url = URL.createObjectURL(new Blob([bridgedHtml], { type: loaded.type }))
+            var previous = ownedUrl(frame)
+            bridged.set(frame, url)
+            ensureScriptsAllowed(frame)
+            frame.setAttribute('data-dsh-sel-bridged', '1')
+            frame.setAttribute('src', url)
+            if (previous) {
+              try {
+                URL.revokeObjectURL(previous)
+              } catch (error) {
+                /* 回收失败不致命 */
+              }
+            }
+          })
+          .catch(function () {
+            /* 读不到就放着：原预览照常显示，只是这一帧没有划词桥 */
+          })
+      }
+
+      /** 帧没了（关标签页/切源码视图）就顺手回收我们自己建的 blob，别漏。 */
+      function pruneBridged() {
+        var dead = []
+        bridged.forEach(function (url, frame) {
+          if (!frame.isConnected) dead.push(frame)
+        })
+        for (var i = 0; i < dead.length; i += 1) {
+          var url = bridged.get(dead[i])
+          if (url) {
+            try {
+              URL.revokeObjectURL(url)
+            } catch (error) {
+              /* 回收失败不致命 */
+            }
+          }
+          // 帧没了就不会再有 clear 消息了：把它占着的那条选区一起清掉，
+          // 否则 `bridgeActive` 会一直挂着（表现为顶层选区塌掉也不收浮标）。
+          if (state.selection && state.selection.frame === dead[i]) {
+            state.selection = null
+            state.bridgeActive = false
+            hideButton()
+          }
+          bridged.delete(dead[i])
+        }
+      }
+
+      function scanPreviewFrames() {
+        if (!bridgeOn) return
+        // 无浏览器测试的桩 DOM 没有 querySelectorAll：桥整体静默跳过
+        if (typeof document.querySelectorAll !== 'function') return
+        pruneBridged()
+        // 扫全部 iframe 再按 bridgeableFrame 过滤：宿主的 HTML 预览、以及别的插件
+        // 在侧边栏渲染的生成网页（「图解」那种 blob: 帧）都在这条路上，
+        // 不能只看宿主的 data-html-preview 标记。
+        var frames = document.querySelectorAll('iframe')
+        for (var i = 0; i < frames.length; i += 1) bridgeFrame(frames[i])
+      }
+
+      function scheduleBridgeScan() {
+        if (bridgeScanId) return
+        bridgeScanId = later(function () {
+          bridgeScanId = 0
+          scanPreviewFrames()
+        }, 120)
+      }
+
+      /**
+       * 帧内桥报过来的选区：换算坐标 → 复用同一套浮标与面板。
+       *
+       * 只认"我们桥过的帧"发来的消息（`frameBySource`）；面板开着时按主会话的老规矩
+       * 不另开一个（要划新词先按 Esc 收起）。
+       */
+      var offBridgeMessage = listen(window, 'message', function (event) {
+        var data = event && event.data
+        if (!data || data.__dshSel !== 1) return
+        var frame = frameBySource(event.source)
+        if (!frame) return
+        if (data.kind === 'press') {
+          // 帧内按下：与主会话一致——先收浮标。父页面收不到帧内的 mousedown，
+          // 少了这一条，在网页里点一下（取消选区、点别处、点另一个网页）浮标就赖着不走。
+          if (state.selection && state.selection.source === 'iframe' && state.selection.frame !== frame) {
+            // 点的是**另一个**帧：那条选区已经不是用户此刻在看的了，连状态一起清
+            state.selection = null
+            state.bridgeActive = false
+          }
+          hideButton()
+          return
+        }
+        if (data.kind === 'clear') {
+          if (state.selection && state.selection.frame === frame) {
+            state.selection = null
+            state.bridgeActive = false
+            hideButton()
+          }
+          return
+        }
+        if (data.kind !== 'selection' || !data.sel) return
+        if (panelOpen) return
+        if (!frame.isConnected) return
+        var text = String(data.sel.text || '')
+        if (!text.trim() || text.length > MAX_SELECTION) return
+        var rect = mapFrameRect(frame, data.sel.rect)
+        if (!rect) {
+          // 选区滚出帧的可视区：把浮标收掉（帧内再滚回来会重新报）
+          if (state.selection && state.selection.frame === frame) hideButton()
+          return
+        }
+        state.selection = {
+          text: text.trim(),
+          /** 'document'（顶层选区，缺省）| 'iframe'（侧边栏网页，上下文由帧内桥给）。 */
+          source: 'iframe',
+          frame: frame,
+          rect: rect,
+          frameRect: data.sel.rect,
+          context: String(data.sel.context || ''),
+          keyContext: String(data.sel.keyContext || ''),
+          label: labelForFrame(frame, data.sel.label),
+        }
+        state.bridgeActive = true
+        showButton(rect)
+      })
+
+      // 侧边栏里的预览帧是宿主 React 渲染的：新开标签、切预览/源码、文件变了都会换帧，
+      // 所以既要初始扫一遍，也要盯着 DOM（只盯 srcdoc/src 两个属性 + 子节点增删）。
+      if (typeof MutationObserver === 'function') {
+        bridgeObserver = new MutationObserver(scheduleBridgeScan)
+        bridgeObserver.observe(document.body || document.documentElement, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['srcdoc', 'src'],
+        })
+      }
+      scheduleBridgeScan()
 
       // —— 面板 ——
 
@@ -1745,6 +2393,11 @@ window.__ModuleLoader__.load({
       }
 
       function openForSelection(selection) {
+        // 侧边栏网页里的选区：父页面读不到那个文档，上下文只能由帧内桥就地采好带过来
+        if (selection.source === 'iframe') {
+          openPanelWith(selection.text, selection.context || '', selection.label, selection.rect, selection.keyContext)
+          return
+        }
         var contextInfo = collectContext(selection.range ? rangeSelection(selection.range) : window.getSelection())
         openPanelWith(selection.text, contextInfo.context, contextInfo.label, selection.rect, contextInfo.keyContext)
       }
@@ -4312,6 +4965,8 @@ window.__ModuleLoader__.load({
         .then(function (data) {
           modelCatalog.current = (data && data.route) || null
           modelCatalog.stages = { chat: (data && data.reasoningEffortByStage && data.reasoningEffortByStage.chat) || '' }
+          // 侧边栏网页划词桥的总开关（host 配置 bridgeSidebarPreview，默认开）
+          if (data && data.bridgeSidebarPreview === false) bridgeOn = false
           paintModelPill()
           return null
         })
@@ -4632,11 +5287,61 @@ window.__ModuleLoader__.load({
         resizing: function () {
           return !!pillObserver
         },
+        /**
+         * 自检用：侧边栏网页划词桥的状态。
+         * frames 里的每一项对应一个"桥过的预览帧"；own=true 表示那一帧的文档
+         * 是我们自己重发过的 blob（交互式预览走这条）。
+         */
+        bridge: function () {
+          var frames = []
+          bridged.forEach(function (url, frame) {
+            frames.push({
+              connected: frame.isConnected === true,
+              own: !!url,
+              srcdoc: frame.getAttribute('srcdoc') !== null,
+              sandbox: frame.getAttribute('sandbox'),
+            })
+          })
+          return {
+            on: bridgeOn,
+            frames: frames,
+            active: !!state.bridgeActive,
+            selection: state.selection && state.selection.source === 'iframe' ? state.selection.text : '',
+          }
+        },
+        /** 自检用：扫一遍预览帧（等价于 DOM 变动后的那次自动扫描）。 */
+        bridgeScan: function () {
+          scanPreviewFrames()
+          return window.__dshSelectionExplain.bridge()
+        },
+        /** 自检用：当前选区的来源与标签（source=iframe 表示来自侧边栏网页里的桥）。 */
+        selection: function () {
+          if (!state.selection) return null
+          return {
+            text: state.selection.text,
+            source: state.selection.source || 'document',
+            label: state.selection.label || '',
+            context: state.selection.context || '',
+            keyContext: state.selection.keyContext || '',
+          }
+        },
+        /** 自检用：最近一次请求载荷的关键字段（标签 / 上下文 / 选中文字）。 */
+        payload: function () {
+          if (!state.payload) return null
+          return {
+            text: state.payload.text,
+            label: state.payload.label,
+            context: state.payload.context,
+            kind: state.payload.kind,
+            stage: state.payload.stage,
+          }
+        },
         /** 模拟"刷新页面后"：内存里那段小窗没了，只剩 host 上的历史。 */
         reset: function () {
           closePanel()
           state.payload = null
           state.selection = null
+          state.bridgeActive = false
           state.parts = { translation: '', detail: '' }
           state.turns = []
           state.raw = ''
@@ -4688,6 +5393,7 @@ window.__ModuleLoader__.load({
           offPillClick()
           offPillKey()
           offPreviewHeight()
+          offBridgeMessage()
           offCellMd()
           offCellWeb()
           offPrefKeys()
@@ -4708,6 +5414,26 @@ window.__ModuleLoader__.load({
             pillObserver = null
           }
           if (typeof offSlot === 'function') offSlot()
+          // 划词桥：摘观察者与消息监听，并把我们自己建的预览 blob 全部回收
+          if (bridgeScanId) clearTimeout(bridgeScanId)
+          bridgeScanId = 0
+          if (bridgeObserver) {
+            try {
+              bridgeObserver.disconnect()
+            } catch (error) {
+              /* noop */
+            }
+            bridgeObserver = null
+          }
+          bridged.forEach(function (url) {
+            if (!url) return
+            try {
+              URL.revokeObjectURL(url)
+            } catch (error) {
+              /* noop */
+            }
+          })
+          bridged.clear()
           state.turns = []
           if (state.request) state.request.abort()
           for (var i = 0; i < timers.length; i++) clearTimeout(timers[i])

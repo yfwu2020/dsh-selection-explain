@@ -58,7 +58,7 @@ jobs:
       - name: 构建（tsc 编译 host + 拷贝 client bundle）
         run: bash scripts/build.sh
 
-      - name: 测试（489 条断言）
+      - name: 测试（filters / prompt / bridge / client / transcript / guard；真浏览器冒烟无 Chrome 自动 SKIP）
         run: npm test
 
       - name: 类型检查
