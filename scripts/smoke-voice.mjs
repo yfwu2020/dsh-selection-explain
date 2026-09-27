@@ -511,11 +511,45 @@ try {
   /* 截图失败不影响断言 */
 }
 const midVoice = await cdp.eval('window.__dshSelectionExplain.voice()')
-assert('录音中提示在走秒', /正在录音 0:0[1-9]/.test(midVoice.note), midVoice.note)
-assert('麦克风电平在动（说明真在收声音）', midVoice.level > 0, String(midVoice.level))
+assert('录音中：工具行换成了录音行（✕ | 波形 | ■，与主会话同构）', midVoice.capture === true && midVoice.waveform === true && midVoice.stop === true, JSON.stringify({ capture: midVoice.capture, waveform: midVoice.waveform, stop: midVoice.stop }))
+assert('录音中不显示秒数文案（主会话也是只看波形）', midVoice.activity === '', JSON.stringify(midVoice.activity))
+assert('麦克风电平真的在动（假麦克风里放的是那段真语音）', midVoice.level > 0, String(midVoice.level))
+assert(
+  '波形真的在跳（80 根线里有明显高于 2px 基线的）',
+  Array.isArray(midVoice.bars) && midVoice.bars.length === 80 && Math.max.apply(null, midVoice.bars) > 4,
+  midVoice.bars ? `max=${Math.max.apply(null, midVoice.bars).toFixed(1)}` : 'no bars',
+)
+
+// 录音态下的窄窗口：✕ / 波形 / ■ / 发送键 都得在可视区里（多一个按钮最容易挤爆的就是这一行）
+try {
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 380, height: 760, deviceScaleFactor: 1, mobile: false })
+  await sleep(250)
+  const narrowRecording = await cdp.eval(`(() => {
+    const tools = document.querySelector('.dsh-sel-asktools')
+    const row = document.querySelector('.dsh-sel-capture')
+    const send = document.querySelector('.dsh-sel-asksend')
+    const panel = document.querySelector('.dsh-sel-panel')
+    if (!tools || !row || !send || !panel) return null
+    const box = (node) => node.getBoundingClientRect()
+    const panelBox = box(panel)
+    const sendBox = box(send)
+    return {
+      overflow: tools.scrollWidth - tools.clientWidth,
+      sendInPanel: sendBox.right <= panelBox.right + 1 && sendBox.bottom <= panelBox.bottom + 1,
+      rowInPanel: box(row).right <= panelBox.right + 1,
+    }
+  })()`)
+  assert('380px 录音态：录音行与发送键都在面板里、不横向溢出', !!narrowRecording && narrowRecording.overflow <= 1 && narrowRecording.sendInPanel && narrowRecording.rowInPanel, JSON.stringify(narrowRecording))
+  await cdp.send('Emulation.clearDeviceMetricsOverride')
+  await sleep(150)
+} catch (error) {
+  console.log('（录音态窄窗口检查跳过：' + String(error.message || error).slice(0, 120) + '）')
+}
 await sleep(2300)
 
-await clickSelector(cdp, '.dsh-sel-mic')
+// 结束录音按的是录音行里的 ■（不再是 🎤 —— 录音中 🎤 让位给录音行，和主会话一样）
+const stopBox = await clickSelector(cdp, '.dsh-sel-stop')
+assert('用鼠标点到了录音行的 ■（停止并识别）', !!stopBox, stopBox ? `${Math.round(stopBox.w)}x${Math.round(stopBox.h)}` : '找不到停止键')
 await cdp.waitFor(`window.__dshSelectionExplain.voice().phase !== 'recording'`, 8000)
 
 const gotText = await cdp.waitFor(
@@ -526,9 +560,8 @@ const finalState = await cdp.eval(
   `(() => { const box = document.querySelector('.dsh-sel-askbox'); return { value: box ? box.value : '', voice: window.__dshSelectionExplain.voice() } })()`,
 )
 assert('识别出来的文字插进了追问输入框', gotText, JSON.stringify(finalState.value))
-assert('提示说清了"已插入"（不是静默成功）', /已插入/.test(finalState.voice.note), finalState.voice.note)
-assert('识别完成后回到可再录的状态', ['idle', 'done'].indexOf(finalState.voice.phase) >= 0, finalState.voice.phase)
-assert('没有报错（tone 不是 error）', finalState.voice.tone !== 'error', `${finalState.voice.tone} ${finalState.voice.note}`)
+assert('识别完成后录音行收起、🎤 回来（和主会话一致：成功不另报一句）', finalState.voice.capture === false && finalState.voice.phase === 'idle', JSON.stringify({ capture: finalState.voice.capture, phase: finalState.voice.phase }))
+assert('没有报错（activity 不是错误色、也不是失败文案）', finalState.voice.activityTone !== 'error' && !/失败|未识别/.test(finalState.voice.activity), `${finalState.voice.activityTone} ${finalState.voice.activity}`)
 
 // 浏览器真发过来的那段音频：格式必须和 host 的契约一致（这是桩测不出来的那一环）
 assert('服务端拿到了浏览器录的音频', !!capturedAudio && capturedAudio.length > 44, capturedAudio ? String(capturedAudio.length) + ' 字节' : '没有')

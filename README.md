@@ -68,24 +68,24 @@
 
 ### 语音输入：不想打字就说话
 
-追问往往只有一两句（"这词在这里是不是贬义？"），可**打字**这件事本身就要把手从鼠标挪到键盘——和"划词"这个动作是矛盾的。输入框右下角因此多了一个麦克风：
+追问往往只有一两句（"这词在这里是不是贬义？"），可**打字**这件事本身就要把手从鼠标挪到键盘——和"划词"这个动作是矛盾的。输入框右下角因此多了一个麦克风，**交互与主会话的语音输入完全一致**（同一套录音行、同一个波形）：
 
 | 操作 | 结果 |
 | --- | --- |
-| 点一下 🎤 | 开始录音：按钮变成**红色停止键**，呼吸圈跟着说话强弱，输入框上方提示走秒 |
-| 再说一句 / 点红色键 / 到了 60 秒 | 结束录音 → 识别 → **文字插进输入框**（不是直接发送） |
-| 录音中按 `Esc` 或收起小窗 | 立刻取消，并且**松开麦克风**（不会留下"正在使用麦克风"的标识） |
+| 点一下 🎤 | 工具行换成**录音行**：`✕` 取消 · **实时波形**（跟着说话强弱） · `■` 停止 |
+| 再说一句 / 点 `■` / 到了 60 秒 | 结束录音 → 识别（其间显示「识别中…」+ 呼吸点）→ **文字插进输入框**（不是直接发送） |
+| 点 `✕` / 按 `Esc` / 收起小窗 / 切走这个窗口 | 立刻取消，并且**松开麦克风**（不会留下"正在使用麦克风"的标识） |
 | 录音中把这条消息发出去了 | 正在录的那段自动收掉（已经识别出来的文字不受影响） |
 
-<img src="assets/voice.png" alt="录音中的小窗：麦克风变成红色停止键，输入框上方提示「正在录音 0:01 · 再点一下结束」" width="540">
+<img src="assets/voice.png" alt="录音中的小窗：工具行换成「✕ 取消 · 实时波形 · ■ 停止」，右侧发送键原位不动" width="540">
 
 - **插进去，不是发出去**：识别结果落在光标处，可以和已经写了一半的话接着拼、改错字、再补第二段。识别有错字是常态，能改才有用。
 - **音频不落盘、不进会话**：录到的音频只在这一次识别里用一下，host 转写完即丢——不会写进 `~/.dsh`，也不会出现在会话记录里。
 - **识别在 host 上做**（装了本地 SenseVoice 就是**在你机器上**）：音频不出机器；识别器走 DSH 的语音识别服务，本机模型 / 云端服务都能用。
-- **出错会说清是哪一种**：没授权 / 没麦克风设备 / 浏览器不支持 / 没启用识别服务 / 录音太长 / 没听清——各给一句话；模型还没准备好时，提示里直接带一个 **`准备模型`** 按钮（下载在 host 上跑，关掉面板也继续）。
-- 一次最长 **60 秒**；需要 DSH 装着语音识别服务（`@deepseek-ai/dsh-experimental-speech-to-text`）。没有那个服务时，麦克风按钮会明说不可用，不会装作在录。
+- **出错留在录音行里说清是哪一种**：没授权 / 没麦克风设备 / 浏览器不支持 / 没启用识别服务 / 录音太长 / 没听清——各给一句原因 + 一个行内动作（🎤 重录，或模型没准备好时的 **`准备模型`** 按钮，下载在 host 上跑、关掉面板也继续）。按 `✕` 就收起、工具行原样还回来。
+- 一次最长 **60 秒**；需要 DSH 装着语音识别服务（`@deepseek-ai/dsh-experimental-speech-to-text`）。没有那个服务时，点麦克风会明说不可用，不会装作在录。
 
-<img src="assets/voice-inserted.png" alt="识别完成后：转写文字插进了输入框，提示「已插入 15 字（可以改完再发送）」" width="540">
+<img src="assets/voice-inserted.png" alt="识别完成后：转写文字插进了输入框，录音行收起、🎤 回位" width="540">
 
 ### 引用：把别处的文字带进追问
 
@@ -268,7 +268,7 @@ dsh plugin --profile web remove @yfwu2020/dsh-selection-explain
 | 点击按钮 | 弹出面板：顶部是选中文字，正文是「翻译」卡片 |
 | 点 `↓ 展开详解` | 加载完整会话背景，追加「详解」卡片 |
 | 面板底部输入框 | 就这段文字继续追问（`Enter` 发送 / `Shift+Enter` 换行） |
-| 输入框右边 🎤 | **语音输入**：点一下开始说，再点一下结束，识别出来的文字插进输入框（`Esc` 取消，一次最长 60 秒） |
+| 输入框右边 🎤 | **语音输入**（与主会话同一套 UI）：点一下开始说，`■` 结束并把文字插进输入框、`✕` 取消（`Esc` 同样取消，一次最长 60 秒） |
 | 小窗开着时划词 | 浮出的是 `❝ 引用`（不是 `✦ 解读`）：把这段文字挂进输入框的引用区，跟着下一条提问发给模型 |
 | 鼠标移到某条回答上 | 末尾浮出 `❝ 引用整条`：把整条回答挂进引用区（网页回答先折成 Markdown） |
 | `🕘 最近` | 打开最近划过的列表，点一条调回那段对话 |
@@ -299,8 +299,9 @@ window.__dshSelectionExplain.quotes()    // 待发送的引用：[{ id, label, t
 window.__dshSelectionExplain.quote('某段文字', '主界面选中') // 手工加一段引用（等价于点浮标）
 window.__dshSelectionExplain.compose()   // 引用 + 提问拼出来的那条消息原文（发给模型的就是它）
 window.__dshSelectionExplain.quoteState() // 引用浮标：{ visible, selection:{text,label,source}, panelOpen }
-window.__dshSelectionExplain.voice()        // 语音输入：{ phase:'idle'|'requesting'|'recording'|'transcribing'|'done', supported, note, tone, lastText, catalog }
-window.__dshSelectionExplain.voiceNode()    // 麦克风按钮节点（无头环境里可能挂了两棵树，用它拿真正带监听的那个）
+window.__dshSelectionExplain.voice()        // 语音输入：{ phase:'idle'|'requesting'|'recording'|'transcribing'|'feedback', capture, activity, dot, waveform, stop, action, bars, lastText, catalog }
+window.__dshSelectionExplain.voiceNode()    // 🎤 触发键节点（无头环境里可能挂了两棵树，用它拿真正带监听的那个）
+window.__dshSelectionExplain.voiceNodes()   // 录音行的各部件：{ row, cancel, wave, activity, action, stop }
 window.__dshSelectionExplain.askValue()     // 读追问输入框（传参即写入），用来验"转写文字插进去了"
 ```
 

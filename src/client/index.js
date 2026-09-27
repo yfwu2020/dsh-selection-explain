@@ -485,38 +485,43 @@ window.__ModuleLoader__.load({
       '.dsh-sel-asksend[data-mode="stop"]{background:var(--dsw-alias-label-secondary,rgba(120,120,120,.9));opacity:1}',
       '.dsh-sel-asksend[data-mode="stop"]:hover{filter:brightness(1.12)}',
       // ── 语音输入（麦克风）──
-      // 平时和其它图标按钮同款；录音时变成"红点 + 呼吸圈"，一眼看出"正在听"。
-      // 呼吸圈的强弱跟着实时音量（--sel-mic-level，0..1）：说话时有反应，
-      // 用户才知道麦克风真的在收（比单纯一句"正在录音"可信得多）。
-      '.dsh-sel-mic{position:relative;transition:background .15s ease,color .15s ease}',
-      '.dsh-sel-mic[data-state="recording"]{background:var(--dsw-alias-state-error-primary,#e5484d);color:#fff}',
-      '.dsh-sel-mic[data-state="recording"]:hover{filter:brightness(1.06)}',
-      '.dsh-sel-mic[data-state="recording"]::after{content:"";position:absolute;inset:0;border-radius:inherit;',
-      'border:2px solid var(--dsw-alias-state-error-primary,#e5484d);opacity:calc(.15 + var(--sel-mic-level,0) * .85);',
-      'transform:scale(calc(1 + var(--sel-mic-level,0) * .5));pointer-events:none}',
-      '.dsh-sel-mic[data-state="done"]{background:var(--sel-fill,#0f766e);color:var(--sel-fill-fg,#fff)}',
-      '.dsh-sel-mic[data-state="requesting"],.dsh-sel-mic[data-state="transcribing"]{opacity:.75}',
+      // **和主会话同一套交互**（官方 ui-voice-input）：平时是输入框右边的 🎤；
+      // 一旦开始录，工具行整个换成"录音行" ——`✕` | 实时波形 | `■`（识别中则是
+      // 「识别中…」+ 呼吸点），发送键原位不动。尺寸按小窗的 composer 收成 26px
+      // （主会话是 32px），其余结构、图标语义、波形算法都照抄，两处看起来才是同一个东西。
+      '.dsh-sel-mic{transition:background .15s ease,color .15s ease}',
       '@keyframes dsh-sel-spin{to{transform:rotate(360deg)}}',
-      '.dsh-sel-mic[data-state="requesting"] svg,.dsh-sel-mic[data-state="transcribing"] svg{animation:dsh-sel-spin .9s linear infinite}',
+      '.dsh-sel-mic[data-state="requesting"] svg{animation:dsh-sel-spin .9s linear infinite}',
       '.dsh-sel-mic:disabled{cursor:default;opacity:.35}',
-      // 输入框上方的短提示（录音秒数 / 识别中 / 出错 / 要不要先装模型）。
-      // 它只在有事要说的时候出现，说完了自己收起 —— 不占版面、不给正常输入添噪。
-      '.dsh-sel-asknote{display:none;align-items:center;gap:8px;padding:5px 9px;border-radius:10px;font-size:11.5px;line-height:1.5;',
-      'background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.14));color:var(--dsw-alias-label-secondary,inherit)}',
-      '.dsh-sel-asknote[data-show="1"]{display:flex}',
-      // 配色用宿主的语义变量（深浅主题各一套）——和宿主自己的 warning 组件同一套做法：
-      // 深浅由宿主决定，插件不自带一套"浅色专用的橙字"（那种在深色底上根本读不清）。
-      '.dsh-sel-asknote[data-tone="error"]{background:color-mix(in srgb,var(--dsw-alias-state-error-primary,#e5484d) 14%,transparent);',
-      'color:var(--dsw-alias-state-error-primary,#b42318)}',
-      '.dsh-sel-asknote[data-tone="warn"]{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#d97706) 14%,transparent);',
-      'color:var(--dsw-alias-state-warn-primary,#b45309)}',
-      '.dsh-sel-asknotetext{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}',
-      '.dsh-sel-noteactions{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px}',
-      '.dsh-sel-noteactions:empty{display:none}',
-      '.dsh-sel-notebtn{flex:0 0 auto;height:20px;padding:0 8px;border:1px solid currentColor;border-radius:10px;cursor:pointer;',
-      'background:transparent;color:inherit;font:inherit;font-size:11px;line-height:1;opacity:.85}',
-      '.dsh-sel-notebtn:hover{opacity:1}',
-      '.dsh-sel-notebtn:disabled{opacity:.4;cursor:default}',
+      // 录音行：flex:1 让它吃掉中间那截（主会话也是 waveform flex:1）
+      '.dsh-sel-capture{display:none;flex:1 1 auto;min-width:0;align-items:center;gap:8px}',
+      '.dsh-sel-capture[data-show="1"]{display:flex}',
+      // 圆键：和发送键同尺寸、同圆度；浅底 + hover 变深（主会话的 roundButton 也是这套）
+      '.dsh-sel-round{flex:0 0 auto;width:26px;height:26px;padding:0;border:0;border-radius:13px;cursor:pointer;',
+      'display:inline-grid;place-items:center;background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.14));',
+      'color:var(--dsw-alias-label-secondary,inherit)}',
+      '.dsh-sel-round:hover{background:var(--dsw-alias-interactive-bg-hover-solid,rgba(140,140,140,.28));',
+      'color:var(--dsw-alias-label-primary,inherit)}',
+      '.dsh-sel-round:disabled{cursor:default;opacity:.35}',
+      '.dsh-sel-round svg{width:14px;height:14px;display:block}',
+      // 停止键：图标是实心方块（主会话的 IconStopFill），颜色取主文字色 —— 一眼是"停"
+      '.dsh-sel-stop{color:var(--dsw-alias-label-primary,inherit)}',
+      // 波形：80 根竖线、中间对齐、静音时是一条虚线（算法与主会话逐行一致，见 paintWave）
+      '.dsh-sel-vwave{flex:1 1 auto;min-width:24px;height:24px;display:block;color:var(--dsw-alias-label-secondary,inherit)}',
+      // 状态文案（请允许使用麦克风… / 识别中… / 没听清…）：12px 次要色 + 可选呼吸点
+      '.dsh-sel-vactivity{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.4;',
+      'color:var(--dsw-alias-label-secondary,inherit);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+      '.dsh-sel-vdot{flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:var(--sel-a1,#0d9488);',
+      'animation:dsh-sel-pillpulse 1.4s ease-in-out infinite}',
+      '.dsh-sel-vactivity[data-tone="error"]{color:var(--dsw-alias-state-error-primary,#e5484d)}',
+      '.dsh-sel-vactivity[data-tone="warn"]{color:var(--dsw-alias-state-warn-primary,#b45309)}',
+      '.dsh-sel-vactslot{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px}',
+      '.dsh-sel-vactslot:empty{display:none}',
+      // 行内动作（准备模型 / 重新录音）：主会话是同款的 inlineAction
+      '.dsh-sel-vact{flex:0 0 auto;height:22px;padding:0 9px;border:1px solid currentColor;border-radius:11px;cursor:pointer;',
+      'background:transparent;color:inherit;font:inherit;font-size:11px;line-height:1;opacity:.85;white-space:nowrap}',
+      '.dsh-sel-vact:hover{opacity:1}',
+      '.dsh-sel-vact:disabled{opacity:.4;cursor:default}',
       '.dsh-sel-askbox:focus{border-color:var(--sel-a1,#0d9488)}',
       // 内容区里的「重新生成」：只在没有可用结果（失败 / 已停止 / 空回答）时出现
       '.dsh-sel-retry{margin-top:8px;border:1px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));background:transparent;',
@@ -2004,15 +2009,6 @@ window.__ModuleLoader__.load({
       // 顺序很重要 —— 先 append 到 askRow 再 append 输入框，否则会排到工具行下面去。
       var quotesBox = el('div', 'dsh-sel-quotes')
       askRow.appendChild(quotesBox)
-      // 语音提示条：录音秒数 / 识别中 / 出错 / "模型还没准备"都在这一行说，
-      // 位置在引用区与输入框之间（视线从按钮到提示不用跳）。空着时 display:none。
-      var askNote = el('div', 'dsh-sel-asknote')
-      var askNoteText = el('span', 'dsh-sel-asknotetext', '')
-      // 提示里可能带一个动作（例如"准备模型"）：放在文字右边，不挤占文字换行
-      var noteActions = el('span', 'dsh-sel-noteactions')
-      askNote.appendChild(askNoteText)
-      askNote.appendChild(noteActions)
-      askRow.appendChild(askNote)
       var askBox = el('textarea', 'dsh-sel-askbox')
       askBox.rows = 1
       askBox.placeholder = '就这段文字继续追问…（Enter 发送，Shift+Enter 换行）'
@@ -2042,8 +2038,8 @@ window.__ModuleLoader__.load({
       askSend.type = 'button'
       askSend.setAttribute('aria-label', '发送')
       askSend.appendChild(sendIcon())
-      // 语音输入：麦克风贴在发送键左边（和主会话 composer 的顺序一致）。
-      // 默认是图标；录音中变成「圆形停止」——同一个位置同一个键，点一下就收尾去识别。
+      // 语音输入：麦克风贴在发送键左边（和主会话 composer 的位置一致）。
+      // 平时就是这枚图标；一旦开始录，工具行整个换成下面的"录音行"（与主会话同一套）。
       var micButton = el('button', 'dsh-sel-iconbtn dsh-sel-mic')
       micButton.type = 'button'
       micButton.setAttribute('data-state', 'idle')
@@ -2063,11 +2059,65 @@ window.__ModuleLoader__.load({
       var modelMenu = el('div', 'dsh-sel-pickermenu')
       modelMenu.setAttribute('role', 'menu')
 
+      // ── 录音行（与主会话 ui-voice-input 同一套结构）──
+      //   [✕ 取消] [实时波形 / 状态文案] [■ 停止 或 行内动作] …… [↑ 发送（原位不动）]
+      // 录音时是「✕ + 波形 + ■」；请求权限与识别中是「✕ + 呼吸点 + 请允许使用麦克风…/识别中…」；
+      // 出错是「✕ + 原因 + 行内动作（准备模型 / 重新录音）」。
+      var captureRow = el('div', 'dsh-sel-capture')
+      captureRow.setAttribute('data-show', '0')
+      var voiceCancel = el('button', 'dsh-sel-round')
+      voiceCancel.type = 'button'
+      voiceCancel.setAttribute('aria-label', '取消')
+      voiceCancel.title = '取消（Esc）'
+      voiceCancel.appendChild(closeIcon())
+      // 波形：80 根竖线，静音时是一条虚线（算法照抄主会话的 Waveform）
+      var waveSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      waveSvg.setAttribute('class', 'dsh-sel-vwave')
+      waveSvg.setAttribute('viewBox', '0 0 640 40')
+      waveSvg.setAttribute('preserveAspectRatio', 'none')
+      waveSvg.setAttribute('role', 'img')
+      waveSvg.setAttribute('aria-label', '正在录音…')
+      var waveBars = []
+      for (var waveIndex = 0; waveIndex < 80; waveIndex += 1) {
+        var waveBar = document.createElementNS('http://www.w3.org/2000/svg', 'line')
+        waveBar.setAttribute('x1', String(waveIndex * 8 + 4))
+        waveBar.setAttribute('x2', String(waveIndex * 8 + 4))
+        waveBar.setAttribute('y1', '19')
+        waveBar.setAttribute('y2', '21')
+        waveBar.setAttribute('stroke', 'currentColor')
+        waveBar.setAttribute('stroke-width', '3')
+        waveBar.setAttribute('stroke-linecap', 'round')
+        waveBar.setAttribute('opacity', String(0.25 + waveIndex / 120))
+        waveSvg.appendChild(waveBar)
+        // 最新的电平在最右边：和主会话一样从右往左推
+        waveBars.unshift({ node: waveBar, level: 0 })
+      }
+      var voiceActivity = el('span', 'dsh-sel-vactivity')
+      voiceActivity.setAttribute('role', 'status')
+      var voiceDot = el('span', 'dsh-sel-vdot')
+      var voiceActivityText = el('span', null, '')
+      voiceActivity.appendChild(voiceDot)
+      voiceActivity.appendChild(voiceActivityText)
+      var voiceStop = el('button', 'dsh-sel-round dsh-sel-stop')
+      voiceStop.type = 'button'
+      voiceStop.setAttribute('aria-label', '停止并识别')
+      voiceStop.title = '停止并识别'
+      voiceStop.appendChild(stopIcon())
+      // 行内动作位：按状态放「准备模型」文字键或「重新录音」🎤圆键（主会话同款 inlineAction）
+      var voiceActionSlot = el('span', 'dsh-sel-vactslot')
+      captureRow.appendChild(voiceCancel)
+      captureRow.appendChild(waveSvg)
+      captureRow.appendChild(voiceActivity)
+      captureRow.appendChild(voiceActionSlot)
+      captureRow.appendChild(voiceStop)
+
       var askTools = el('div', 'dsh-sel-asktools')
+      var askSpacer = el('span', 'dsh-sel-askspace')
       askTools.appendChild(webMode)
-      askTools.appendChild(el('span', 'dsh-sel-askspace'))
+      askTools.appendChild(askSpacer)
       askTools.appendChild(modelPill)
       askTools.appendChild(micButton)
+      askTools.appendChild(captureRow)
       askTools.appendChild(askSend)
       askRow.appendChild(askBox)
       askRow.appendChild(askTools)
@@ -6028,15 +6078,17 @@ window.__ModuleLoader__.load({
       // 要解决的问题：追问往往只有一两句话（"这词在这里是不是贬义？"），
       // 但**打字**这件事本身就要把手从鼠标挪到键盘——和"划词"这个动作是矛盾的。
       //
-      // 交互：点麦克风 → 说 → 再点一下（或到 60 秒）→ 识别出来的文字**插进输入框**
-      // （不是直接发送：识别有错字，插进去还能改；而且在同一条里可以接着说第二段）。
-      // 录音中切走/收起小窗/停用插件都会立刻松开麦克风（不留下一直亮着的录音标识）。
+      // **UI 与主会话同一套**（官方 @deepseek-ai/dsh-experimental-client-ui-voice-input）：
+      // 平时是输入框右边的 🎤；开始录之后工具行换成录音行 ——`✕` | 实时波形 | `■`，
+      // 请求权限/识别中是「呼吸点 + 请允许使用麦克风…/识别中…」，出错是「原因 + 行内动作」。
+      // 波形算法（80 根线 / 50ms 采样 / 1+min(1,amp*5)*17 / 右侧最新）逐行照抄，
+      // 只有尺寸按小窗的 composer 收成 26px（主会话 32px）——两处看起来才是同一个东西。
       //
-      // 边界都走"说清楚"而不是"静默失败"：浏览器不支持、权限被拒、没有麦克风设备、
-      // 模型没准备好、没听清——每一种都在输入框上方给一句话（有救的还带一个按钮，
-      // 例如"准备模型"，首次要下载 1G 左右，必须用户自己点）。
+      // 识别出来的文字**插进输入框**（不是直接发送：识别有错字，插进去还能改，
+      // 也能在同一条里接着说第二段）。录音中切走/收起小窗/这条消息发出去/停用插件
+      // 都会立刻松开麦克风（不留下一直亮着的录音标识）。
 
-      /** 录音/识别状态机：idle → requesting → recording → transcribing → idle。 */
+      /** 状态机：idle → requesting → recording → transcribing →（feedback | idle）→ idle。 */
       var voice = {
         phase: 'idle',
         /**
@@ -6047,27 +6099,29 @@ window.__ModuleLoader__.load({
         capture: null,
         abort: null,
         ticker: 0,
+        waveFrame: 0,
+        waveAt: 0,
         startedAt: 0,
         maxSeconds: VOICE_FALLBACK_SECONDS,
         catalog: null,
         catalogAt: 0,
-        /** 面板关掉/插件停用时，这一轮是不是"用户主动取消"（是的话不给错误提示）。 */
-        noteTimer: 0,
-        doneTimer: 0,
+        idleTimer: 0,
         pollTimer: 0,
         lastClock: -1,
         level: 0,
         lastText: '',
+        /** feedback 阶段的行内动作（null = 只显示原因，不给按钮）。 */
+        action: null,
       }
 
       /** 录音失败的统一话术（浏览器抛的是 DOMException，用户看不懂）。 */
       var VOICE_ERRORS = {
-        unavailable: '这个浏览器不能录音（需要麦克风权限和 MediaRecorder）',
-        permission: '麦克风权限被拒绝了（在浏览器地址栏里可以改回来）',
-        missing: '没有找到麦克风设备',
-        interrupted: '录音被打断了（麦克风被别的程序占用？）',
-        empty: '这段录音是空的（没听到声音）',
-        cancelled: '已取消录音',
+        unavailable: '当前浏览器不支持录音，请使用支持麦克风的浏览器。',
+        permission: '麦克风权限未开启，请在浏览器和系统设置中允许访问。',
+        missing: '没有找到麦克风设备。',
+        interrupted: '录音中断，请重试。',
+        empty: '未识别到语音',
+        cancelled: '已取消语音输入。',
       }
 
       function voiceError(kind, extra) {
@@ -6085,60 +6139,82 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 输入框上方的短提示。
-       * @param text 文案（'' = 收起）
-       * @param tone '' | 'warn' | 'error'
-       * @param actions [{ label, run }]（有救的错误才带按钮）
-       * @param autoClear 自动收起毫秒数（0 = 一直留着，直到下一次操作）
+       * 状态行文案：
+       * @param text 文案
+       * @param options { dot: 显示呼吸点, tone: '' | 'warn' | 'error' }
        */
-      function setNote(text, tone, actions, autoClear) {
-        clearTimeout(voice.noteTimer)
-        askNoteText.textContent = text || ''
-        askNote.setAttribute('data-tone', tone || '')
-        while (noteActions.firstChild) noteActions.removeChild(noteActions.firstChild)
-        var list = actions || []
-        for (var i = 0; i < list.length; i += 1) {
-          ;(function (action) {
-            var node = el('button', 'dsh-sel-notebtn', action.label)
-            node.type = 'button'
-            listen(node, 'click', function (event) {
-              event.stopPropagation()
-              if (action.run) action.run()
-            })
-            noteActions.appendChild(node)
-          })(list[i])
-        }
-        askNote.setAttribute('data-show', text ? '1' : '0')
-        askNote.style.display = text ? 'flex' : 'none'
-        if (text && autoClear > 0) {
-          voice.noteTimer = setTimeout(function () {
-            askNote.setAttribute('data-show', '0')
-            askNote.style.display = 'none'
-          }, autoClear)
-        }
-        return text || ''
+      function setVoiceActivity(text, options) {
+        var opts = options || {}
+        voiceActivityText.textContent = String(text || '')
+        voiceActivity.setAttribute('data-tone', opts.tone || '')
+        voiceDot.style.display = opts.dot ? '' : 'none'
       }
 
-      /** 麦克风按钮：图标 + 提示语 + 可点性，全按当前状态来。 */
-      function paintMic() {
-        var phase = voice.phase
-        var icons = { idle: micIcon, done: micIcon, requesting: spinnerIcon, transcribing: spinnerIcon, recording: stopIcon }
-        micButton.setAttribute('data-state', phase)
-        micButton.setAttribute('aria-pressed', phase === 'recording' ? 'true' : 'false')
-        micButton.setAttribute('aria-label', phase === 'recording' ? '结束录音并转写' : '语音输入')
-        micButton.title =
-          phase === 'recording'
-            ? '结束并转成文字（Esc 取消）'
-            : phase === 'requesting'
-              ? '正在请求麦克风权限…（点一下取消）'
-              : phase === 'transcribing'
-                ? '正在识别…（点一下取消）'
-                : '语音输入（点一下开始说，再点一下结束并转成文字）'
-        micButton.textContent = ''
-        micButton.appendChild((icons[phase] || micIcon)())
-        if (phase !== 'recording' && micButton.style && typeof micButton.style.setProperty === 'function') {
-          micButton.style.setProperty('--sel-mic-level', '0')
+      /** 行内动作位：'prepare'（准备模型文字键）/ null（用 🎤 重录）/ 'none'（什么都不要）。 */
+      function setVoiceAction(kind) {
+        while (voiceActionSlot.firstChild) voiceActionSlot.removeChild(voiceActionSlot.firstChild)
+        voice.action = kind || null
+        if (kind === 'prepare') {
+          var prepareBtn = el('button', 'dsh-sel-vact', '准备模型')
+          prepareBtn.type = 'button'
+          prepareBtn.title = '在本机下载并准备识别模型（首次要下载，之后一直可用）'
+          listen(prepareBtn, 'click', function (event) {
+            event.stopPropagation()
+            prepareVoice()
+          })
+          voiceActionSlot.appendChild(prepareBtn)
+          return prepareBtn
         }
+        if (kind === 'retry') {
+          var retryMic = el('button', 'dsh-sel-round')
+          retryMic.type = 'button'
+          retryMic.setAttribute('aria-label', '重新录音')
+          retryMic.title = '重新录音'
+          retryMic.appendChild(micIcon())
+          listen(retryMic, 'click', function (event) {
+            event.stopPropagation()
+            startVoice()
+          })
+          voiceActionSlot.appendChild(retryMic)
+          return retryMic
+        }
+        return null
+      }
+
+      /**
+       * 出错/提示：录音行里给一句原因 +（有救的）一个动作。`retryable` 为真时给 🎤 重录键。
+       * 这是主会话的 feedback 阶段：它就一直停在那儿，直到用户点 ✕（或行内动作）。
+       */
+      function voiceFeedback(text, tone, action) {
+        voice.phase = 'feedback'
+        setVoiceActivity(text, { tone: tone || '' })
+        setVoiceAction(action)
+        paintVoice()
+      }
+
+      /** 按状态摆好录音行：idle 显 🎤，其余显录音行（✕ / 波形或文案 / ■ 或行内动作）。 */
+      function paintVoice() {
+        var phase = voice.phase
+        var capturing = phase !== 'idle'
+        captureRow.setAttribute('data-show', capturing ? '1' : '0')
+        captureRow.style.display = capturing ? 'flex' : 'none'
+        // 录音行出现时，工具行左边那三样（输出偏好 / 模型 / 🎤）让位——和主会话一样，
+        // 录音时那行只讲一件事：怎么结束、结束之后会得到什么。
+        webMode.style.display = capturing ? 'none' : ''
+        askSpacer.style.display = capturing ? 'none' : ''
+        modelPill.style.display = capturing ? 'none' : ''
+        micButton.style.display = capturing ? 'none' : ''
+        // 中间那格：录音时是波形，其余是文案；■ 只在录音时出现
+        var recording = phase === 'recording'
+        waveSvg.style.display = recording ? '' : 'none'
+        voiceActivity.style.display = recording ? 'none' : 'flex'
+        voiceStop.style.display = recording ? 'inline-grid' : 'none'
+        voiceCancel.title = phase === 'feedback' ? '关闭（Esc）' : '取消（Esc）'
+        voiceCancel.setAttribute('aria-label', voiceCancel.title)
+        // 🎤 触发键的状态：只在"请求权限"时转圈（其余都是普通图标 —— 和主会话一致）
+        micButton.setAttribute('data-state', phase === 'requesting' ? 'requesting' : 'idle')
+        micButton.setAttribute('aria-pressed', capturing ? 'true' : 'false')
+        micButton.title = '语音输入（点一下开始说，再点一下结束并转成文字）'
       }
 
       /** 识别器：目录里默认那个（没有就第一个）。 */
@@ -6168,10 +6244,68 @@ window.__ModuleLoader__.load({
           })
       }
 
+      /**
+       * 波形推进一帧（算法照抄主会话的 Waveform）：
+       * 新的电平从右边挤进来，整排往左推；静音时每条线只有 2px 高 —— 就是那条虚线。
+       * @param level 本帧电平（0 = 不采样，只把尺寸摆正）
+       */
+      function repaintWave(level) {
+        var next = level
+        for (var i = 0; i < waveBars.length; i += 1) {
+          var bar = waveBars[i]
+          var previous = bar.level
+          bar.level = next
+          next = previous
+          var height = 1 + Math.min(1, bar.level * 5) * 17
+          bar.node.setAttribute('y1', String(20 - height))
+          bar.node.setAttribute('y2', String(20 + height))
+        }
+      }
+
+      /** 把波形清回静音基线（新一次录音从头开始画；主会话是重建 SVG，效果一样）。 */
+      function resetWave() {
+        for (var i = 0; i < waveBars.length; i += 1) {
+          waveBars[i].level = 0
+          waveBars[i].node.setAttribute('y1', '19')
+          waveBars[i].node.setAttribute('y2', '21')
+        }
+      }
+
+      function stopWaveLoop() {
+        if (voice.waveFrame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(voice.waveFrame)
+        voice.waveFrame = 0
+        voice.waveAt = 0
+      }
+
+      /** 录音时的波形循环：50ms 采一次音量（和主会话同一个节拍）。 */
+      function startWaveLoop() {
+        stopWaveLoop()
+        if (typeof requestAnimationFrame !== 'function') return
+        var draw = function (now) {
+          if (voice.phase !== 'recording') return
+          // rAF 会给时间戳，但不是所有环境都给（桩、老实现）——缺了就用当前时间，别让波形卡住
+          var at = typeof now === 'number' ? now : Date.now()
+          if (at - voice.waveAt >= 50) {
+            voice.waveAt = at
+            var level = 0
+            try {
+              level = voice.capture ? voice.capture.level() : 0
+            } catch (error) {
+              level = 0
+            }
+            voice.level = level
+            repaintWave(level)
+          }
+          voice.waveFrame = requestAnimationFrame(draw)
+        }
+        voice.waveFrame = requestAnimationFrame(draw)
+      }
+
       function stopVoiceTicker() {
         if (voice.ticker) clearInterval(voice.ticker)
         voice.ticker = 0
         voice.lastClock = -1
+        stopWaveLoop()
       }
 
       /**
@@ -6254,7 +6388,7 @@ window.__ModuleLoader__.load({
                   var Ctx = window.AudioContext || window.webkitAudioContext
                   try {
                     context = new Ctx()
-                    // 没有用户手势时浏览器会把 AudioContext 挂起：音量条要动就得唤醒它
+                    // 没有用户手势时浏览器会把 AudioContext 挂起：波形要动就得唤醒它
                     if (context.state === 'suspended' && typeof context.resume === 'function') {
                       var resumed = context.resume()
                       if (resumed && typeof resumed.catch === 'function') resumed.catch(function () {})
@@ -6287,7 +6421,7 @@ window.__ModuleLoader__.load({
               )
           },
 
-          /** 实时音量（0..1 左右）：只用来驱动呼吸圈。 */
+          /** 实时音量（0..1 左右）：只用来驱动波形。 */
           level: function () {
             if (!analyser) return 0
             try {
@@ -6387,34 +6521,20 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /** 录音中的心跳：更新音量圈、秒数、到点自动收尾。 */
+      /** 录音中的心跳：到点自动收尾 + 记一次电平（波形另有自己的 50ms 循环）。 */
       function startVoiceTicker() {
         stopVoiceTicker()
         voice.ticker = setInterval(function () {
           if (voice.phase !== 'recording') return
           var elapsed = Date.now() - voice.startedAt
-          var level = 0
-          try {
-            level = voice.capture ? voice.capture.level() : 0
-          } catch (error) {
-            level = 0
-          }
-          // 说话时的 RMS 大概 0.02~0.25：乘 6 再夹住，圈子的强弱才看得出来
-          voice.level = clamp(level * 6, 0, 1)
-          if (micButton.style && typeof micButton.style.setProperty === 'function') {
-            micButton.style.setProperty('--sel-mic-level', voice.level.toFixed(2))
-          }
           var limit = voice.maxSeconds || VOICE_FALLBACK_SECONDS
           if (elapsed >= limit * 1000) {
             finishVoice()
             return
           }
-          var clock = Math.floor(elapsed / 1000)
-          if (clock !== voice.lastClock) {
-            voice.lastClock = clock
-            setNote('正在录音 ' + formatClock(elapsed) + ' · 再点一下结束（最长 ' + limit + ' 秒，Esc 取消）', '')
-          }
-        }, 120)
+          voice.lastClock = Math.floor(elapsed / 1000)
+        }, 200)
+        startWaveLoop()
       }
 
       /** 识别出来的文字 → 输入框（插在光标处，前后补空格，光标落在末尾，接着还能打字）。 */
@@ -6446,28 +6566,43 @@ window.__ModuleLoader__.load({
       function failVoice(generation, error) {
         if (generation !== voice.generation) return
         voice.generation += 1
-        voice.phase = 'idle'
         var capture = voice.capture
         voice.capture = null
         stopVoiceTicker()
         if (capture) capture.dispose()
-        paintMic()
-        // "用户取消"不是错（点了取消、收了小窗、插件停用都走这里），不给错误提示
+        // "用户取消"不是错（点了 ✕、收了小窗、插件停用都走这里），不给错误提示
         var kind = error && error.voiceKind
-        if (kind === 'cancelled') return
-        setNote(voiceMessageOf(error), 'error')
+        if (kind === 'cancelled') {
+          resetVoiceRow()
+          return
+        }
+        // 没听清 / 中断 / 失败：留在 feedback 里给原因 + 🎤 重录（和主会话一致）
+        voiceFeedback(voiceMessageOf(error), kind === 'empty' || kind === 'interrupted' ? 'warn' : 'error', 'retry')
+      }
+
+      /** 回到 idle：工具行原样还回去。 */
+      function resetVoiceRow() {
+        stopVoiceTicker()
+        if (voice.idleTimer) clearTimeout(voice.idleTimer)
+        voice.idleTimer = 0
+        voice.phase = 'idle'
+        voice.action = null
+        while (voiceActionSlot.firstChild) voiceActionSlot.removeChild(voiceActionSlot.firstChild)
+        setVoiceActivity('', {})
+        paintVoice()
       }
 
       /** 开始一段录音（先问 host 要目录：能不能录、最长多久）。 */
       function startVoice() {
         if (!recordingSupported()) {
-          setNote(VOICE_ERRORS.unavailable, 'error')
+          voiceFeedback(VOICE_ERRORS.unavailable, 'error', null)
           return
         }
         var generation = ++voice.generation
         voice.phase = 'requesting'
-        paintMic()
-        setNote('正在请求麦克风…', '')
+        setVoiceActivity('请允许使用麦克风…', { dot: true })
+        setVoiceAction(null)
+        paintVoice()
         fetchSpeechCatalog(true)
           .then(function (catalog) {
             if (generation !== voice.generation) return null
@@ -6480,10 +6615,8 @@ window.__ModuleLoader__.load({
                   : catalog && catalog.error
                     ? catalog.error
                     : '这个部署没有可用的语音识别服务'
-              // 有救的（模型没装）给一个「准备」按钮：下载在 host 上跑，几百 MB 到 1G，得用户自己点
-              setNote(text, 'warn', provider ? [{ label: '准备模型', run: prepareVoice }] : [])
-              voice.phase = 'idle'
-              paintMic()
+              // 有救的（模型没装）给一个「准备模型」按钮：下载在 host 上跑，几百 MB 到 1G，得用户自己点
+              voiceFeedback(text, 'warn', provider ? 'prepare' : 'retry')
               return null
             }
             var limits = catalog.limits || {}
@@ -6499,9 +6632,10 @@ window.__ModuleLoader__.load({
               }
               voice.phase = 'recording'
               voice.startedAt = Date.now()
-              paintMic()
+              resetWave()
+              setVoiceActivity('', {})
+              paintVoice()
               startVoiceTicker()
-              setNote('正在录音 0:00 · 再点一下结束（最长 ' + voice.maxSeconds + ' 秒，Esc 取消）', '')
               return true
             })
           })
@@ -6518,8 +6652,9 @@ window.__ModuleLoader__.load({
         var maxSeconds = voice.maxSeconds || VOICE_FALLBACK_SECONDS
         stopVoiceTicker()
         voice.phase = 'transcribing'
-        paintMic()
-        setNote('正在识别…', '')
+        setVoiceActivity('识别中…', { dot: true })
+        setVoiceAction(null)
+        paintVoice()
         var abort = typeof AbortController === 'function' ? new AbortController() : null
         voice.abort = abort
         capture
@@ -6527,7 +6662,7 @@ window.__ModuleLoader__.load({
           .then(function (bytes) {
             if (generation !== voice.generation) return null
             if (!bytes || !bytes.length) throw voiceError('empty')
-            if (bytes.length > VOICE_MAX_BYTES) throw new Error('录音太长了，这一句请短一点')
+            if (bytes.length > VOICE_MAX_BYTES) throw new Error('录音超过服务限制，请缩短录音后重试。')
             return fetch(SPEECH_TRANSCRIBE, {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -6542,59 +6677,55 @@ window.__ModuleLoader__.load({
               if (!data || data.ok !== true) {
                 var error = String((data && data.error) || '识别失败')
                 if (data && data.code === 'unprepared') {
-                  setNote(error, 'warn', [{ label: '准备模型', run: prepareVoice }])
+                  voiceFeedback(error, 'warn', 'prepare')
                 } else if (data && data.code === 'empty-transcript') {
-                  setNote('没听清（这句里没有识别到内容，再说一次试试）', 'warn', [], 4000)
+                  voiceFeedback(VOICE_ERRORS.empty, 'warn', 'retry')
                 } else {
-                  setNote('识别失败：' + error, 'error')
+                  voiceFeedback('语音识别失败：' + error, 'error', 'retry')
                 }
                 return null
               }
               var text = String(data.text || '').trim()
               if (!text) {
-                setNote('没听清（这句里没有识别到内容，再说一次试试）', 'warn', [], 4000)
+                voiceFeedback(VOICE_ERRORS.empty, 'warn', 'retry')
                 return null
               }
               insertTranscript(text)
-              // 成功也给一句：用户刚对着麦克风说话，总得知道"听成了什么、去哪了"
-              setNote('已插入 ' + text.length + ' 字（可以改完再发送）', '', [], 2600)
-              voice.phase = 'done'
-              if (voice.doneTimer) clearTimeout(voice.doneTimer)
-              voice.doneTimer = setTimeout(function () {
-                if (voice.phase !== 'done') return
-                voice.phase = 'idle'
-                paintMic()
-              }, 1200)
+              // 插入成功 = **直接回 idle**：文字就摆在上面那行，不必再报一次
+              //（主会话也是这样：成功不额外说话，录音行收起、🎤 回位）。
+              voice.capture = null
+              voice.abort = null
+              resetVoiceRow()
               return text
             })
           })
           .catch(function (error) {
             if (generation !== voice.generation) return
-            // 用户点了取消 / 收起小窗：静默（这不是失败，是他自己不要了）
+            // 用户点了 ✕ / 收起小窗：静默（这不是失败，是他自己不要了）
             if (error && error.name === 'AbortError') return
             var kind = error && error.voiceKind
             if (kind === 'cancelled') return
-            setNote('识别失败：' + voiceMessageOf(error), 'error')
+            if (kind === 'empty') {
+              voiceFeedback(VOICE_ERRORS.empty, 'warn', 'retry')
+              return
+            }
+            voiceFeedback('语音识别失败：' + voiceMessageOf(error), 'error', 'retry')
           })
           .then(function () {
             if (generation !== voice.generation) return
-            if (voice.phase === 'done') return // 成功路径的收尾交给 doneTimer（留一下绿色反馈）
-            voice.phase = 'idle'
             voice.capture = null
             voice.abort = null
-            paintMic()
           })
       }
 
       /**
-       * 取消当前这一轮（录音或识别）。关面板 / 停用插件 / Esc 都走它。
+       * 取消当前这一轮（录音或识别）→ 回到 idle。✕ / Esc / 关面板 / 停用插件都走它。
        * 一定会松开麦克风、并且让晚到的回调全部作废（generation + 1）。
        */
       function cancelVoice(noteText) {
         if (!voice) return
         var capture = voice.capture
         voice.generation += 1
-        voice.phase = 'idle'
         voice.capture = null
         if (voice.abort) {
           try {
@@ -6604,27 +6735,26 @@ window.__ModuleLoader__.load({
           }
         }
         voice.abort = null
-        stopVoiceTicker()
-        if (voice.doneTimer) clearTimeout(voice.doneTimer)
-        voice.doneTimer = 0
         if (voice.pollTimer) clearTimeout(voice.pollTimer)
         voice.pollTimer = 0
         if (capture) capture.dispose()
-        paintMic()
-        if (noteText) setNote(noteText, '', [], 2000)
-        else {
-          // 静默取消（收起小窗 / 停用插件）：连文字一起收掉 ——
-          // 只藏不删的话，下次开面板会先闪一下上一次那半句"正在录音"。
-          clearTimeout(voice.noteTimer)
-          askNoteText.textContent = ''
-          askNote.setAttribute('data-show', '0')
-          askNote.style.display = 'none'
+        resetVoiceRow()
+        // 少数情况下要交代一句（例如"这条消息先发出去了"）：留在 feedback 里，2 秒后自己回 idle
+        if (noteText) {
+          voiceFeedback(noteText, '', null)
+          voice.idleTimer = setTimeout(function () {
+            if (voice.phase !== 'feedback') return
+            resetVoiceRow()
+          }, 2200)
         }
       }
 
       /** 让 host 去准备识别模型（首次要下载）；下载在 host 上跑，关掉面板也继续。 */
       function prepareVoice() {
-        setNote('正在准备语音模型（首次要下载模型文件，请稍候）…', 'warn')
+        voice.phase = 'transcribing' // 复用"进行中"的形态：✕ + 呼吸点 + 文案
+        setVoiceActivity('正在准备语音模型…', { dot: true })
+        setVoiceAction(null)
+        paintVoice()
         fetch(SPEECH_PREPARE, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -6635,7 +6765,7 @@ window.__ModuleLoader__.load({
           })
           .then(function (data) {
             if (!data || data.ok !== true) {
-              setNote('准备失败：' + ((data && data.error) || '未知原因'), 'error')
+              voiceFeedback('准备失败：' + ((data && data.error) || '未知原因'), 'error', 'prepare')
               return
             }
             voice.catalog = data.catalog || null
@@ -6643,7 +6773,7 @@ window.__ModuleLoader__.load({
             pollPrepare(0)
           })
           .catch(function (error) {
-            setNote('准备失败：' + voiceMessageOf(error), 'error')
+            voiceFeedback('准备失败：' + voiceMessageOf(error), 'error', 'prepare')
           })
       }
 
@@ -6655,18 +6785,20 @@ window.__ModuleLoader__.load({
           fetchSpeechCatalog(true)
             .then(function (catalog) {
               if (catalog && catalog.available) {
-                setNote('语音模型准备好了，点麦克风开始说话', '', [], 3000)
+                voiceFeedback('语音模型已就绪，可以开始说话', '', 'retry')
                 return
               }
               var provider = voiceProvider(catalog)
               if (provider && provider.phase === 'failed') {
-                setNote('准备失败：' + (provider.message || '模型下载出错'), 'error')
+                voiceFeedback('准备失败：' + (provider.message || '模型下载出错'), 'error', 'prepare')
                 return
               }
               var total = provider && provider.totalBytes ? provider.totalBytes : 0
               var done = provider && provider.completedBytes ? provider.completedBytes : 0
               var progress = total > 0 ? '（' + Math.round((done / total) * 100) + '%）' : ''
-              setNote('正在准备语音模型' + progress + '…（可以先去忙别的，下载在后台继续）', 'warn')
+              setVoiceActivity('正在准备语音模型' + progress + '…（可以先去忙别的，下载在后台继续）', { dot: true })
+              voice.phase = 'transcribing'
+              paintVoice()
               pollPrepare(round + 1)
             })
             .catch(function () {
@@ -6677,21 +6809,23 @@ window.__ModuleLoader__.load({
 
       var offMic = listen(micButton, 'click', function (event) {
         event.stopPropagation()
-        if (voice.phase === 'recording') {
-          finishVoice()
-          return
-        }
-        if (voice.phase === 'requesting') {
-          cancelVoice('已取消（没有开始录音）')
-          return
-        }
-        if (voice.phase === 'transcribing') {
-          cancelVoice('已取消识别')
-          return
-        }
         startVoice()
       })
-      paintMic()
+      // 切走这个窗口（换到别的 App）就停止录音 —— 主会话也是这么做的：
+      // 人已经不在说话了，继续占着麦克风只会录一串环境噪音。识别**不打断**（那时音频已经拿到了）。
+      var offVoiceBlur = listen(window, 'blur', function () {
+        if (voice.phase === 'recording') cancelVoice()
+      })
+      var offVoiceCancel = listen(voiceCancel, 'click', function (event) {
+        event.stopPropagation()
+        // feedback 阶段点 ✕ 只是"关掉这条提示"，其余阶段是取消录音/识别
+        cancelVoice()
+      })
+      var offVoiceStop = listen(voiceStop, 'click', function (event) {
+        event.stopPropagation()
+        finishVoice()
+      })
+      paintVoice()
       // ═════════════════════════ 语音输入（结束） ═════════════════════════
 
       // 用户自己滚消息区（滚轮/触摸）→ 不再强行把他拉回底部
@@ -6804,13 +6938,23 @@ window.__ModuleLoader__.load({
           return {
             phase: voice.phase,
             supported: recordingSupported(),
-            note: askNoteText.textContent,
-            tone: askNote.getAttribute('data-tone') || '',
-            shown: askNote.getAttribute('data-show') === '1',
-            actions: noteActions.children.length,
+            /** 录音行出来了没有（出来了 = 工具行换成了 ✕ / 波形 / ■ 那一套）。 */
+            capture: captureRow.getAttribute('data-show') === '1',
+            /** 状态文案（请允许使用麦克风… / 识别中… / 出错原因）。 */
+            activity: voiceActivityText.textContent,
+            activityTone: voiceActivity.getAttribute('data-tone') || '',
+            dot: voiceDot.style.display !== 'none',
+            waveform: waveSvg.style.display !== 'none',
+            stop: voiceStop.style.display !== 'none',
+            /** 行内动作：'prepare'（准备模型）/ 'retry'（🎤 重录）/ ''。 */
+            action: voice.action || '',
             maxSeconds: voice.maxSeconds || VOICE_FALLBACK_SECONDS,
             level: Number(voice.level.toFixed(3)),
             lastText: voice.lastText,
+            /** 波形 80 根线的高度（自检/冒烟用：静音时全是 2px 的基线）。 */
+            bars: waveBars.map(function (bar) {
+              return Number(bar.node.getAttribute('y2')) - Number(bar.node.getAttribute('y1'))
+            }),
             catalog: voice.catalog
               ? {
                   available: voice.catalog.available === true,
@@ -6826,6 +6970,17 @@ window.__ModuleLoader__.load({
         /** 自检用：麦克风按钮节点（无头环境里页面可能挂了两棵树，用这个拿真正带监听的那个）。 */
         voiceNode: function () {
           return micButton
+        },
+        /** 自检用：录音行的各部件（✕ / 波形 / 状态 / 动作位 / ■）。 */
+        voiceNodes: function () {
+          return {
+            row: captureRow,
+            cancel: voiceCancel,
+            wave: waveSvg,
+            activity: voiceActivity,
+            action: voiceActionSlot,
+            stop: voiceStop,
+          }
         },
         /** 自检用：读/写追问输入框（验证"转写文字插进输入框"）。 */
         askValue: function (text) {
@@ -7059,6 +7214,9 @@ window.__ModuleLoader__.load({
           offAskSend()
           // 语音输入：摘掉麦克风监听，并把正在录/正在识别的这一轮彻底作废（松开麦克风）
           offMic()
+          offVoiceCancel()
+          offVoiceStop()
+          offVoiceBlur()
           cancelVoice()
           offClose()
           offDrag()
@@ -7269,6 +7427,21 @@ window.__ModuleLoader__.load({
       rect.setAttribute('height', '7.2')
       rect.setAttribute('rx', '1.8')
       svg.appendChild(rect)
+      return svg
+    }
+
+    /** 取消图标（✕）：两条斜线，和主会话录音行的取消键同形。 */
+    function closeIcon() {
+      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      svg.setAttribute('viewBox', '0 0 16 16')
+      svg.setAttribute('fill', 'none')
+      svg.setAttribute('stroke', 'currentColor')
+      svg.setAttribute('stroke-width', '1.8')
+      svg.setAttribute('stroke-linecap', 'round')
+      svg.setAttribute('aria-hidden', 'true')
+      var path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      path.setAttribute('d', 'M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6')
+      svg.appendChild(path)
       return svg
     }
 

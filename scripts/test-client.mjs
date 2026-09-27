@@ -106,6 +106,10 @@ class FakeEl {
   getClientRects() {
     return [{ left: 40, top: 100, right: 200, bottom: 118, width: 160, height: 18 }]
   }
+  get firstChild() {
+    // 真实 DOM 的 firstChild：插件用 while (node.firstChild) 清空子节点，桩必须有
+    return this.children.length ? this.children[0] : null
+  }
   get textContent() {
     return textOf(this)
   }
@@ -3257,13 +3261,15 @@ let bridgeOwnedBlob = ''
 
 // ═════════════════════ 语音输入（麦克风 → 文字 → 输入框） ═════════════════════
 //
-// 真浏览器里这一段是"点一下说话 → 识别 → 文字进输入框"。桩里验四件事：
-//   ① 状态机与提示：请求权限 / 录音（含走秒与音量）/ 识别 / 成功 / 各类失败；
-//   ② 文字**插进输入框**（追加在光标处，不覆盖用户已经写了一半的话）；
-//   ③ 该松麦克风的时候一定要松（取消 / 收起小窗 / 插件停用）；
-//   ④ 音频格式与 host 的 validateWave 同源（16kHz 单声道 PCM16 WAV）——纯函数打表。
+// UI 与主会话 ui-voice-input 同一套：平时是输入框右边的 🎤，开始录之后工具行换成
+// 录音行 ——`✕` | 实时波形 | `■`；请求权限/识别中是「呼吸点 + 文案」；出错是「文案 + 行内动作」。
+// 桩里验四件事：
+//   ① 状态机与录音行的形态（哪一格在、哪一格不在，工具行左边三样有没有让位）；
+//   ② 波形真的在动（80 根线、静音基线、有声变高、从右往左推）；
+//   ③ 文字**插进输入框**（追加在光标处，不覆盖用户已经写了一半的话）；
+//   ④ 该松麦克风的时候一定要松（取消 / 失焦 / 收起小窗 / 这条消息发出去）。
 //
-// 真实识别（真模型 + 真音频）不在这里：见 scripts/test-speech.mjs 与真浏览器冒烟。
+// 真实识别（真模型 + 真音频）不在这里：见 scripts/test-speech.mjs 与 scripts/smoke-voice.mjs。
 function waitVoice(predicate, ms = 1500) {
   const started = Date.now()
   const step = async () => {
@@ -3332,7 +3338,16 @@ function sliceFunction(text, name) {
       return Promise.resolve(makeStream())
     },
   }
-  const recordedChunks = []
+  /**
+   * 电平序列：头几拍是静音（刚点下麦克风还没开口），之后逐次抬高。
+   * 这样既能看到"静音 = 2px 基线"，也能看到"新电平从右边进来"（恒定电平看不出推进）。
+   */
+  let levelStep = 0
+  const nextLevel = () => {
+    levelStep += 1
+    if (levelStep <= 3) return 0
+    return Math.min(0.06 + (levelStep - 3) * 0.012, 0.5)
+  }
   class MediaRecorderStub {
     constructor(stream) {
       this.stream = stream
@@ -3346,7 +3361,6 @@ function sliceFunction(text, name) {
     stop() {
       this.state = 'inactive'
       const chunk = new Blob([new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])], { type: 'audio/webm' })
-      recordedChunks.push(chunk)
       if (this.ondataavailable) this.ondataavailable({ data: chunk })
       if (this.onstop) this.onstop()
     }
@@ -3361,7 +3375,8 @@ function sliceFunction(text, name) {
       return {
         fftSize: 256,
         getFloatTimeDomainData(array) {
-          for (let i = 0; i < array.length; i += 1) array[i] = 0.08
+          const level = nextLevel()
+          for (let i = 0; i < array.length; i += 1) array[i] = level
         },
       }
     }
@@ -3401,76 +3416,105 @@ function sliceFunction(text, name) {
   // ── 面板：打开到"翻译就绪、composer 可见" ──────────────────────
   hook.open('voice-probe', '', '语音输入')
   await waitVoice(() => hook.state().phase === 'done')
-  const askRow = Array.from(walk(panel)).find((n) => String(n.className).split(/\s+/).includes('dsh-sel-ask'))
-  assert('语音用例：composer 已可见', !!askRow && askRow.style.display !== 'none', askRow && askRow.style.display)
+  const askRowNode = Array.from(walk(panel)).find((n) => String(n.className).split(/\s+/).includes('dsh-sel-ask'))
+  assert('语音用例：composer 已可见', !!askRowNode && askRowNode.style.display !== 'none', askRowNode && askRowNode.style.display)
 
   const micButton = hook.voiceNode()
+  const nodes = hook.voiceNodes()
+  const webModeNode = Array.from(walk(panel)).find((n) => String(n.className).split(/\s+/).includes('dsh-sel-pref'))
+  const modelPillNode = Array.from(walk(panel)).find((n) => String(n.className).split(/\s+/).includes('dsh-sel-picker'))
   const micNode = Array.from(walk(panel)).find((n) => String(n.className).split(/\s+/).includes('dsh-sel-mic'))
-  const noteNode = Array.from(walk(panel)).find((n) => String(n.className).split(/\s+/).includes('dsh-sel-asknote'))
-  assert('composer 里有麦克风按钮（和发送键同属工具行）', !!micNode && !!noteNode, String(!!micNode))
   const toolsRow = micNode && micNode.parentNode
+  assert('composer 里有麦克风按钮（和发送键同属工具行）', !!micNode && !!nodes.row, String(!!micNode))
   assert(
     '麦克风在发送键左边（贴 composer 主操作区）',
     !!toolsRow && toolsRow.children.indexOf(micNode) < toolsRow.children.indexOf(askSend),
     toolsRow ? `${toolsRow.children.indexOf(micNode)} < ${toolsRow.children.indexOf(askSend)}` : 'no row',
   )
-  assert('初始状态：麦克风是 idle、提示条收起', hook.voice().phase === 'idle' && hook.voice().shown === false, JSON.stringify(hook.voice()))
+  assert(
+    '初始：录音行没出来、🎤 可见、状态文案是空的',
+    hook.voice().phase === 'idle' && hook.voice().capture === false && nodes.row.style.display === 'none' && hook.voice().activity === '',
+    JSON.stringify(hook.voice()).slice(0, 120),
+  )
   assert('自检钩子能看到"这个环境支持录音"', hook.voice().supported === true, String(hook.voice().supported))
 
-  // ── ① 点一下开始录：拿到麦克风、进入录音态、提示里走秒 ──────────
-  const levelWrites = []
-  micButton.style.setProperty = (name, value) => levelWrites.push([name, value])
+  // ── ① 点一下：请求权限 → 录音（工具行换成录音行）────────────────
+  const waveBarsCount = nodes.wave.children.length
   micButton.dispatch('click', { stopPropagation() {} })
-  await waitVoice(() => hook.voice().phase === 'recording')
-  assert('点一下麦克风 → 开始录音', hook.voice().phase === 'recording', hook.voice().phase)
-  assert('录音时按钮变成「停止」形态（data-state=recording）', micButton.getAttribute('data-state') === 'recording', micButton.getAttribute('data-state'))
-  assert('录音时 aria-pressed=true（无障碍也读得出来）', micButton.getAttribute('aria-pressed') === 'true')
-  assert('录音提示：说明怎么结束', hook.voice().note.indexOf('正在录音') >= 0 && hook.voice().note.indexOf('再点一下结束') >= 0, hook.voice().note)
-  assert('只向浏览器要了麦克风（不要摄像头）', micCalls.length === 1 && micCalls[0].video === false, JSON.stringify(micCalls[0]))
-  await sleep(1300)
-  assert('录音提示里在走秒（0:01 之后）', hook.voice().note.indexOf('0:0') > 0 && hook.voice().note.indexOf('0:00') < 0, hook.voice().note)
+  await waitVoice(() => hook.voice().phase === 'requesting')
+  assert('点 🎤 → 请求权限：录音行出来（和主会话一样，工具行整行换掉）', hook.voice().capture === true, String(hook.voice().capture))
+  assert('请求权限时：文案 + 呼吸点，波形与 ■ 都不出现', hook.voice().activity.indexOf('请允许使用麦克风') >= 0 && hook.voice().dot === true && hook.voice().waveform === false && hook.voice().stop === false, hook.voice().activity)
   assert(
-    '实时音量写进了 CSS 变量（呼吸圈跟着说话强弱）',
-    levelWrites.some(([name, value]) => name === '--sel-mic-level' && Number(value) > 0),
-    JSON.stringify(levelWrites.slice(-2)),
+    '录音行出来时，输出偏好 / 模型 / 🎤 让位（一行只讲一件事）',
+    webModeNode.style.display === 'none' && modelPillNode.style.display === 'none' && micButton.style.display === 'none',
+    `${webModeNode.style.display} / ${modelPillNode.style.display} / ${micButton.style.display}`,
+  )
+  assert('录音行是 ✕ 打头（取消在左边）', nodes.row.children[0] === nodes.cancel, String(nodes.row.children.indexOf(nodes.cancel)))
+  assert('波形是 80 根线（和主会话同一个形状）', waveBarsCount === 80, String(waveBarsCount))
+
+  await waitVoice(() => hook.voice().phase === 'recording')
+  assert('拿到麦克风 → 进入录音态', hook.voice().phase === 'recording', hook.voice().phase)
+  assert('录音时：波形出现、状态文案收起、■ 出现（✕ | 波形 | ■）', hook.voice().waveform === true && hook.voice().stop === true && nodes.activity.style.display === 'none', JSON.stringify({ wave: hook.voice().waveform, stop: hook.voice().stop }))
+  assert('只向浏览器要了麦克风（不要摄像头）', micCalls.length === 1 && micCalls[0].video === false, JSON.stringify(micCalls[0]))
+  assert(
+    '静音时波形是一条虚线（没收到声音的格子都是 2px 基线）',
+    hook.voice().bars.filter((height) => height === 2).length >= 70,
+    JSON.stringify(hook.voice().bars.slice(0, 6)),
   )
 
-  // ── ② 再点一下结束：识别 → 文字插进输入框 ──────────────────────
+  await sleep(320)
+  const bars = hook.voice().bars
+  assert('有声之后波形变高（1+min(1,amp*5)*17）', Math.max.apply(null, bars) > 3, String(Math.max.apply(null, bars)))
+  assert(
+    '新的电平从右边进来、整排往左推（最右边最高）',
+    bars[0] > bars[bars.length - 1],
+    `${bars[0]} vs ${bars[bars.length - 1]}`,
+  )
+  assert('录音中不显示秒数文案（主会话也是只看波形）', hook.voice().activity === '', JSON.stringify(hook.voice().activity))
+
+  // ── ② 点 ■ 结束：识别 → 文字插进输入框 ─────────────────────────
   const firstTrack = micTracks[micTracks.length - 1]
-  micButton.dispatch('click', { stopPropagation() {} })
-  await waitVoice(() => hook.voice().phase === 'done' || hook.voice().lastText !== '')
-  assert('第二次点击 → 松开麦克风（音轨停掉）', firstTrack.stopped === true)
+  nodes.stop.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().phase === 'transcribing')
+  assert('点 ■ → 识别中：文案 + 呼吸点，波形与 ■ 收起', hook.voice().activity.indexOf('识别中') >= 0 && hook.voice().dot === true && hook.voice().waveform === false && hook.voice().stop === false, hook.voice().activity)
+  assert('录音结束 → 松开麦克风（音轨停掉）', firstTrack.stopped === true)
+  await waitVoice(() => hook.voice().lastText !== '')
   assert('录音结束后 AudioContext 关掉（不留音频线程）', AudioContextStub.instances.every((ctx) => ctx.closed === true), String(AudioContextStub.instances.length))
   assert('重采样成 16kHz（host 只收这一种）', OfflineAudioContextStub.last && OfflineAudioContextStub.last.sampleRate === 16000, String(OfflineAudioContextStub.last && OfflineAudioContextStub.last.sampleRate))
   assert('识别请求发到了 host（带 base64 音频、不带文件路径之类）', speechTranscribeCalls.length === 1 && typeof speechTranscribeCalls[0].audioBase64 === 'string', Object.keys(speechTranscribeCalls[0] || {}).join(','))
   assert('识别出来的文字进了输入框', askBox.value.indexOf('这段是语音转出来的问题') >= 0, askBox.value)
   assert('插入后光标在末尾（接着就能改 / 接着说）', askBox.selectionStart === askBox.value.length, `${askBox.selectionStart}/${askBox.value.length}`)
-  assert('提示告诉用户"插到哪了"', hook.voice().note.indexOf('已插入') >= 0, hook.voice().note)
+  assert('插入后发送键可点', askSend.disabled === false, String(askSend.disabled))
   await waitVoice(() => hook.voice().phase === 'idle')
-  assert('成功之后回到 idle（可以接着录第二段）', hook.voice().phase === 'idle', hook.voice().phase)
+  assert('成功之后立刻回 idle：录音行收起、🎤 回来、不留多余提示（和主会话一致）', hook.voice().phase === 'idle' && hook.voice().capture === false && micButton.style.display === '' && hook.voice().activity === '', JSON.stringify({ phase: hook.voice().phase, activity: hook.voice().activity }))
 
   // ── ③ 追加而不是覆盖：用户已经写了一半时接着说 ────────────────
   hook.askValue('先写的一句')
   speechTranscript = { ok: true, text: '后面补的一句' }
   micButton.dispatch('click', { stopPropagation() {} })
   await waitVoice(() => hook.voice().phase === 'recording')
-  micButton.dispatch('click', { stopPropagation() {} })
+  nodes.stop.dispatch('click', { stopPropagation() {} })
   await waitVoice(() => hook.voice().lastText === '后面补的一句')
   assert('已有内容时是追加（中间补一个空格）', askBox.value === '先写的一句 后面补的一句', askBox.value)
-  assert('插入之后发送键可点（内容非空）', askSend.disabled === false, String(askSend.disabled))
+  await waitVoice(() => hook.voice().phase === 'idle')
   hook.askValue('')
 
-  // ── ④ 失败路径：权限被拒 ─────────────────────────────────────
+  // ── ④ 失败路径：权限被拒 → feedback + 🎤 重录 ──────────────────
   micDenied = true
   const tracksBeforeDenied = micTracks.length
   micButton.dispatch('click', { stopPropagation() {} })
-  await waitVoice(() => hook.voice().tone === 'error')
-  assert('权限被拒：一句话说清 + 不进入录音态', hook.voice().phase === 'idle' && hook.voice().tone === 'error', hook.voice().note)
-  assert('权限被拒的提示是可读中文（不是 DOMException 原文）', hook.voice().note.indexOf('权限') >= 0 && hook.voice().note.indexOf('NotAllowedError') < 0, hook.voice().note)
-  assert('权限被拒时一个音轨都没拿到（也就没有要松的东西）', micTracks.length === tracksBeforeDenied, `${micTracks.length} vs ${tracksBeforeDenied}`)
+  await waitVoice(() => hook.voice().phase === 'feedback')
+  assert('权限被拒：录音行里给原因（不是 DOMException 原文）', hook.voice().activity.indexOf('麦克风权限未开启') >= 0 && hook.voice().activityTone === 'error', `${hook.voice().activityTone} ${hook.voice().activity}`)
+  assert('权限被拒时一个音轨都没拿到', micTracks.length === tracksBeforeDenied, `${micTracks.length} vs ${tracksBeforeDenied}`)
+  assert('失败时给「重新录音」🎤（主会话同款行内动作）', hook.voice().action === 'retry' && nodes.action.children.length === 1, `${hook.voice().action} / ${nodes.action.children.length}`)
   micDenied = false
 
-  // ── ⑤ 失败路径：模型没准备好 → 提示里带「准备模型」按钮 ─────────
+  // ── ⑤ ✕ 关掉这条提示（feedback → idle，工具行还回去）──────────
+  nodes.cancel.dispatch('click', { stopPropagation() {} })
+  await sleep(20)
+  assert('点 ✕ 关掉提示：回 idle、工具行还原（输出偏好 / 模型 / 🎤 都回来）', hook.voice().phase === 'idle' && hook.voice().capture === false && webModeNode.style.display === '' && modelPillNode.style.display === '' && micButton.style.display === '', `${hook.voice().phase} ${webModeNode.style.display}`)
+
+  // ── ⑥ 模型没准备好 → 「准备模型」行内动作 ───────────────────────
   const goodCatalog = speechCatalog
   speechCatalog = {
     ...goodCatalog,
@@ -3479,56 +3523,58 @@ function sliceFunction(text, name) {
     providers: [{ ...goodCatalog.providers[0], phase: 'unprepared' }],
   }
   micButton.dispatch('click', { stopPropagation() {} })
-  await waitVoice(() => hook.voice().tone === 'warn')
-  assert('模型没准备好：说清楚 + 给一个「准备模型」按钮', hook.voice().tone === 'warn' && hook.voice().actions === 1, `${hook.voice().note} actions=${hook.voice().actions}`)
-  assert('没准备好时不进录音态（不在没模型时占着麦克风）', hook.voice().phase === 'idle', hook.voice().phase)
-  const prepareBtn = Array.from(walk(noteNode)).find((n) => String(n.className).indexOf('dsh-sel-notebtn') >= 0)
-  assert('提示里的按钮确实画出来了', !!prepareBtn, prepareBtn ? prepareBtn.textContent : 'none')
+  await waitVoice(() => hook.voice().action === 'prepare')
+  assert('模型没准备：说清 + 给「准备模型」按钮', hook.voice().activity.indexOf('语音模型还没准备好') >= 0 && hook.voice().activityTone === 'warn', `${hook.voice().activityTone} ${hook.voice().activity}`)
+  assert('没准备好时不进录音态（不在没模型时占着麦克风）', hook.voice().phase === 'feedback' && micTracks.length === tracksBeforeDenied, hook.voice().phase)
+  const prepareBtn = nodes.action.children[0]
+  assert('提示里的按钮确实画出来了', !!prepareBtn && prepareBtn.textContent === '准备模型', prepareBtn ? prepareBtn.textContent : 'none')
   speechCatalog = { ...goodCatalog, available: true, providers: [{ ...goodCatalog.providers[0], phase: 'ready' }] }
   prepareBtn.dispatch('click', { stopPropagation() {} })
   await waitVoice(() => speechPrepareCalls > 0)
   assert('点「准备模型」→ 通知 host 去准备（下载在 host 上跑）', speechPrepareCalls === 1, String(speechPrepareCalls))
-  await waitVoice(() => hook.voice().note.indexOf('准备好了') >= 0, 3000)
-  assert('准备完成后提示"可以开始说话"', hook.voice().note.indexOf('准备好了') >= 0, hook.voice().note)
+  assert('准备中：复用"进行中"形态（文案 + 呼吸点）', hook.voice().activity.indexOf('正在准备语音模型') >= 0 && hook.voice().dot === true, hook.voice().activity)
+  await waitVoice(() => hook.voice().activity.indexOf('已就绪') >= 0, 3000)
+  assert('准备完成后提示"可以开始说话"（行内动作换成 🎤）', hook.voice().activity.indexOf('已就绪') >= 0 && hook.voice().action === 'retry', `${hook.voice().action} ${hook.voice().activity}`)
   speechCatalog = goodCatalog
+  nodes.cancel.dispatch('click', { stopPropagation() {} })
+  await sleep(20)
 
-  // ── ⑥ 失败路径：识别失败 / 没听清 / 请求被取消 ─────────────────
+  // ── ⑦ 失败路径：识别失败 / 没听清 ──────────────────────────────
   speechTranscript = { ok: false, code: 'failed', error: '识别服务挂了' }
   micButton.dispatch('click', { stopPropagation() {} })
   await waitVoice(() => hook.voice().phase === 'recording')
-  micButton.dispatch('click', { stopPropagation() {} })
-  await waitVoice(() => hook.voice().tone === 'error')
-  assert('识别失败：原样说清原因', hook.voice().tone === 'error' && hook.voice().note.indexOf('识别服务挂了') >= 0, hook.voice().note)
+  nodes.stop.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().phase === 'feedback')
+  assert('识别失败：原样说清原因', hook.voice().activityTone === 'error' && hook.voice().activity.indexOf('识别服务挂了') >= 0, hook.voice().activity)
   assert('识别失败不会往输入框里塞东西', askBox.value === '', JSON.stringify(askBox.value))
 
   speechTranscript = { ok: false, code: 'empty-transcript', error: '没听清（这段录音里没有识别到内容）' }
   micButton.dispatch('click', { stopPropagation() {} })
   await waitVoice(() => hook.voice().phase === 'recording')
-  micButton.dispatch('click', { stopPropagation() {} })
-  await waitVoice(() => hook.voice().note.indexOf('没听清') >= 0)
-  assert('没听清：给一句人话（不是"识别失败"）', hook.voice().note.indexOf('没听清') >= 0 && hook.voice().tone === 'warn', `${hook.voice().tone} ${hook.voice().note}`)
+  nodes.stop.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().activity.indexOf('未识别到语音') >= 0)
+  assert('没听清：给主会话那句「未识别到语音」+ 可重录', hook.voice().activity === '未识别到语音' && hook.voice().activityTone === 'warn' && hook.voice().action === 'retry', `${hook.voice().activityTone} ${hook.voice().activity}`)
 
-  // 录音中点第二次 = 收尾去识别；识别中再点 = 取消（不能有文字冒出来）
+  // 识别中点 ✕ = 取消（不能有文字冒出来）
   speechTranscript = { ok: true, text: '这段不该被插进去' }
   micButton.dispatch('click', { stopPropagation() {} })
   await waitVoice(() => hook.voice().phase === 'recording')
-  micButton.dispatch('click', { stopPropagation() {} })
+  nodes.stop.dispatch('click', { stopPropagation() {} })
   await waitVoice(() => hook.voice().phase === 'transcribing')
-  assert('点第二次后进入识别态（按钮转圈）', hook.voice().phase === 'transcribing', hook.voice().phase)
-  micButton.dispatch('click', { stopPropagation() {} })
+  nodes.cancel.dispatch('click', { stopPropagation() {} })
   await sleep(80)
-  assert('识别中再点一次 = 取消（提示"已取消识别"）', hook.voice().phase === 'idle' && hook.voice().note.indexOf('已取消识别') >= 0, `${hook.voice().phase} ${hook.voice().note}`)
+  assert('识别中点 ✕ = 取消（回 idle）', hook.voice().phase === 'idle' && hook.voice().capture === false, hook.voice().phase)
   assert('取消之后晚到的结果不会插进输入框', askBox.value.indexOf('这段不该被插进去') < 0, JSON.stringify(askBox.value))
 
-  // ── ⑦ 权限还没回来就取消：晚到的授权不能变成"在录音" ────────────
+  // ── ⑧ 权限还没回来就取消：晚到的授权不能变成"在录音" ────────────
   micDeferred = Promise.withResolvers()
   speechTranscript = { ok: true, text: '不该出现的第二段' }
   const beforeCancelCalls = micCalls.length
   micButton.dispatch('click', { stopPropagation() {} })
   await waitVoice(() => micCalls.length === beforeCancelCalls + 1)
   assert('点了麦克风之后到授权回来之前是「请求中」', hook.voice().phase === 'requesting', `${hook.voice().phase} calls=${micCalls.length}`)
-  micButton.dispatch('click', { stopPropagation() {} })
-  assert('请求中再点一次 = 取消（不进录音）', hook.voice().phase === 'idle' && hook.voice().note.indexOf('已取消') >= 0, `${hook.voice().phase} ${hook.voice().note}`)
+  nodes.cancel.dispatch('click', { stopPropagation() {} })
+  assert('请求中点 ✕ = 取消（回 idle）', hook.voice().phase === 'idle' && hook.voice().capture === false, hook.voice().phase)
   const tracksBeforeLate = micTracks.length
   micDeferred && micDeferred.resolve()
   await sleep(80)
@@ -3538,29 +3584,35 @@ function sliceFunction(text, name) {
     `${hook.voice().phase} tracks=${micTracks.length - tracksBeforeLate}`,
   )
 
-  // ── ⑦.5 这条消息发出去了：正在录的那段要收掉（不能留个红着的麦克风）──
+  // ── ⑨ 这条消息发出去了：正在录的那段收掉 ───────────────────────
   micButton.dispatch('click', { stopPropagation() {} })
   await waitVoice(() => hook.voice().phase === 'recording')
   const sendTrack = micTracks[micTracks.length - 1]
   hook.ask('边录边说的问题')
   await sleep(60)
-  assert(
-    '发送消息时正在录的那段被收掉（音轨停掉、按钮回 idle）',
-    sendTrack.stopped === true && hook.voice().phase === 'idle',
-    `stopped=${sendTrack.stopped} phase=${hook.voice().phase}`,
-  )
-  assert('并说明为什么停（不是悄悄停）', hook.voice().note.indexOf('已停止录音') >= 0, hook.voice().note)
+  assert('发送消息时正在录的那段被收掉（音轨停掉）', sendTrack.stopped === true, String(sendTrack.stopped))
+  assert('并说明为什么停（不是悄悄停）', hook.voice().activity.indexOf('已停止录音') >= 0, hook.voice().activity)
+  await waitVoice(() => hook.voice().phase === 'idle', 3000)
+  assert('这句交代过两秒自己收起（不占着录音行）', hook.voice().capture === false, String(hook.voice().capture))
 
-  // ── ⑧ 收起小窗 = 立刻松麦克风（不能让标签页一直亮着录音标识）────
+  // ── ⑩ 切走窗口（blur）= 停止录音，识别不打断 ───────────────────
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().phase === 'recording')
+  const blurTrack = micTracks[micTracks.length - 1]
+  windowStub.dispatch('blur', {})
+  await sleep(30)
+  assert('窗口失焦：录音取消、麦克风松开（主会话同款）', blurTrack.stopped === true && hook.voice().phase === 'idle', `${blurTrack.stopped} ${hook.voice().phase}`)
+
+  // ── ⑪ 收起小窗 = 立刻松麦克风 ─────────────────────────────────
   micButton.dispatch('click', { stopPropagation() {} })
   await waitVoice(() => hook.voice().phase === 'recording')
   const openTrack = micTracks[micTracks.length - 1]
   hook.close()
   await sleep(30)
   assert('收起小窗：音轨停掉、状态回 idle', openTrack.stopped === true && hook.voice().phase === 'idle', `${openTrack.stopped} ${hook.voice().phase}`)
-  assert('收起小窗：提示条连文字一起收掉（不留半句"正在录音"）', hook.voice().shown === false && hook.voice().note === '', `${hook.voice().shown} / ${JSON.stringify(hook.voice().note)}`)
+  assert('收起小窗：录音行一起收掉（不留半句"正在录音"）', hook.voice().capture === false && hook.voice().activity === '', JSON.stringify({ capture: hook.voice().capture, activity: hook.voice().activity }))
 
-  // ── ⑨ 音频格式：和 host 的 validateWave 同源（纯函数打表）────────
+  // ── ⑫ 音频格式：和 host 的 validateWave 同源（纯函数打表）────────
   const helpers = new Function(
     [
       sliceFunction(source, 'encodeWave'),
@@ -3584,7 +3636,7 @@ function sliceFunction(text, name) {
   assert('WAV：1 秒 = 44 字节头 + 32000 字节数据', wave.length === 44 + 32000, String(wave.length))
   assert('base64 是可解回来的（host 会校验"规范 base64"）', Buffer.from(helpers.bytesToBase64(wave), 'base64').equals(Buffer.from(wave)), 'round-trip')
   const clipped = helpers.encodeWave(new Float32Array([2, -2, 0]))
-  // 16 位小端、有符号：+32767 = 7f ff，-32768 = 00 80（不夹的话 2*32767 会绕成负数）
+  // 16 位小端、有符号：+32767 = ff 7f，-32768 = 00 80（不夹的话 2*32767 会绕成负数）
   assert(
     '采样越界会被夹住（±2 不该绕回成爆音）',
     clipped[44] === 0xff && clipped[45] === 0x7f && clipped[46] === 0x00 && clipped[47] === 0x80,
@@ -3592,7 +3644,6 @@ function sliceFunction(text, name) {
   )
   assert('录音秒数显示成 0:07 这种', helpers.formatClock(7500) === '0:07' && helpers.formatClock(60000) === '1:00', helpers.formatClock(7500))
 
-  windowStub.getSelection = windowStub.getSelection
   hook.close()
 }
 
