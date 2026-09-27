@@ -41,6 +41,23 @@ class FakeEl {
     this.scrollHeight = 0
     this.clientHeight = 0
     this._listeners = new Map()
+    // 输入框语义：textarea/input 的 value 与选区。真实 DOM 里给 value 赋值会把光标
+    // 挪到末尾、setSelectionRange 能定位 —— 语音输入要验"插在光标处"，桩必须跟着做到。
+    this._value = ''
+    this.selectionStart = 0
+    this.selectionEnd = 0
+  }
+  get value() {
+    return this._value
+  }
+  set value(next) {
+    this._value = next === undefined || next === null ? '' : String(next)
+    this.selectionStart = this._value.length
+    this.selectionEnd = this._value.length
+  }
+  setSelectionRange(start, end) {
+    this.selectionStart = start
+    this.selectionEnd = end === undefined ? start : end
   }
   appendChild(child) {
     if (child.parentNode) child.parentNode.removeChild(child)
@@ -226,8 +243,43 @@ const historyStore = new Map()
 const historySaved = []
 let historyList = []
 const openedSessions = []
+/** 引用上下文路由的调用记录（验"什么时候去问 host、带了什么"）。 */
+const quoteContextCalls = []
 /** 散文样本（固定 fixture，避免依赖真实网络/缓存命中）。 */
 const PROSE_PROBE = 'the migration ran long, so we ship Wednesday'
+
+/**
+ * 语音输入（麦克风）这一段的假 host：目录 / 转写 / 准备。
+ * 真链路由 scripts/test-speech.mjs（WAV 校验 + 真路由）与真浏览器冒烟覆盖；
+ * 这里只验客户端编排（状态机 / 提示语 / 插字位置 / 该松麦克风时松掉）。
+ */
+let speechCatalog = {
+  ok: true,
+  available: true,
+  reason: '',
+  error: '',
+  providers: [
+    {
+      id: 'sensevoice-local',
+      name: 'SenseVoiceSmall (INT8)',
+      location: 'host-local',
+      languages: ['auto', 'zh', 'en'],
+      downloadSources: ['https://huggingface.co'],
+      phase: 'standby',
+      step: '',
+      completedBytes: 0,
+      totalBytes: 0,
+      message: '',
+    },
+  ],
+  selection: { providerId: 'sensevoice-local', language: 'auto' },
+  limits: { maxSeconds: 60, maxBytes: 4194304 },
+}
+/** 下一次转写的返回（测试里逐条改成失败 / 空 / 正常）。 */
+let speechTranscript = { ok: true, text: '这段是语音转出来的问题', providerId: 'sensevoice-local', seconds: 2.4 }
+let speechCatalogCalls = 0
+let speechPrepareCalls = 0
+const speechTranscribeCalls = []
 
 /** Python 代码选区用例（验证语言标记影响高亮规则）。 */
 const PY_SNIPPET = ['def add(a, b):', '    # 这里是可以相加的数字', '    return a + b'].join('\n')
@@ -383,6 +435,63 @@ const routeFetch = (input, init) => {
       }),
     )
   }
+  // 引用上下文：host 侧"引用所在那一组对话 ± 一组"的那份（fixture —— 取轮算法本身由
+  // test-transcript.mjs 覆盖；这里验的是**客户端怎么用它**）。globalThis.__quoteContextFixture
+  // 可切成 'miss'（定位不到）/ 'error'（路由失败），用来验兜底路径。
+  if (url.indexOf('/selection-explain/api/quote-context') >= 0) {
+    let payload = {}
+    try {
+      payload = JSON.parse(String(init && init.body))
+    } catch (error) {
+      payload = { parse_error: String(error) }
+    }
+    quoteContextCalls.push(payload)
+    const fixture = globalThis.__quoteContextFixture
+    if (fixture === 'error') {
+      return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'boom' }), { status: 500, headers: { 'content-type': 'application/json' } }))
+    }
+    if (fixture === 'miss') {
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, matched: false, context: '', rounds: 0 }), { headers: { 'content-type': 'application/json' } }))
+    }
+    const context = [
+      '用户：上一句问的是什么？',
+      '助手：上一句的回答。',
+      `用户：【${payload.text}】`,
+      '助手：引用之后的那句回答。',
+      '用户：再下一句提问。',
+      '助手：再下一句回答。',
+    ].join('\n')
+    return Promise.resolve(
+      new Response(JSON.stringify({ ok: true, matched: true, context, rounds: 3, chars: context.length }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+  }
+  // 语音输入：目录 / 转写 / 准备。三条都用 fixture（真识别见 test-speech.mjs 与真浏览器冒烟）。
+  if (url.indexOf('/selection-explain/api/speech') >= 0) {
+    if (url.indexOf('/transcribe') >= 0) {
+      let payload = null
+      try {
+        payload = JSON.parse(String(init && init.body))
+      } catch (error) {
+        payload = { parse_error: String(error) }
+      }
+      speechTranscribeCalls.push(payload)
+      return Promise.resolve(
+        new Response(JSON.stringify(speechTranscript), { headers: { 'content-type': 'application/json' } }),
+      )
+    }
+    if (url.indexOf('/prepare') >= 0) {
+      speechPrepareCalls += 1
+      return Promise.resolve(
+        new Response(JSON.stringify({ ok: true, providerId: 'sensevoice-local', catalog: speechCatalog }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+    }
+    speechCatalogCalls += 1
+    return Promise.resolve(new Response(JSON.stringify(speechCatalog), { headers: { 'content-type': 'application/json' } }))
+  }
   let body = null
   if (init && init.body) {
     try {
@@ -391,6 +500,15 @@ const routeFetch = (input, init) => {
       body = { parse_error: String(error) }
     }
     sent.push(body)
+  }
+  // 语音输入那一段的"把面板打开、翻译就绪"夹具（比 stage-probe 多一个 done 阶段）
+  if (body && body.text === 'voice-probe') {
+    const payload = [
+      `data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', stage: 'translation' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'delta', text: '## 翻译\n语音用例的翻译\n' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'done', chars: 8 })}\n\n`,
+    ].join('')
+    return Promise.resolve(new Response(payload, { headers: { 'content-type': 'text/event-stream' } }))
   }
   if (body && body.text === 'stage-probe') {
     const only = body.stage === 'detail' ? '## 详解\nSTAGE-DETAIL' : '## 翻译\nSTAGE-TRANSLATION'
@@ -764,6 +882,41 @@ const routeFetch = (input, init) => {
     ].join('')
     return Promise.resolve(new Response(payload, { headers: { 'content-type': 'text/event-stream' } }))
   }
+  // 引用（❝）用例：首轮固定给一句可被引用的正文，详解在同一个小窗里另走 stage=detail
+  if (body && body.text === 'quote-probe') {
+    const only = body.stage === 'detail' ? '## 详解\n引用用例的详解\n' : '## 翻译\n引用用例的翻译段落（拿来被引用）\n'
+    const payload = [
+      `data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', stage: body.stage === 'detail' ? 'detail' : 'translation' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'delta', text: only })}\n\n`,
+      `data: ${JSON.stringify({ type: 'done', chars: only.length })}\n\n`,
+    ].join('')
+    return Promise.resolve(new Response(payload, { headers: { 'content-type': 'text/event-stream' } }))
+  }
+  // 「等待中的那条不给引用整条」专用：首轮立刻出，追问要等 500ms 才吐第一个字
+  if (body && body.text === 'quote-wait-probe' && !body.question) {
+    const only = '## 翻译\n等待用例的翻译\n'
+    const payload = [
+      `data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', stage: 'translation' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'delta', text: only })}\n\n`,
+      `data: ${JSON.stringify({ type: 'done', chars: only.length })}\n\n`,
+    ].join('')
+    return Promise.resolve(new Response(payload, { headers: { 'content-type': 'text/event-stream' } }))
+  }
+  if (body && body.question && body.text === 'quote-wait-probe') {
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      async start(controller) {
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', mode: 'chat', effort: 'low' })}\n\n`),
+        )
+        await new Promise((r) => setTimeout(r, 500))
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'delta', text: '等待用例的回答' })}\n\n`))
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done', chars: 8 })}\n\n`))
+        controller.close()
+      },
+    })
+    return Promise.resolve(new Response(stream, { headers: { 'content-type': 'text/event-stream' } }))
+  }
   return fetch(typeof input === 'string' && input.startsWith('/') ? ORIGIN + input : input, init)
 }
 const browserFetch = (input, init) => {
@@ -903,6 +1056,17 @@ assert('选中文字后浮标出现', !!button && button.style.display === 'inli
   assert('CSS 契约：缩放原点是锚点（右下角）', /\.dsh-sel-btn\{transform-origin:100% 100%/.test(css), '')
   assert('CSS 契约：reduced-motion 下关掉 pop', /@media \(prefers-reduced-motion:reduce\)\{[\s\S]{0,400}?\.dsh-sel-btn\[data-pop="1"\]\{animation:none\}/.test(css), '')
 
+}
+
+// 引用（❝）的**离线**契约：浮标进了浮层、CSS 规则齐全（真实交互在宿主可达时另有一段）
+{
+  const css = readFileSync(BUNDLE, 'utf8')
+  const quoteBtn = Array.from(walk(mount)).find((n) => String(n.className).indexOf('dsh-sel-quotebtn') >= 0)
+  assert('浮层里有「❝ 引用」浮标，且默认藏着', !!quoteBtn && quoteBtn.style.display === 'none' && textOf(quoteBtn).indexOf('引用') >= 0, quoteBtn ? textOf(quoteBtn) : '未找到')
+  assert('CSS 契约：引用区默认收起、data-show 控制显隐', /\.dsh-sel-quotes\{display:none;flex-direction:column/.test(css) && /\.dsh-sel-quotes\[data-show="1"\]\{display:flex\}/.test(css), '')
+  assert('CSS 契约：引用卡片三段（来源 / 摘要 / 删除）', /\.dsh-sel-quotechip-src\{/.test(css) && /\.dsh-sel-quotechip-text\{/.test(css) && /\.dsh-sel-quotechip-x\{/.test(css), '')
+  assert('CSS 契约：气泡里的引用块单行省略（长引用不撑破气泡）', /\.dsh-sel-bqitem\{[\s\S]{0,420}?text-overflow:ellipsis;white-space:nowrap\}/.test(css), '')
+  assert('CSS 契约：「引用整条」平时隐身，鼠标移到这条消息上才出现', /\.dsh-sel-bubquote\{[\s\S]{0,520}?opacity:0;transition:opacity/.test(css) && /\.dsh-sel-bubble:hover \.dsh-sel-bubquote,\.dsh-sel-bubquote:focus-visible\{opacity:\.66\}/.test(css), '')
 }
 
 
@@ -2719,6 +2883,716 @@ let bridgeOwnedBlob = ''
   const visualSelection = hook.selection()
   assert('「图解」帧的选区也认', !!visualSelection && visualSelection.text === '图解里的词', JSON.stringify(visualSelection))
   assert('位置标签取帧自己的 title（图解）', visualSelection.label === '图解', visualSelection.label)
+  hook.close()
+}
+
+// ───────────────────────── 引用（❝）：小窗里的内容 / 主界面选中的文字 → 输入框 ─────────────────────────
+// 两个入口共用一份清单（state.quotes），发送时拼进这一条消息：
+//   ① 小窗开着时划小窗里的正文 → 「❝ 引用」；
+//   ② 小窗开着时划主界面（含侧边栏网页）上的文字 → 同一个浮标；
+//   ③ 助手气泡末尾的「引用整条」。
+{
+  const quoteRect = { left: 40, top: 100, right: 200, bottom: 118, width: 160, height: 18 }
+  /** 造一条"本文档里的选区"：起点落在指定的节点上（祖先链就是插件要判定的东西）。 */
+  const selectText = (node, text) => {
+    const range = {
+      startContainer: node,
+      endContainer: node,
+      cloneRange: () => range,
+      getClientRects: () => [quoteRect],
+      getBoundingClientRect: () => quoteRect,
+    }
+    windowStub.getSelection = () => ({
+      isCollapsed: false,
+      rangeCount: 1,
+      toString: () => text,
+      getRangeAt: () => range,
+    })
+  }
+  const restoreGetSelection = windowStub.getSelection
+  const quoteButton = hook.quoteNode()
+  const quotesBox = Array.from(walk(panel)).find((n) => n.className === 'dsh-sel-quotes')
+  assert('输入框上方有引用区（默认收起）', !!quotesBox && quotesBox.getAttribute('data-show') === '0', quotesBox ? quotesBox.getAttribute('data-show') : '未找到')
+
+  // 本段自带前提：重开一个小窗（独一无二的选中文字，不吃缓存/历史）
+  hook.close()
+  hook.open('quote-probe', '引用用例的上下文片段', '引用测试')
+  for (let i = 0; i < 120 && hook.state().phase !== 'done'; i += 1) await sleep(20)
+  assert('（前提）引用用例的首轮出完', hook.state().phase === 'done', hook.state().phase)
+
+  // ① 小窗里选中的正文
+  // ⚠️ mouseup 的 target 必须是**面板里的节点**（真实浏览器就是这样上报的）：
+  //    早先 mouseup 对面板内的目标直接 return，小窗里划词毫无反应 —— 用 document.body
+  //    当 target 的写法测不出来（实测踩过：只有「引用整条」能用）。
+  const botBubble = Array.from(walk(chatLog)).find((n) => n.className.indexOf('dsh-sel-bubble-bot') >= 0)
+  const answerNode = Array.from(walk(botBubble || chatLog)).find((n) => n.tagName === 'P') || chatLog
+  selectText(answerNode, '引用用例的翻译段落')
+  documentStub.dispatch('mouseup', { target: answerNode })
+  await sleep(30)
+  const inPanel = hook.quoteState()
+  assert('小窗里划词：浮出「❝ 引用」', inPanel.visible === true, JSON.stringify(inPanel))
+  assert('来源认成小窗里的回答（不是"页面内容"）', !!inPanel.selection && inPanel.selection.label === '小窗回答' && inPanel.selection.source === 'panel', JSON.stringify(inPanel.selection))
+  assert('小窗开着时不弹「✦ 解读」（要解读直接在输入框里问）', button.style.display === 'none', String(button.style.display))
+
+  quoteButton.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+  await sleep(10)
+  let quotes = hook.quotes()
+  assert('点一下 → 引用区多了一张卡片', quotes.length === 1 && quotes[0].text === '引用用例的翻译段落' && quotes[0].label === '小窗回答', JSON.stringify(quotes))
+  assert('卡片画进输入框上方（来源 + 摘要）', quotesBox.getAttribute('data-show') === '1' && textOf(quotesBox).indexOf('小窗回答') >= 0 && textOf(quotesBox).indexOf('引用用例的翻译段落') >= 0, textOf(quotesBox))
+  assert('加完引用浮标自己收起来（"已经进去了"的信号）', quoteButton.style.display === 'none', String(quoteButton.style.display))
+  assert('只挂引用、没写问题时发送键可用', askSend.disabled === false, 'disabled=' + askSend.disabled)
+  assert(
+    '引用卡片自带上下文（这一段来自翻译卡片 → 用这次解读的局部上下文兜底）',
+    quotes[0].context === '引用用例的上下文片段' && quotes[0].session === false,
+    JSON.stringify({ context: quotes[0].context, session: quotes[0].session }),
+  )
+  assert(
+    '引用浮标画在面板**之上**（小窗里划词才看得见、点得着）',
+    Number(quoteButton.style.zIndex) > Number(panel.style.zIndex),
+    `quote=${quoteButton.style.zIndex} panel=${panel.style.zIndex}`,
+  )
+
+  // 划一大段（超过单段引用上限）也必须有反应：浮标照出，加进去时截断并说明
+  {
+    selectText(answerNode, '长'.repeat(4200))
+    documentStub.dispatch('mouseup', { target: answerNode })
+    await sleep(30)
+    assert('超长选区照样浮出引用浮标（"划长一点就没反应"是坑）', hook.quoteState().visible === true, JSON.stringify(hook.quoteState()))
+    quoteButton.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+    await sleep(10)
+    const longQuote = hook.quotes().pop()
+    assert(
+      '超长引用按单段上限截断，并在状态里说明',
+      !!longQuote && longQuote.text.length >= 3000 && longQuote.text.length <= 3001 && hook.state().status.indexOf('已截断') > 0,
+      `${longQuote && longQuote.text.length} · ${hook.state().status}`,
+    )
+    const chipList = Array.from(walk(quotesBox)).filter((n) => n.className === 'dsh-sel-quotechip-x')
+    chipList[chipList.length - 1].dispatch('click', { stopPropagation() {} })
+    await sleep(5)
+    assert('删掉超长那条后回到 1 条', hook.quotes().length === 1, JSON.stringify(hook.quotes().map((q) => q.text.length)))
+    // 把浮标状态也归零：不然下面那次"再点一次"的点击会把这段长文又加回来
+    //（浮标虽然收起来了，但 state.quoteSelection 还留着上一次的选区）
+    windowStub.getSelection = () => ({ isCollapsed: true, rangeCount: 0, toString: () => '' })
+    documentStub.dispatch('mouseup', { target: answerNode })
+    await sleep(20)
+  }
+
+  const clicksBefore = hook.quoteState().visible
+  quoteButton.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+  assert('浮标收起后再点它不会重复加', hook.quotes().length === 1 && clicksBefore === false, JSON.stringify(hook.quotes().map((q) => q.text)))
+
+  // 同一段再加一次：不加，但要有交代（点了"没反应"是最难查的观感）
+  assert(
+    '重复的引用不再加，并说明原因',
+    hook.quote('引用用例的翻译段落', '小窗回答') === false && hook.state().status.indexOf('已经在引用里') >= 0,
+    hook.state().status,
+  )
+
+  // 上限：最多 4 段
+  hook.quote('第二段引用', '小窗详解')
+  hook.quote('第三段引用', '侧边栏网页')
+  hook.quote('第四段引用', '调试')
+  assert('四段引用都在', hook.quotes().length === 4, JSON.stringify(hook.quotes().map((q) => q.text)))
+  assert(
+    '第五段被挡下并说明原因',
+    hook.quote('第五段引用', '调试') === false && hook.state().status.indexOf('最多 4 段') >= 0,
+    hook.state().status,
+  )
+
+  // 卡片上的 ✕
+  const chipXs = Array.from(walk(quotesBox)).filter((n) => n.className === 'dsh-sel-quotechip-x')
+  assert('每张卡片都有 ✕', chipXs.length === 4, String(chipXs.length))
+  chipXs[0].dispatch('click', { stopPropagation() {} })
+  await sleep(5)
+  assert(
+    '点 ✕ 能精确删掉那一条',
+    hook.quotes().length === 3 && !hook.quotes().some((q) => q.text === '引用用例的翻译段落'),
+    JSON.stringify(hook.quotes().map((q) => q.text)),
+  )
+
+  // ② 小窗开着时，主界面上的选区也走同一个浮标
+  selectText(textEl, '主界面上的这一段')
+  documentStub.dispatch('mouseup', { target: textEl })
+  await sleep(30)
+  const onDoc = hook.quoteState()
+  assert('小窗开着时主界面划词：同样浮出「❝ 引用」', onDoc.visible === true, JSON.stringify(onDoc))
+  assert('来源标成「主界面选中」', !!onDoc.selection && onDoc.selection.label === '主界面选中' && onDoc.selection.source === 'document', JSON.stringify(onDoc.selection))
+  quoteButton.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+  await sleep(10)
+  quotes = hook.quotes()
+  assert(
+    '主界面选中的文字挂进了同一份清单',
+    quotes.length === 4 && quotes[3].text === '主界面上的这一段' && quotes[3].label === '主界面选中',
+    JSON.stringify(quotes.map((q) => q.label)),
+  )
+  assert(
+    '主界面的引用标成"会话里的"（发送前会问 host 要按轮取整的上下文）',
+    quotes[3].session === true,
+    JSON.stringify({ session: quotes[3].session, context: quotes[3].context.slice(0, 30) }),
+  )
+
+  // ③ 发送：引用拼进这一条消息（气泡里也要看得见），会话里的引用先补上下文
+  const callsBefore = quoteContextCalls.length
+  const beforeSend = sent.length
+  askBox.value = '这几段有什么关系？'
+  askSend.dispatch('click', { stopPropagation() {} })
+  for (let i = 0; i < 120 && sent.length === beforeSend; i += 1) await sleep(20)
+  const quotePayload = sent[sent.length - 1] || {}
+  assert(
+    '载荷里的 question 就是拼好的那份（引用在前、问题在后）',
+    String(quotePayload.question).indexOf('【引用 1】（来自小窗详解）') === 0 && /【我的问题】\n这几段有什么关系？$/.test(String(quotePayload.question)),
+    String(quotePayload.question).replace(/\n/g, '⏎').slice(0, 120),
+  )
+  assert(
+    '每段引用各带来源，按加入顺序编号',
+    /【引用 2】（来自侧边栏网页）/.test(String(quotePayload.question)) &&
+      /【引用 4】（来自主界面选中）/.test(String(quotePayload.question)) &&
+      String(quotePayload.question).indexOf('第五段引用') < 0,
+    String(quotePayload.question).replace(/\n/g, '⏎'),
+  )
+  assert(
+    '只给会话里的引用问 host（小窗里的那几段自己就有上下文，不多打一次请求）',
+    quoteContextCalls.length === callsBefore + 1 &&
+      quoteContextCalls[quoteContextCalls.length - 1].text === '主界面上的这一段' &&
+      quoteContextCalls[quoteContextCalls.length - 1].sessionId === 'session-stub-1',
+    JSON.stringify(quoteContextCalls.slice(callsBefore)),
+  )
+  assert(
+    '拼好的消息里带上【引用处上下文】，被引用的部分用【】标出',
+    String(quotePayload.question).indexOf('【引用处上下文】（被引用的部分用【】标出）') > 0 &&
+      String(quotePayload.question).indexOf('用户：【主界面上的这一段】') > 0 &&
+      String(quotePayload.question).indexOf('助手：引用之后的那句回答。') > 0,
+    String(quotePayload.question).replace(/\n/g, '⏎').slice(-160),
+  )
+  assert(
+    '没有上下文的引用照旧只给原文（不硬造一段空上下文）',
+    /【引用 1】（来自小窗详解）\n第二段引用\n/.test(String(quotePayload.question)),
+    String(quotePayload.question).replace(/\n/g, '⏎').slice(0, 80),
+  )
+  assert(
+    '引用用完即清（不会跟着下一轮又发一遍）',
+    hook.quotes().length === 0 && quotesBox.getAttribute('data-show') === '0',
+    JSON.stringify(hook.quotes()),
+  )
+  const quoteTurn = hook.turns().filter((t) => t.role === 'user').pop()
+  assert(
+    '轮次里同时留着「问了什么」和「带了哪些引用」',
+    quoteTurn.text === '这几段有什么关系？' && (quoteTurn.quotes || []).length === 4 && quoteTurn.sent === quotePayload.question,
+    JSON.stringify({ text: quoteTurn.text, quotes: (quoteTurn.quotes || []).length }),
+  )
+  assert(
+    '用户气泡里画出了引用块（引用在上、问题在下）',
+    textOf(chatLog).indexOf('❝ 小窗详解') >= 0 && textOf(chatLog).indexOf('这几段有什么关系？') >= 0,
+    textOf(chatLog).slice(-90),
+  )
+  assert(
+    '气泡里的引用是摘要（长引用不撑破气泡，完整文本进 title）',
+    Array.from(walk(chatLog)).some((n) => n.className === 'dsh-sel-bqitem' && n.title === '第二段引用'),
+    Array.from(walk(chatLog)).filter((n) => n.className === 'dsh-sel-bqitem').map((n) => n.title).join('|'),
+  )
+
+  // ④ 带引用的那一轮要以"拼好的样子"进历史给模型（否则下一轮模型不知道"这几段"指什么）
+  for (let i = 0; i < 120 && hook.state().asking !== false; i += 1) await sleep(20)
+  const beforeSecond = sent.length
+  hook.ask('那第三段呢？')
+  for (let i = 0; i < 120 && sent.length === beforeSecond; i += 1) await sleep(20)
+  const secondPayload = sent[sent.length - 1] || {}
+  const carried = (secondPayload.history || []).find((t) => t.role === 'user' && String(t.text).indexOf('【引用 1】') >= 0)
+  assert(
+    '带引用的那一轮原样进历史（引用块不能丢）',
+    !!carried && String(carried.text).indexOf('【我的问题】') > 0,
+    carried ? String(carried.text).replace(/\n/g, '⏎').slice(0, 60) : JSON.stringify((secondPayload.history || []).map((t) => t.role)),
+  )
+
+  // ④b 小窗里的引用也带上下文：引用所在那一轮 ± 一轮（用户消息 + 助手回复都在）
+  for (let i = 0; i < 120 && hook.state().asking !== false; i += 1) await sleep(20)
+  {
+    const bubbles = Array.from(walk(chatLog)).filter((n) => n.className.indexOf('dsh-sel-bubble-bot') >= 0)
+    const target = bubbles[bubbles.length - 1]
+    const node = Array.from(walk(target)).find((n) => n.tagName === 'P') || target
+    selectText(node, '这是对追问的回答')
+    documentStub.dispatch('mouseup', { target: node })
+    await sleep(30)
+    const state = hook.quoteState()
+    assert('小窗气泡里划词：认得出在哪一轮上', state.selection && state.selection.turnIndex >= 0, JSON.stringify(state.selection))
+    quoteButton.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+    await sleep(10)
+    const panelQuote = hook.quotes().pop()
+    assert(
+      '小窗里的引用上下文 = 这一轮 ± 一轮（用户消息 + 助手回复都在）',
+      !!panelQuote &&
+        panelQuote.session === false &&
+        panelQuote.context.indexOf('用户：那第三段呢？') >= 0 &&
+        panelQuote.context.indexOf('助手：') >= 0,
+      JSON.stringify(panelQuote && panelQuote.context).slice(0, 200),
+    )
+    assert(
+      '上下文里把被引用的那句用【】标出',
+      !!panelQuote && panelQuote.context.indexOf('【这是对追问的回答】') > 0,
+      JSON.stringify(panelQuote && panelQuote.context).slice(0, 160),
+    )
+    const composed = hook.compose()
+    assert(
+      '拼进消息时上下文与原文各就各位（原文已在上下文里 → 不重复贴一遍）',
+      composed.indexOf('【引用处上下文】（被引用的部分用【】标出）') > 0 &&
+        composed.indexOf('【引用原文】') < 0 &&
+        composed.indexOf('用户：那第三段呢？') > 0,
+      composed.replace(/\n/g, '⏎').slice(0, 200),
+    )
+    // 这一段不发了，清掉，别影响后面的用例
+    const lastChip = Array.from(walk(quotesBox)).filter((n) => n.className === 'dsh-sel-quotechip-x').pop()
+    if (lastChip) lastChip.dispatch('click', { stopPropagation() {} })
+    await sleep(5)
+  }
+
+  // ④c host 不认（引用不在会话里 / 路由失败）→ 用客户端自己采的那份上下文，照发不误
+  for (let i = 0; i < 120 && hook.state().asking !== false; i += 1) await sleep(20)
+  {
+    globalThis.__quoteContextFixture = 'miss'
+    hook.quote('回退探测的一段', '主界面选中', { context: '客户端兜底的上下文：用户：【回退探测的一段】', session: true })
+    const beforeFallback = sent.length
+    hook.ask('回退探测：这段呢？')
+    for (let i = 0; i < 120 && sent.length === beforeFallback; i += 1) await sleep(20)
+    const fallbackPayload = sent[sent.length - 1] || {}
+    assert(
+      'host 定位不到时用客户端兜底的上下文（发送不被卡住）',
+      String(fallbackPayload.question).indexOf('用户：【回退探测的一段】') > 0,
+      String(fallbackPayload.question).replace(/\n/g, '⏎').slice(0, 120),
+    )
+    globalThis.__quoteContextFixture = undefined
+  }
+
+  // ⑤ 只挂引用、没写问题：也允许发（兜底一句人话，绝不空发）
+  for (let i = 0; i < 120 && hook.state().asking !== false; i += 1) await sleep(20)
+  hook.quote('只带引用的一段', '主界面选中')
+  askBox.value = ''
+  const beforeOnly = sent.length
+  askBox.dispatch('keydown', { key: 'Enter', preventDefault() {}, stopPropagation() {} })
+  for (let i = 0; i < 120 && sent.length === beforeOnly; i += 1) await sleep(20)
+  const onlyPayload = sent[sent.length - 1] || {}
+  assert('空输入框 + 有引用时按 Enter 能发出去', sent.length === beforeOnly + 1, `sent=${sent.length - beforeOnly}`)
+  assert(
+    '兜底提问只有一句，引用块照旧在前',
+    String(onlyPayload.question).indexOf('【我的问题】\n就上面引用的文字，说说它在这里是什么意思。') > 0,
+    String(onlyPayload.question).replace(/\n/g, '⏎').slice(-60),
+  )
+  const onlyTurn = hook.turns().filter((t) => t.role === 'user').pop()
+  assert('气泡里显示的就是那句兜底提问', onlyTurn.text === '就上面引用的文字，说说它在这里是什么意思。', onlyTurn.text)
+
+  // ⑥ 助手气泡末尾的「引用整条」（平时隐身，鼠标移上去才浮出来）
+  for (let i = 0; i < 120 && hook.state().asking !== false; i += 1) await sleep(20)
+  const botBubbles = Array.from(walk(chatLog)).filter((n) => n.className.indexOf('dsh-sel-bubble-bot') >= 0)
+  const lastBot = botBubbles[botBubbles.length - 1]
+  const quoteAllBtn = Array.from(walk(lastBot)).find((n) => String(n.className).indexOf('dsh-sel-bubquote') >= 0)
+  assert('助手气泡末尾有「引用整条」', !!quoteAllBtn && textOf(quoteAllBtn).indexOf('引用整条') >= 0, quoteAllBtn ? textOf(quoteAllBtn) : '未找到')
+  quoteAllBtn.dispatch('click', { stopPropagation() {} })
+  await sleep(10)
+  const allQuotes = hook.quotes()
+  const lastBotTurn = hook.turns().filter((t) => t.role === 'assistant' && t.streaming !== true).pop()
+  assert(
+    '点一下 → 整条回答进了引用',
+    allQuotes.length === 1 && allQuotes[0].label === '小窗回答' && allQuotes[0].text.indexOf('这是对追问的回答') >= 0,
+    JSON.stringify(allQuotes.map((q) => q.text.slice(0, 24))),
+  )
+  assert('引用的是这一轮的原文（卡片上才是摘要）', allQuotes[0].text === lastBotTurn.text, `${allQuotes[0].text.length} vs ${String(lastBotTurn.text).length}`)
+  assert(
+    '「引用整条」也带上下文（这一轮 ± 一轮）',
+    allQuotes[0].context.indexOf('用户：') > 0 && allQuotes[0].session === false,
+    JSON.stringify(allQuotes[0].context).slice(0, 120),
+  )
+
+  // ⑥b 等待/流式中的那条不给「引用整条」：内容是半截的，引用它没有意义（定稿后才出现）
+  {
+    hook.open('quote-wait-probe', '', '等待用例')
+    for (let i = 0; i < 120 && hook.state().phase !== 'done'; i += 1) await sleep(20)
+    hook.ask('等待用例的问题')
+    let sawStreaming = false
+    for (let i = 0; i < 60; i += 1) {
+      if (hook.turns().some((t) => t.streaming === true)) {
+        sawStreaming = true
+        break
+      }
+      await sleep(10)
+    }
+    const waiting = Array.from(walk(chatLog)).filter((n) => n.className.indexOf('dsh-sel-bubble-bot') >= 0).pop()
+    assert(
+      '等待/流式中的那条不给「引用整条」',
+      sawStreaming &&
+        !!waiting &&
+        !Array.from(walk(waiting)).some((n) => String(n.className).indexOf('dsh-sel-bubquote') >= 0),
+      `${sawStreaming ? 'streaming' : '未抓到流式态'} · ${waiting ? textOf(waiting).slice(0, 20) : '未找到'}`,
+    )
+    for (let i = 0; i < 160 && hook.state().asking !== false; i += 1) await sleep(20)
+    const settled = Array.from(walk(chatLog)).filter((n) => n.className.indexOf('dsh-sel-bubble-bot') >= 0).pop()
+    assert(
+      '定稿之后「引用整条」才出现',
+      !!settled && Array.from(walk(settled)).some((n) => String(n.className).indexOf('dsh-sel-bubquote') >= 0),
+      settled ? textOf(settled).slice(0, 20) : '未找到',
+    )
+  }
+
+  // ⑦ 小窗收起来：浮标回到「✦ 解读」（引用只在开着小窗时有意义）
+  hook.close()
+  selectText(textEl, '主界面上的另一次选中')
+  documentStub.dispatch('mouseup', { target: textEl })
+  await sleep(30)
+  assert(
+    '小窗收起后：浮标回到「✦ 解读」，引用浮标不再出现',
+    quoteButton.style.display === 'none' && button.style.display === 'inline-flex',
+    `quote=${quoteButton.style.display} read=${button.style.display}`,
+  )
+
+  // ⑧ 换一段选中文字 = 换一次对话：上一段攒的引用不该跟过来
+  hook.open('slipped', '', '换选区')
+  await sleep(30)
+  assert(
+    '换选区后引用清单清空',
+    hook.quotes().length === 0 && quotesBox.getAttribute('data-show') === '0',
+    JSON.stringify(hook.quotes()),
+  )
+
+  windowStub.getSelection = restoreGetSelection
+  hook.close()
+}
+
+// ═════════════════════ 语音输入（麦克风 → 文字 → 输入框） ═════════════════════
+//
+// 真浏览器里这一段是"点一下说话 → 识别 → 文字进输入框"。桩里验四件事：
+//   ① 状态机与提示：请求权限 / 录音（含走秒与音量）/ 识别 / 成功 / 各类失败；
+//   ② 文字**插进输入框**（追加在光标处，不覆盖用户已经写了一半的话）；
+//   ③ 该松麦克风的时候一定要松（取消 / 收起小窗 / 插件停用）；
+//   ④ 音频格式与 host 的 validateWave 同源（16kHz 单声道 PCM16 WAV）——纯函数打表。
+//
+// 真实识别（真模型 + 真音频）不在这里：见 scripts/test-speech.mjs 与真浏览器冒烟。
+function waitVoice(predicate, ms = 1500) {
+  const started = Date.now()
+  const step = async () => {
+    if (predicate()) return true
+    if (Date.now() - started > ms) return !!predicate()
+    await sleep(10)
+    return step()
+  }
+  return step()
+}
+
+/** 从 bundle 源码里抠一个具名函数（与 test-bridge.mjs 同一套配平逻辑）。 */
+function sliceFunction(text, name) {
+  const start = text.indexOf('function ' + name + '(')
+  if (start < 0) throw new Error('bundle 里找不到函数：' + name)
+  let depth = 0
+  for (let i = text.indexOf('{', start); i < text.length; i += 1) {
+    const ch = text[i]
+    if (ch === '{') depth += 1
+    else if (ch === '}') {
+      depth -= 1
+      if (depth === 0) return text.slice(start, i + 1)
+    } else if (ch === "'" || ch === '"' || ch === '`') {
+      for (i += 1; i < text.length; i += 1) {
+        if (text[i] === '\\') i += 1
+        else if (text[i] === ch) break
+      }
+    }
+  }
+  throw new Error('函数没配平：' + name)
+}
+
+{
+  // ── 浏览器音频桩 ──────────────────────────────────────────────
+  const micCalls = []
+  const micTracks = []
+  let micDenied = false
+  let micDeferred = null
+  const makeTrack = () => {
+    const track = {
+      stopped: false,
+      stop() {
+        this.stopped = true
+      },
+    }
+    micTracks.push(track)
+    return track
+  }
+  const makeStream = () => {
+    const track = makeTrack()
+    return { getTracks: () => [track] }
+  }
+  navigatorStub.mediaDevices = {
+    getUserMedia(constraints) {
+      micCalls.push(constraints)
+      if (micDenied) {
+        const error = new Error('Permission denied')
+        error.name = 'NotAllowedError'
+        return Promise.reject(error)
+      }
+      if (micDeferred) {
+        const pending = micDeferred
+        micDeferred = null
+        return pending.promise.then(() => makeStream())
+      }
+      return Promise.resolve(makeStream())
+    },
+  }
+  const recordedChunks = []
+  class MediaRecorderStub {
+    constructor(stream) {
+      this.stream = stream
+      this.state = 'recording'
+      this.mimeType = 'audio/webm;codecs=opus'
+      MediaRecorderStub.last = this
+    }
+    start() {
+      this.state = 'recording'
+    }
+    stop() {
+      this.state = 'inactive'
+      const chunk = new Blob([new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])], { type: 'audio/webm' })
+      recordedChunks.push(chunk)
+      if (this.ondataavailable) this.ondataavailable({ data: chunk })
+      if (this.onstop) this.onstop()
+    }
+  }
+  class AudioContextStub {
+    constructor() {
+      this.state = 'running'
+      this.closed = false
+      AudioContextStub.instances.push(this)
+    }
+    createAnalyser() {
+      return {
+        fftSize: 256,
+        getFloatTimeDomainData(array) {
+          for (let i = 0; i < array.length; i += 1) array[i] = 0.08
+        },
+      }
+    }
+    createMediaStreamSource() {
+      return { connect() {} }
+    }
+    decodeAudioData(_buffer, ok) {
+      // 2 秒的"解码结果"：下游只关心 duration 与重采样
+      if (ok) ok({ duration: 2, sampleRate: 48000, numberOfChannels: 2 })
+      return Promise.resolve({ duration: 2, sampleRate: 48000, numberOfChannels: 2 })
+    }
+    close() {
+      this.closed = true
+      return Promise.resolve()
+    }
+  }
+  AudioContextStub.instances = []
+  class OfflineAudioContextStub {
+    constructor(channels, frames, rate) {
+      this.frames = frames
+      this.sampleRate = rate
+      OfflineAudioContextStub.last = this
+    }
+    createBufferSource() {
+      return { buffer: null, connect() {}, start() {} }
+    }
+    startRendering() {
+      const data = new Float32Array(this.frames)
+      for (let i = 0; i < data.length; i += 1) data[i] = Math.sin(i / 20) * 0.5
+      return Promise.resolve({ getChannelData: () => data, duration: this.frames / this.sampleRate })
+    }
+  }
+  windowStub.MediaRecorder = MediaRecorderStub
+  windowStub.AudioContext = AudioContextStub
+  windowStub.OfflineAudioContext = OfflineAudioContextStub
+
+  // ── 面板：打开到"翻译就绪、composer 可见" ──────────────────────
+  hook.open('voice-probe', '', '语音输入')
+  await waitVoice(() => hook.state().phase === 'done')
+  const askRow = Array.from(walk(panel)).find((n) => String(n.className).split(/\s+/).includes('dsh-sel-ask'))
+  assert('语音用例：composer 已可见', !!askRow && askRow.style.display !== 'none', askRow && askRow.style.display)
+
+  const micButton = hook.voiceNode()
+  const micNode = Array.from(walk(panel)).find((n) => String(n.className).split(/\s+/).includes('dsh-sel-mic'))
+  const noteNode = Array.from(walk(panel)).find((n) => String(n.className).split(/\s+/).includes('dsh-sel-asknote'))
+  assert('composer 里有麦克风按钮（和发送键同属工具行）', !!micNode && !!noteNode, String(!!micNode))
+  const toolsRow = micNode && micNode.parentNode
+  assert(
+    '麦克风在发送键左边（贴 composer 主操作区）',
+    !!toolsRow && toolsRow.children.indexOf(micNode) < toolsRow.children.indexOf(askSend),
+    toolsRow ? `${toolsRow.children.indexOf(micNode)} < ${toolsRow.children.indexOf(askSend)}` : 'no row',
+  )
+  assert('初始状态：麦克风是 idle、提示条收起', hook.voice().phase === 'idle' && hook.voice().shown === false, JSON.stringify(hook.voice()))
+  assert('自检钩子能看到"这个环境支持录音"', hook.voice().supported === true, String(hook.voice().supported))
+
+  // ── ① 点一下开始录：拿到麦克风、进入录音态、提示里走秒 ──────────
+  const levelWrites = []
+  micButton.style.setProperty = (name, value) => levelWrites.push([name, value])
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().phase === 'recording')
+  assert('点一下麦克风 → 开始录音', hook.voice().phase === 'recording', hook.voice().phase)
+  assert('录音时按钮变成「停止」形态（data-state=recording）', micButton.getAttribute('data-state') === 'recording', micButton.getAttribute('data-state'))
+  assert('录音时 aria-pressed=true（无障碍也读得出来）', micButton.getAttribute('aria-pressed') === 'true')
+  assert('录音提示：说明怎么结束', hook.voice().note.indexOf('正在录音') >= 0 && hook.voice().note.indexOf('再点一下结束') >= 0, hook.voice().note)
+  assert('只向浏览器要了麦克风（不要摄像头）', micCalls.length === 1 && micCalls[0].video === false, JSON.stringify(micCalls[0]))
+  await sleep(1300)
+  assert('录音提示里在走秒（0:01 之后）', hook.voice().note.indexOf('0:0') > 0 && hook.voice().note.indexOf('0:00') < 0, hook.voice().note)
+  assert(
+    '实时音量写进了 CSS 变量（呼吸圈跟着说话强弱）',
+    levelWrites.some(([name, value]) => name === '--sel-mic-level' && Number(value) > 0),
+    JSON.stringify(levelWrites.slice(-2)),
+  )
+
+  // ── ② 再点一下结束：识别 → 文字插进输入框 ──────────────────────
+  const firstTrack = micTracks[micTracks.length - 1]
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().phase === 'done' || hook.voice().lastText !== '')
+  assert('第二次点击 → 松开麦克风（音轨停掉）', firstTrack.stopped === true)
+  assert('录音结束后 AudioContext 关掉（不留音频线程）', AudioContextStub.instances.every((ctx) => ctx.closed === true), String(AudioContextStub.instances.length))
+  assert('重采样成 16kHz（host 只收这一种）', OfflineAudioContextStub.last && OfflineAudioContextStub.last.sampleRate === 16000, String(OfflineAudioContextStub.last && OfflineAudioContextStub.last.sampleRate))
+  assert('识别请求发到了 host（带 base64 音频、不带文件路径之类）', speechTranscribeCalls.length === 1 && typeof speechTranscribeCalls[0].audioBase64 === 'string', Object.keys(speechTranscribeCalls[0] || {}).join(','))
+  assert('识别出来的文字进了输入框', askBox.value.indexOf('这段是语音转出来的问题') >= 0, askBox.value)
+  assert('插入后光标在末尾（接着就能改 / 接着说）', askBox.selectionStart === askBox.value.length, `${askBox.selectionStart}/${askBox.value.length}`)
+  assert('提示告诉用户"插到哪了"', hook.voice().note.indexOf('已插入') >= 0, hook.voice().note)
+  await waitVoice(() => hook.voice().phase === 'idle')
+  assert('成功之后回到 idle（可以接着录第二段）', hook.voice().phase === 'idle', hook.voice().phase)
+
+  // ── ③ 追加而不是覆盖：用户已经写了一半时接着说 ────────────────
+  hook.askValue('先写的一句')
+  speechTranscript = { ok: true, text: '后面补的一句' }
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().phase === 'recording')
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().lastText === '后面补的一句')
+  assert('已有内容时是追加（中间补一个空格）', askBox.value === '先写的一句 后面补的一句', askBox.value)
+  assert('插入之后发送键可点（内容非空）', askSend.disabled === false, String(askSend.disabled))
+  hook.askValue('')
+
+  // ── ④ 失败路径：权限被拒 ─────────────────────────────────────
+  micDenied = true
+  const tracksBeforeDenied = micTracks.length
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().tone === 'error')
+  assert('权限被拒：一句话说清 + 不进入录音态', hook.voice().phase === 'idle' && hook.voice().tone === 'error', hook.voice().note)
+  assert('权限被拒的提示是可读中文（不是 DOMException 原文）', hook.voice().note.indexOf('权限') >= 0 && hook.voice().note.indexOf('NotAllowedError') < 0, hook.voice().note)
+  assert('权限被拒时一个音轨都没拿到（也就没有要松的东西）', micTracks.length === tracksBeforeDenied, `${micTracks.length} vs ${tracksBeforeDenied}`)
+  micDenied = false
+
+  // ── ⑤ 失败路径：模型没准备好 → 提示里带「准备模型」按钮 ─────────
+  const goodCatalog = speechCatalog
+  speechCatalog = {
+    ...goodCatalog,
+    available: false,
+    reason: 'unprepared',
+    providers: [{ ...goodCatalog.providers[0], phase: 'unprepared' }],
+  }
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().tone === 'warn')
+  assert('模型没准备好：说清楚 + 给一个「准备模型」按钮', hook.voice().tone === 'warn' && hook.voice().actions === 1, `${hook.voice().note} actions=${hook.voice().actions}`)
+  assert('没准备好时不进录音态（不在没模型时占着麦克风）', hook.voice().phase === 'idle', hook.voice().phase)
+  const prepareBtn = Array.from(walk(noteNode)).find((n) => String(n.className).indexOf('dsh-sel-notebtn') >= 0)
+  assert('提示里的按钮确实画出来了', !!prepareBtn, prepareBtn ? prepareBtn.textContent : 'none')
+  speechCatalog = { ...goodCatalog, available: true, providers: [{ ...goodCatalog.providers[0], phase: 'ready' }] }
+  prepareBtn.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => speechPrepareCalls > 0)
+  assert('点「准备模型」→ 通知 host 去准备（下载在 host 上跑）', speechPrepareCalls === 1, String(speechPrepareCalls))
+  await waitVoice(() => hook.voice().note.indexOf('准备好了') >= 0, 3000)
+  assert('准备完成后提示"可以开始说话"', hook.voice().note.indexOf('准备好了') >= 0, hook.voice().note)
+  speechCatalog = goodCatalog
+
+  // ── ⑥ 失败路径：识别失败 / 没听清 / 请求被取消 ─────────────────
+  speechTranscript = { ok: false, code: 'failed', error: '识别服务挂了' }
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().phase === 'recording')
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().tone === 'error')
+  assert('识别失败：原样说清原因', hook.voice().tone === 'error' && hook.voice().note.indexOf('识别服务挂了') >= 0, hook.voice().note)
+  assert('识别失败不会往输入框里塞东西', askBox.value === '', JSON.stringify(askBox.value))
+
+  speechTranscript = { ok: false, code: 'empty-transcript', error: '没听清（这段录音里没有识别到内容）' }
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().phase === 'recording')
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().note.indexOf('没听清') >= 0)
+  assert('没听清：给一句人话（不是"识别失败"）', hook.voice().note.indexOf('没听清') >= 0 && hook.voice().tone === 'warn', `${hook.voice().tone} ${hook.voice().note}`)
+
+  // 录音中点第二次 = 收尾去识别；识别中再点 = 取消（不能有文字冒出来）
+  speechTranscript = { ok: true, text: '这段不该被插进去' }
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().phase === 'recording')
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().phase === 'transcribing')
+  assert('点第二次后进入识别态（按钮转圈）', hook.voice().phase === 'transcribing', hook.voice().phase)
+  micButton.dispatch('click', { stopPropagation() {} })
+  await sleep(80)
+  assert('识别中再点一次 = 取消（提示"已取消识别"）', hook.voice().phase === 'idle' && hook.voice().note.indexOf('已取消识别') >= 0, `${hook.voice().phase} ${hook.voice().note}`)
+  assert('取消之后晚到的结果不会插进输入框', askBox.value.indexOf('这段不该被插进去') < 0, JSON.stringify(askBox.value))
+
+  // ── ⑦ 权限还没回来就取消：晚到的授权不能变成"在录音" ────────────
+  micDeferred = Promise.withResolvers()
+  speechTranscript = { ok: true, text: '不该出现的第二段' }
+  const beforeCancelCalls = micCalls.length
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => micCalls.length === beforeCancelCalls + 1)
+  assert('点了麦克风之后到授权回来之前是「请求中」', hook.voice().phase === 'requesting', `${hook.voice().phase} calls=${micCalls.length}`)
+  micButton.dispatch('click', { stopPropagation() {} })
+  assert('请求中再点一次 = 取消（不进录音）', hook.voice().phase === 'idle' && hook.voice().note.indexOf('已取消') >= 0, `${hook.voice().phase} ${hook.voice().note}`)
+  const tracksBeforeLate = micTracks.length
+  micDeferred && micDeferred.resolve()
+  await sleep(80)
+  assert(
+    '取消后晚到的授权不会偷偷开录（也不留下音轨）',
+    hook.voice().phase === 'idle' && micTracks.length === tracksBeforeLate,
+    `${hook.voice().phase} tracks=${micTracks.length - tracksBeforeLate}`,
+  )
+
+  // ── ⑦.5 这条消息发出去了：正在录的那段要收掉（不能留个红着的麦克风）──
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().phase === 'recording')
+  const sendTrack = micTracks[micTracks.length - 1]
+  hook.ask('边录边说的问题')
+  await sleep(60)
+  assert(
+    '发送消息时正在录的那段被收掉（音轨停掉、按钮回 idle）',
+    sendTrack.stopped === true && hook.voice().phase === 'idle',
+    `stopped=${sendTrack.stopped} phase=${hook.voice().phase}`,
+  )
+  assert('并说明为什么停（不是悄悄停）', hook.voice().note.indexOf('已停止录音') >= 0, hook.voice().note)
+
+  // ── ⑧ 收起小窗 = 立刻松麦克风（不能让标签页一直亮着录音标识）────
+  micButton.dispatch('click', { stopPropagation() {} })
+  await waitVoice(() => hook.voice().phase === 'recording')
+  const openTrack = micTracks[micTracks.length - 1]
+  hook.close()
+  await sleep(30)
+  assert('收起小窗：音轨停掉、状态回 idle', openTrack.stopped === true && hook.voice().phase === 'idle', `${openTrack.stopped} ${hook.voice().phase}`)
+  assert('收起小窗：提示条连文字一起收掉（不留半句"正在录音"）', hook.voice().shown === false && hook.voice().note === '', `${hook.voice().shown} / ${JSON.stringify(hook.voice().note)}`)
+
+  // ── ⑨ 音频格式：和 host 的 validateWave 同源（纯函数打表）────────
+  const helpers = new Function(
+    [
+      sliceFunction(source, 'encodeWave'),
+      sliceFunction(source, 'bytesToBase64'),
+      sliceFunction(source, 'formatClock'),
+      'return { encodeWave: encodeWave, bytesToBase64: bytesToBase64, formatClock: formatClock }',
+    ].join('\n'),
+  )()
+  const samples = new Float32Array(16000) // 1 秒
+  for (let i = 0; i < samples.length; i += 1) samples[i] = Math.sin(i / 12) * 0.7
+  const wave = helpers.encodeWave(samples)
+  const view = new DataView(wave.buffer)
+  const ascii = (start, end) => Buffer.from(wave.slice(start, end)).toString('ascii')
+  assert('WAV 头：RIFF/WAVE/fmt', ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WAVE' && ascii(12, 16) === 'fmt ', ascii(0, 16))
+  assert(
+    'WAV 头：16kHz / 单声道 / PCM16（host 逐字段校验的就是这几个）',
+    view.getUint32(24, true) === 16000 && view.getUint16(22, true) === 1 && view.getUint16(34, true) === 16 && view.getUint16(20, true) === 1,
+    `${view.getUint32(24, true)}Hz ch=${view.getUint16(22, true)} bit=${view.getUint16(34, true)}`,
+  )
+  assert('WAV 头：长度字段自洽（RIFF / data 都算对）', view.getUint32(4, true) === wave.length - 8 && view.getUint32(40, true) === wave.length - 44, `${view.getUint32(4, true)} / ${view.getUint32(40, true)}`)
+  assert('WAV：1 秒 = 44 字节头 + 32000 字节数据', wave.length === 44 + 32000, String(wave.length))
+  assert('base64 是可解回来的（host 会校验"规范 base64"）', Buffer.from(helpers.bytesToBase64(wave), 'base64').equals(Buffer.from(wave)), 'round-trip')
+  const clipped = helpers.encodeWave(new Float32Array([2, -2, 0]))
+  // 16 位小端、有符号：+32767 = 7f ff，-32768 = 00 80（不夹的话 2*32767 会绕成负数）
+  assert(
+    '采样越界会被夹住（±2 不该绕回成爆音）',
+    clipped[44] === 0xff && clipped[45] === 0x7f && clipped[46] === 0x00 && clipped[47] === 0x80,
+    `${clipped[44]},${clipped[45]},${clipped[46]},${clipped[47]}`,
+  )
+  assert('录音秒数显示成 0:07 这种', helpers.formatClock(7500) === '0:07' && helpers.formatClock(60000) === '1:00', helpers.formatClock(7500))
+
+  windowStub.getSelection = windowStub.getSelection
   hook.close()
 }
 

@@ -29,7 +29,7 @@ function extractCss() {
 }
 
 /** DSH 主题变量：用浅色主题的实际取值，让截图看起来像真的嵌在 DSH 里。 */
-const THEME_VARS = `
+const THEME_VARS = `:root{
   --dsw-alias-bg-layer-1: #ffffff;
   --dsw-alias-label-primary: #1a1a1a;
   --dsw-alias-label-secondary: #6b7280;
@@ -40,7 +40,7 @@ const THEME_VARS = `
   --dsw-alias-button-primary-fill: #3b6ef5;
   --sel-a1: #0d9488;
   --sel-a2: #0f766e;
-`
+}`
 
 const PAGE = (title, css, body) => `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>${title}</title>
@@ -103,10 +103,12 @@ const sendIcon = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" st
 
 /**
  * 输入区（结构照 src/client/index.js 的真实构建顺序）：
- *   .dsh-sel-ask > textarea.dsh-sel-askbox + .dsh-sel-asktools
+ *   .dsh-sel-ask > .dsh-sel-quotes + textarea.dsh-sel-askbox + .dsh-sel-asktools
  *   asktools = 输出偏好(文字 + 分段开关 + 滑动药丸) + askspace(撑开) + 模型胶囊 + 发送键
+ *   quotes   = 待发送的引用卡片（空串 = 空态，整块收起）
  */
-const askRow = (webOn, model = 'deepseek-v4.1-flash', tier = '高') => `      <div class="dsh-sel-ask">
+const askRow = (webOn, model = 'deepseek-v4.1-flash', tier = '高', quotes = '') => `      <div class="dsh-sel-ask">
+        <div class="dsh-sel-quotes"${quotes ? ' data-show="1"' : ''}>${quotes}</div>
         <textarea class="dsh-sel-askbox" rows="1" placeholder="就这段文字继续追问…（Enter 发送，Shift+Enter 换行）"></textarea>
         <div class="dsh-sel-asktools">
           <span class="dsh-sel-pref" data-on="${webOn ? '1' : '0'}">
@@ -281,6 +283,57 @@ const webDemo = panel(
   ].join('\n'),
 )
 
+// ───────────────────────── 状态五：引用（❝）─────────────────────────
+// 三个入口同框：气泡里的引用块（用户消息）、输入框上方的引用卡片、助手气泡末尾的「引用整条」。
+// 浮标照真实行为摆：浮在"被划中的那段"右上角（真实浮层里它是 position:fixed，
+// 演示页里改成绝对定位贴在回答上，好让一张图里同时看见三个入口）。
+const quoteChip = (src, text) => `
+          <div class="dsh-sel-quotechip" data-quote="1">
+            <span class="dsh-sel-quotechip-src">❝ ${src}</span>
+            <span class="dsh-sel-quotechip-text" title="${text}">${text}</span>
+            <button class="dsh-sel-quotechip-x" type="button" aria-label="移除这条引用">✕</button>
+          </div>`
+
+const bqItem = (src, text) => `<div class="dsh-sel-bqitem" title="${text}"><b>❝ ${src}</b>${text}</div>`
+
+const quoteIcon = `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="width:13px;height:13px;display:block"><circle cx="5.4" cy="6.1" r="2.3"></circle><path d="M3.9 7.4 2.1 12.2 6.1 10.2z"></path><circle cx="11.6" cy="6.1" r="2.3"></circle><path d="M10.1 7.4 8.3 12.2 12.3 10.2z"></path></svg>`
+
+const quoteFloat = `<button class="dsh-sel-btn dsh-sel-quotebtn" type="button" style="position:absolute;right:8px;top:-20px;display:inline-flex">${quoteIcon}<span>引用</span></button>`
+
+const quotesDemo = panel(
+  'detail',
+  [
+    quote('the migration ran long'),
+    section(
+      'translation',
+      '翻译',
+      [
+        p('需要翻译的是 <b>the migration ran long</b>：<b>迁移跑得比预期久</b>。'),
+        callout('在本句中', '迁移作业耗时超出了原计划——陈述进度延迟的事实，不含"失败了"的意思。'),
+      ].join('\n'),
+    ),
+    `      <div class="dsh-sel-chatlog" style="display:flex">`,
+    chatBubble('user', '这句话在排期上意味着什么？'),
+    chatBubble(
+      'assistant',
+      `<div style="position:relative"><p>意味着后面的 <b>freeze features</b> 是配套动作：把人力腾出来盯迁移，而不是随口一说。</p>${quoteFloat}</div>` +
+        '<button class="dsh-sel-bubquote" type="button" style="opacity:.66"><span>❝ 引用整条</span></button>',
+    ),
+    chatBubble(
+      'user',
+      `<div class="dsh-sel-bq">${bqItem('小窗回答', '意味着后面的 freeze features 是配套动作：把人力腾出来盯迁移')}</div>` +
+        '<div>那这两件事的先后顺序能换吗？</div>',
+    ),
+    '      </div>',
+    askRow(
+      false,
+      'deepseek-v4.1-flash',
+      '高',
+      [quoteChip('小窗回答', '意味着后面的 freeze features 是配套动作…'), quoteChip('主界面选中', 'the migration ran long')].join(''),
+    ),
+  ].join('\n'),
+)
+
 const css = extractCss()
 mkdirSync(resolve(ROOT, 'docs', 'demo'), { recursive: true })
 const out = {
@@ -288,6 +341,7 @@ const out = {
   'stage2.html': PAGE('划词解读 · 详解与追问', css, stage2),
   'code.html': PAGE('划词解读 · 代码注释', css, codeDemo),
   'web.html': PAGE('划词解读 · 网页模式', css, webDemo),
+  'quotes.html': PAGE('划词解读 · 引用', css, quotesDemo),
 }
 for (const [name, html] of Object.entries(out)) {
   writeFileSync(resolve(ROOT, 'docs', 'demo', name), html, 'utf8')

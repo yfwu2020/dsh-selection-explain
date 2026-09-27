@@ -9,7 +9,7 @@
  *
  * 用法：node scripts/test-transcript.mjs   （先 npm run build）
  */
-import { transcriptOf } from '../lib/index.js'
+import { quoteContextOf, transcriptOf } from '../lib/index.js'
 
 let failed = 0
 const assert = (label, ok, extra) => {
@@ -73,6 +73,79 @@ assert(
 // ── 5) 显式设了总量上限时才裁剪
 const capped = transcriptOf(events, { maxMessages: 24, maxChars: 200, marker: 'U25' })
 assert('显式上限生效（配置 >0 时）', capped.transcript.length < 2000, `${capped.transcript.length} 字`)
+
+// ───────────────────────── 引用上下文（quoteContextOf）─────────────────────────
+// 与解读用的会话背景不同：窗口是**锚点两侧**、按"轮"取整（上下各至少一整组）。
+{
+  const lines = (text) => text.split('\n').filter((line) => /^(用户|助手|提示)：/.test(line))
+  const quoted = quoteContextOf(events, 'U10', {})
+  const picked = lines(quoted.transcript)
+  assert('引用上下文：命中并报出组数', quoted.matched === true && quoted.rounds === 3, JSON.stringify({ matched: quoted.matched, rounds: quoted.rounds }))
+  assert(
+    '引用上下文：锚点所在那一组 + 上下各一组（U09/A09 · U10/A10 · U11/A11）',
+    picked.length === 6 &&
+      picked[0].includes('用户：U09') &&
+      picked[1].includes('助手：A09') &&
+      picked[2].includes('用户：【U10】') &&
+      picked[3].includes('助手：A10') &&
+      picked[4].includes('用户：U11') &&
+      picked[5].includes('助手：A11'),
+    picked.map((line) => line.slice(0, 14)).join(' | '),
+  )
+  assert('引用上下文：被引用的部分用【】标出', quoted.transcript.includes('用户：【U10】'), quoted.transcript.split('\n')[2])
+
+  // 引用落在助手回复里（常见：引用 AI 的某句话）→ 同样带上下各一组
+  const inAnswer = quoteContextOf(events, 'A10', {})
+  const answerLines = lines(inAnswer.transcript)
+  assert(
+    '引用在助手回复里：一样是上下一整组',
+    inAnswer.matched === true && answerLines.length === 6 && inAnswer.transcript.includes('助手：【A10】'),
+    answerLines.map((line) => line.slice(0, 14)).join(' | '),
+  )
+
+  // 引用跨行/空白不一致（选中文字与消息原文差在换行、缩进）也要标得出来
+  const wrapped = [
+    userEvent('第一句\n第二句 在这里\n第三句'),
+    assistantEvent('A1'),
+    userEvent('U2'),
+    assistantEvent('A2'),
+  ]
+  const spread = quoteContextOf(wrapped, '第一句 第二句 在这里', {})
+  assert('引用跨行时按"空白等价"标记', spread.matched === true && spread.transcript.includes('【第一句\n第二句 在这里】'), spread.transcript.replace(/\n/g, '⏎').slice(0, 60))
+
+  // 定位不到：不猜、返回空（客户端会退回自己的局部上下文）
+  const nowhere = quoteContextOf(events, '这段文字不在会话里', {})
+  assert('引用定位不到时返回 matched:false 且不带上下文', nowhere.matched === false && nowhere.transcript === '', JSON.stringify(nowhere))
+
+  // 长消息：**围绕引用**截断，引用本身不能被裁掉
+  const longTurn = [userEvent(`${'前'.repeat(3000)}引用的这句${'后'.repeat(3000)}`), assistantEvent('A1')]
+  const clamped = quoteContextOf(longTurn, '引用的这句', { maxCharsPerTurn: 400, maxChars: 6000 })
+  assert(
+    '长消息围绕引用截断（引用仍在，前后留边）',
+    clamped.transcript.includes('【引用的这句】') && clamped.transcript.length < 700 && clamped.transcript.includes('…'),
+    `${clamped.transcript.length} 字`,
+  )
+
+  // 总上限：超了丢最早的那几组，引用所在那条一定留下
+  const many = []
+  for (let i = 1; i <= 9; i += 1) {
+    many.push(userEvent(`Q${i} ${'x'.repeat(400)}`))
+    many.push(assistantEvent(`R${i} ${'y'.repeat(400)}`))
+  }
+  const budget = quoteContextOf(many, 'Q5', { roundsAround: 3, maxChars: 1200 })
+  assert(
+    '总上限生效：引用所在那条保留，更早的被丢掉并留提示',
+    budget.transcript.includes('【Q5】') && budget.transcript.includes('未包含') && budget.transcript.length < 2200,
+    `${budget.transcript.length} 字`,
+  )
+
+  // 噪音过滤与解读背景一致
+  assert(
+    '引用上下文同样剔除工具/系统/harness 注入',
+    quoted.transcript.indexOf('工具') < 0 && quoted.transcript.indexOf('系统提示') < 0 && quoted.transcript.indexOf('被 harness 注入') < 0,
+    '',
+  )
+}
 
 console.log(`\n${failed === 0 ? '全部通过' : failed + ' 项失败'}`)
 process.exit(failed === 0 ? 0 : 1)

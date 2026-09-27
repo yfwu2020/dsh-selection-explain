@@ -66,6 +66,50 @@
 
 <img src="assets/stage2.png" alt="展开详解后：翻译与详解两节卡片，下方可继续追问" width="540">
 
+### 语音输入：不想打字就说话
+
+追问往往只有一两句（"这词在这里是不是贬义？"），可**打字**这件事本身就要把手从鼠标挪到键盘——和"划词"这个动作是矛盾的。输入框右下角因此多了一个麦克风：
+
+| 操作 | 结果 |
+| --- | --- |
+| 点一下 🎤 | 开始录音：按钮变成**红色停止键**，呼吸圈跟着说话强弱，输入框上方提示走秒 |
+| 再说一句 / 点红色键 / 到了 60 秒 | 结束录音 → 识别 → **文字插进输入框**（不是直接发送） |
+| 录音中按 `Esc` 或收起小窗 | 立刻取消，并且**松开麦克风**（不会留下"正在使用麦克风"的标识） |
+| 录音中把这条消息发出去了 | 正在录的那段自动收掉（已经识别出来的文字不受影响） |
+
+<img src="assets/voice.png" alt="录音中的小窗：麦克风变成红色停止键，输入框上方提示「正在录音 0:01 · 再点一下结束」" width="540">
+
+- **插进去，不是发出去**：识别结果落在光标处，可以和已经写了一半的话接着拼、改错字、再补第二段。识别有错字是常态，能改才有用。
+- **音频不落盘、不进会话**：录到的音频只在这一次识别里用一下，host 转写完即丢——不会写进 `~/.dsh`，也不会出现在会话记录里。
+- **识别在 host 上做**（装了本地 SenseVoice 就是**在你机器上**）：音频不出机器；识别器走 DSH 的语音识别服务，本机模型 / 云端服务都能用。
+- **出错会说清是哪一种**：没授权 / 没麦克风设备 / 浏览器不支持 / 没启用识别服务 / 录音太长 / 没听清——各给一句话；模型还没准备好时，提示里直接带一个 **`准备模型`** 按钮（下载在 host 上跑，关掉面板也继续）。
+- 一次最长 **60 秒**；需要 DSH 装着语音识别服务（`@deepseek-ai/dsh-experimental-speech-to-text`）。没有那个服务时，麦克风按钮会明说不可用，不会装作在录。
+
+<img src="assets/voice-inserted.png" alt="识别完成后：转写文字插进了输入框，提示「已插入 15 字（可以改完再发送）」" width="540">
+
+### 引用：把别处的文字带进追问
+
+追问时经常要指着一段东西问——"这段和上面那段矛盾吗"、"按这个格式再来一版"。**引用**就是把那段文字挂到输入框上，跟着这条提问一起发给模型：
+
+| 想引用什么 | 怎么操作 |
+| --- | --- |
+| **小窗里的内容**（翻译 / 详解 / 某条回答里的几句） | 直接在小窗里划选 → 浮出 `❝ 引用` → 点一下 |
+| **主界面上选中的文字**（小窗开着的时候） | 在页面里划选 → 同一个 `❝ 引用` → 点一下（侧边栏网页里划词也一样） |
+| **整条回答** | 鼠标移到那条回答上，末尾浮出 `❝ 引用整条`（网页回答会先折成 Markdown，不会引用一整页 HTML 源码） |
+
+<img src="assets/quotes.png" alt="引用：输入框上方的引用卡片、气泡里的引用块、回答末尾的「引用整条」" width="540">
+
+- **引用卡片贴在输入框上方**：来源（小窗回答 / 小窗详解 / 主界面选中 / 侧边栏网页…）+ 内容摘要，右侧 `✕` 单条删除。最多 4 段，重复的不会重复加。
+- **引用自带上下文**：每段引用都会带上它**当时所在的那一组对话 ± 一组**（一组 = 一条用户消息 + 它的回答，引用部分用 `【】` 标出）——"这句话是什么意思"靠的就是它前后在说什么。
+  - 主界面（会话）里的引用：上下文由 host 从**会话记录**里取，工具调用/思考/系统注入全部滤掉，只留真正的对话；
+  - 小窗里的引用：取小窗自己那几轮（用户问 + 助手答），网页回答先折成 Markdown；
+  - 侧边栏网页里的引用：用网页里选区前后各 1500 字的窗口。
+- **发送时才拼进消息**：`【引用 1】（来自小窗回答）` + `【引用处上下文】…` + `【我的问题】…` —— 上下文在前、问题在后，用户气泡里也照这个顺序显示，回头翻记录知道当时在问什么。
+- **只挂引用、一个字不写也能发**：这时用一句兜底提问（"就上面引用的文字，说说它在这里是什么意思。"），不会空发。
+- **只属于下一条提问**：发出即清空；换一段新的选中文字、或从「最近」回放另一段对话时也会清掉（那些引用属于上一次对话）。
+- **小窗开着时浮标就是「引用」**：要解读新的一段，先按 `Esc` 收起小窗再划词——避免两个小窗抢同一处选区。
+- 引用会**进历史、也进升格**：回放这段对话时引用块跟着回来（以拼好的原文形式），升格出来的正式会话里同样带着。
+
 ### 输出偏好：Markdown ↔ 网页
 
 输入区左下角那个两格开关（`M↓` = Markdown / `▭` = 网页）决定**追问的回答用什么形式**。默认是 **Markdown**，选择记在浏览器本地，下次打开还是它。
@@ -224,6 +268,9 @@ dsh plugin --profile web remove @yfwu2020/dsh-selection-explain
 | 点击按钮 | 弹出面板：顶部是选中文字，正文是「翻译」卡片 |
 | 点 `↓ 展开详解` | 加载完整会话背景，追加「详解」卡片 |
 | 面板底部输入框 | 就这段文字继续追问（`Enter` 发送 / `Shift+Enter` 换行） |
+| 输入框右边 🎤 | **语音输入**：点一下开始说，再点一下结束，识别出来的文字插进输入框（`Esc` 取消，一次最长 60 秒） |
+| 小窗开着时划词 | 浮出的是 `❝ 引用`（不是 `✦ 解读`）：把这段文字挂进输入框的引用区，跟着下一条提问发给模型 |
+| 鼠标移到某条回答上 | 末尾浮出 `❝ 引用整条`：把整条回答挂进引用区（网页回答先折成 Markdown） |
 | `🕘 最近` | 打开最近划过的列表，点一条调回那段对话 |
 | `↗ 升格` | 把这次解读变成正式会话 |
 | `✕` / `Esc` | 关闭面板（**任何时候都能关**，一次到位） |
@@ -236,6 +283,7 @@ dsh plugin --profile web remove @yfwu2020/dsh-selection-explain
 - 拖动面板：抓头部即可拖动。
 - 追问时消息区**贴底跟随**；你主动往上翻就不会被拽回去。
 - `🕘 最近` 的列表点别处就收（不连带关面板），但 `Esc` 会把面板和它一起收。
+- **引用是"下一条提问"的**：发出去就清空；引用卡片上的 `✕` 可以单条撤掉；最多 4 段。
 
 ### 调试钩子
 
@@ -247,6 +295,13 @@ window.__dshSelectionExplain.state()   // { phase, chars, model, sections }
 window.__dshSelectionExplain.ping()    // 当前模型路由与限制
 window.__dshSelectionExplain.bridge()  // 侧边栏网页划词桥：{ on, frames:[{connected,own,srcdoc,sandbox}], active, selection }
 window.__dshSelectionExplain.selection() // 当前选区：{ text, source:'document'|'iframe', label, context }
+window.__dshSelectionExplain.quotes()    // 待发送的引用：[{ id, label, text, context, contextChars, session }]
+window.__dshSelectionExplain.quote('某段文字', '主界面选中') // 手工加一段引用（等价于点浮标）
+window.__dshSelectionExplain.compose()   // 引用 + 提问拼出来的那条消息原文（发给模型的就是它）
+window.__dshSelectionExplain.quoteState() // 引用浮标：{ visible, selection:{text,label,source}, panelOpen }
+window.__dshSelectionExplain.voice()        // 语音输入：{ phase:'idle'|'requesting'|'recording'|'transcribing'|'done', supported, note, tone, lastText, catalog }
+window.__dshSelectionExplain.voiceNode()    // 麦克风按钮节点（无头环境里可能挂了两棵树，用它拿真正带监听的那个）
+window.__dshSelectionExplain.askValue()     // 读追问输入框（传参即写入），用来验"转写文字插进去了"
 ```
 
 ### HTTP 接口
@@ -259,7 +314,20 @@ host 半注册了同源路由，可以单独调用：
 | `GET /selection-explain/api/ping` | 健康检查：当前模型路由、各阶段推理档位、限制 |
 | `GET /selection-explain/api/models` | 可选模型列表（面板里的模型选择器用） |
 | `GET/POST /selection-explain/api/history` | 小窗对话历史的读 / 写 / 删除 |
+| `POST /selection-explain/api/quote-context` | 引用上下文：`{ sessionId, text }` → 该引用所在的**一组对话 ± 一组**（`{ matched, context, rounds }`；定位不到时 `matched:false`，客户端退回自己采的局部上下文） |
 | `POST /selection-explain/api/promote` | 升格为正式会话 |
+| `GET /selection-explain/api/speech` | 语音输入：识别器目录与就绪状态（`{ available, providers:[{id,phase}], limits:{maxSeconds,maxBytes} }`） |
+| `POST /selection-explain/api/speech/transcribe` | 一段 **16kHz 单声道 PCM16 WAV**（base64）→ 文字：`{ audioBase64, language?, providerId? }` |
+| `POST /selection-explain/api/speech/prepare` | 显式准备本地识别模型（首次要下载，只在用户点了提示里的「准备模型」时调用） |
+
+转写示例（`SPEECH_WAV` 是一段规范 WAV）：
+
+```bash
+node -e 'const fs=require("fs");const b=fs.readFileSync(process.argv[1]);process.stdout.write(JSON.stringify({audioBase64:b.toString("base64")}))' /tmp/v.wav > /tmp/v.json
+curl -s -X POST http://127.0.0.1:3080/selection-explain/api/speech/transcribe \
+  -H 'content-type: application/json' --data-binary @/tmp/v.json
+# → {"ok":true,"text":"这是一段语音输入的测试…","providerId":"sensevoice-local",...}
+```
 
 健康检查示例：
 
@@ -309,6 +377,9 @@ curl -s http://127.0.0.1:3080/selection-explain/api/ping
 | `sessionContextFastMessages` | `8` | **首轮翻译**用的背景条数；越小首字越快 |
 | `sessionContextMaxMessages` | `24` | **详解 / 追问**用的背景条数（自选中文字所在消息向上取） |
 | `sessionContextMaxChars` | `0` | 会话背景字符上限；**`0` = 不限**（只按条数取窗口） |
+| `quoteContextRounds` | `1` | **引用**带几组上下文：引用所在那一组对话 ± 这么多组（一组 = 用户消息 + 它的回答） |
+| `quoteContextMaxCharsPerTurn` | `2000` | 引用上下文里单条消息的上限（超了**围绕引用**截断，不裁掉引用本身） |
+| `quoteContextMaxChars` | `6000` | 引用上下文整段上限（超了先丢最早的、再丢引用之后的） |
 | `resultCacheTtlMs` | `600000` | 共享结果缓存 TTL（毫秒）；`0` = 关闭 |
 | `historyMaxEntries` | `20` | 小窗对话历史保留多少个划词条目；`0` = 关闭历史 |
 | `maxRequestsPerMinute` | `40` | 本地限流，防误触发刷爆额度 |
@@ -359,8 +430,9 @@ curl -s http://127.0.0.1:3080/selection-explain/api/ping
 
 ```bash
 npm run build       # 构建（= bash scripts/build.sh）
-npm test            # 576 条断言（filters / prompt / bridge / smoke / client / transcript / guard）
-npm run test:smoke  # 只跑真浏览器冒烟（本机 Chrome；找不到自动 SKIP）
+npm test            # 600+ 条断言（filters / prompt / bridge / smoke / client / transcript / guard / speech / voice）
+npm run test:smoke  # 只跑划词桥的真浏览器冒烟（本机 Chrome；找不到自动 SKIP）
+npm run test:voice  # 只跑语音输入的真浏览器冒烟（Chrome + 假麦克风 + 真识别；缺东西自动 SKIP）
 npm run typecheck   # tsc --noEmit
 ```
 
@@ -373,6 +445,8 @@ npm run typecheck   # tsc --noEmit
 | `scripts/test-filters.mjs` | host 侧流式过滤器单测（思考泄漏、工具调用残渣等） |
 | `scripts/test-transcript.mjs` | 会话背景窗口的离线测试（锚点 / 条数 / 不截断 / 噪音剔除 / 退化路径） |
 | `scripts/test-guard.mjs` | 文件工具读取边界的路径校验 |
+| `scripts/test-speech.mjs` | **语音输入契约 + 真路由**：`validateWave` 逐字段打表（采样率/声道/位深/长度字段/多余 chunk 全都要拒）+ 真 host 的三个语音路由（坏 base64 / 非规范 WAV / 超大音频 / 非 POST / 正弦波不会"听"成话）；给了 `SPEECH_WAV=/tmp/v.wav` 还会真识别一句 |
+| `scripts/smoke-voice.mjs` | **语音输入真浏览器冒烟**：headless Chrome + `--use-file-for-fake-audio-capture` 把一段真人语音当麦克风，页面里跑**真的 lib/client.js**，走完 录音 → MediaRecorder → 重采样 → WAV → 真 host 识别 → 插进输入框；顺带断言浏览器产出的 WAV 能过 host 的逐字段校验（缺 Chrome / 缺 `say` / host 没在跑都自动 SKIP） |
 | `scripts/dump-prompt.mjs` | 打印实际注入的提示词（system + user + 各段尺寸），排查"模型到底看到了什么" |
 
 ```bash
@@ -422,8 +496,10 @@ lib/                    构建产物（已 gitignore，克隆后需 npm run buil
 - 侧边栏 **HTML 文件预览**已覆盖（靠帧内桥，见上）；但**内置浏览器标签页里的外部站点**（远端 URL 的 iframe，插件没有任何注入手段）与**源码视图**（没有 iframe）不触发。
 - 预览帧被换成路由 URL 而非 `srcdoc`/`blob` 的第三方预览器不接管（不动别人的资源改写与生命周期）。
 - 面板**不跟随页面滚动**（滚动即收起浮标 / 面板），符合「划完即看」的一次性使用预期；侧边栏网页内部滚动会重新上报位置，浮标跟着走。
+- **小窗里的网页回答预览（iframe）内部**划不了词（不透明源帧，插件不桥自己的预览）：想引用它就用气泡末尾的 `❝ 引用整条`，或切到「源码」视图再划。
 - 结论来自当前模型，专业领域术语请以人工判断为准。
 - 依赖 DSH 的 `webServer` 与 `llm` 服务；宿主版本过旧可能不兼容（peerDependencies 见 `package.json`）。
+- **语音输入**还需要宿主的语音识别服务（`@deepseek-ai/dsh-experimental-speech-to-text` + 一个识别器，例如本机 SenseVoice）。没装 / 没准备模型时，麦克风按钮会明说原因，不会静默失败。识别器只收 **16kHz 单声道 PCM16 WAV**（插件在浏览器里按这个格式编码）；一次最长 60 秒，**不做边录边出的流式识别**（说完再转，一次给全）。
 
 ## License
 

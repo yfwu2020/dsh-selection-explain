@@ -140,6 +140,16 @@ assert(
   has(CHAT_SYSTEM_PROMPT, '完整的单文件 HTML', '```html', '样式和脚本都内联'),
   '小窗会当场渲染成可交互页面，只给片段就渲染不出来',
 )
+assert(
+  '追问：【引用 N】块要当成提问材料（不许认成上一轮回答）',
+  has(CHAT_SYSTEM_PROMPT, '【引用 N】', '当成提问的一部分来答'),
+  '小窗的「❝ 引用」把引用拼进用户消息，模型得知道那不是它自己的前情',
+)
+assert(
+  '追问：【引用处上下文】要被当成判断依据（引用部分用【】标出）',
+  has(CHAT_SYSTEM_PROMPT, '【引用处上下文】', '被引用的那部分用【】标出'),
+  '引用自带"当时所在的那一组对话 ± 一组"，模型要知道那是上下文而不是正文',
+)
 
 // ───────────────────────── 卫生检查（防低级事故）─────────────────────────
 const ALL = [PROMPT_HEAD, TRANSLATION_PROMPT, CODE_PROMPT, DETAIL_PROMPT, CHAT_SYSTEM_PROMPT].join('\n')

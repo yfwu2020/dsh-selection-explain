@@ -30,6 +30,19 @@ window.__ModuleLoader__.load({
     var HISTORY = '/selection-explain/api/history'
     /** 模型清单（带每个模型支持的推理等级）。 */
     var MODELS = '/selection-explain/api/models'
+    /**
+     * 语音输入（小窗麦克风）：识别在 host 上做，浏览器只负责录一段规范 WAV 送过去。
+     *   · 目录接口说清"能不能录、要录多久、要不要先准备模型"；
+     *   · 音频不落盘、不进会话，转写完即丢（客户端的引用里也不会出现音频）。
+     */
+    var SPEECH_API = '/selection-explain/api/speech'
+    var SPEECH_TRANSCRIBE = SPEECH_API + '/transcribe'
+    var SPEECH_PREPARE = SPEECH_API + '/prepare'
+    /** 兜底限制（host 的 limits 优先；拿不到目录时按这套走）。 */
+    var VOICE_FALLBACK_SECONDS = 60
+    var VOICE_MAX_BYTES = 4 * 1024 * 1024
+    /** 目录缓存时长：同一分钟内反复点麦克风不再重复问 host。 */
+    var VOICE_CATALOG_TTL = 60 * 1000
     /** 选区长度上限（与 host 默认值一致，host 还会再校验一次）。 */
     var MAX_SELECTION = 4000
     /** 上下文窗口：选区前后各取多少字符。 */
@@ -37,6 +50,39 @@ window.__ModuleLoader__.load({
 
     /** key 只取选中文字**之前**这么多字：后缀会随新消息变化，不能进 key。 */
     var KEY_CONTEXT_CHARS = 300
+    /**
+     * 引用（❝）：小窗开着时，把**小窗里选中的正文**或**主界面上选中的文字**
+     * 挂进小窗输入框，发送时作为材料一并发给模型。
+     *   · 一次最多几段 —— 每段都会进本轮提问，堆太多等于把问题埋掉；
+     *   · 每段字数上限 —— 超了截断（引用整条回答时最长的那种会撞上）。
+     */
+    var MAX_QUOTES = 4
+    var MAX_QUOTE_CHARS = 3000
+    /**
+     * 引用**选区**的长度上限（比 MAX_QUOTE_CHARS 宽得多）。
+     *
+     * 划一大段（比如整条回答）时也要让浮标出来 —— 出来之后按 MAX_QUOTE_CHARS 截断并说明；
+     * 早先这里直接用 MAX_QUOTE_CHARS 判断，结果是"划长一点就没反应"，
+     * 而用户根本不知道为什么（浮标不出现 = 没有任何反馈）。
+     */
+    var MAX_QUOTE_SELECTION = 20000
+    /** 只挂了引用、一个字都没写时，用它当提问（不替用户编复杂问题）。 */
+    var QUOTE_ONLY_QUESTION = '就上面引用的文字，说说它在这里是什么意思。'
+    /**
+     * 引用要**带上下文**：引用文字当时所在的那一组对话 ± 一组（一组 = 一条用户消息 + 它的回答）。
+     *   · 会话里的引用（主界面）→ 上下文由 host 从会话记录里取（干净文本、按轮取整），见 QUOTE_CONTEXT_API；
+     *   · 小窗里的引用 → 客户端从小窗自己的轮次里取（下面这几个常量管长度）。
+     * 客户端这一侧的兜底上下文（局部窗口）在点击引用那一刻采，发送前才去问 host 要会话版。
+     */
+    var QUOTE_CONTEXT_API = '/selection-explain/api/quote-context'
+    /** 小窗上下文：引用所在那一轮前后各取几轮（交替结构下 ≈ 上下各一组）。 */
+    var QUOTE_CTX_TURNS = 2
+    /** 小窗上下文：单条最多多少字（超了围绕引用截断）。 */
+    var QUOTE_CTX_TURN_CHARS = 900
+    /** 小窗上下文：整段最多多少字。 */
+    var QUOTE_CTX_MAX = 3000
+    /** 会话版上下文的等待上限（毫秒）：超了就用客户端那份，不让发送卡住。 */
+    var QUOTE_CONTEXT_TIMEOUT = 1500
     /** 面板 z-index 顶部。 */
     var Z_BTN = 2147483000
     var Z_PANEL = 2147483001
@@ -73,6 +119,74 @@ window.__ModuleLoader__.load({
 
     function formatDuration(ms) {
       return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'
+    }
+
+    // ────────────────────────── 录音（语音输入）──────────────────────────
+    // 这一节是**纯函数 + 浏览器能力判断**，不碰面板状态：小窗的编排在 apply() 里。
+    // 单位换算和 WAV 头必须和 host 的 validateWave 逐字段对上（16kHz / 单声道 / PCM16），
+    // 对不上 host 会直接拒收 —— 这是刻意的：宁可明确报"音频格式不对"，
+    // 也不要让识别服务按错误的采样率去听一段快放。
+
+    /** 录音时长：0:07（上限 60 秒，所以只有分:秒）。 */
+    function formatClock(ms) {
+      var seconds = Math.max(0, Math.floor(ms / 1000))
+      var mm = Math.floor(seconds / 60)
+      var ss = seconds % 60
+      return mm + ':' + (ss < 10 ? '0' : '') + ss
+    }
+
+    /**
+     * Float32 采样（16kHz 单声道）→ 规范的 PCM16 WAV。
+     * @param samples 采样（-1..1）
+     * @returns Uint8Array（44 字节头 + 数据）
+     */
+    function encodeWave(samples) {
+      var bytes = new Uint8Array(44 + samples.length * 2)
+      var view = new DataView(bytes.buffer)
+      function ascii(offset, text) {
+        for (var i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i))
+      }
+      ascii(0, 'RIFF')
+      view.setUint32(4, 36 + samples.length * 2, true)
+      ascii(8, 'WAVE')
+      ascii(12, 'fmt ')
+      view.setUint32(16, 16, true) // fmt 块长度
+      view.setUint16(20, 1, true) // PCM
+      view.setUint16(22, 1, true) // 单声道
+      view.setUint32(24, 16000, true) // 采样率
+      view.setUint32(28, 32000, true) // 字节率
+      view.setUint16(32, 2, true) // 块对齐
+      view.setUint16(34, 16, true) // 位深
+      ascii(36, 'data')
+      view.setUint32(40, samples.length * 2, true)
+      for (var i = 0; i < samples.length; i += 1) {
+        // 先夹到 [-1,1]：重采样后的浮点偶尔会略微越界，直接乘会绕回成刺耳的爆音
+        var value = samples[i] < -1 ? -1 : samples[i] > 1 ? 1 : samples[i]
+        view.setInt16(44 + i * 2, Math.round(value * (value < 0 ? 32768 : 32767)), true)
+      }
+      return bytes
+    }
+
+    /** 字节 → base64（分块喂 fromCharCode，几十万采样一次性展开会爆栈）。 */
+    function bytesToBase64(bytes) {
+      var text = ''
+      for (var i = 0; i < bytes.length; i += 8192) {
+        text += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192))
+      }
+      return btoa(text)
+    }
+
+    /** 这个浏览器能不能录音（不支持时麦克风按钮直接给解释，而不是点了才报错）。 */
+    function recordingSupported() {
+      try {
+        if (typeof navigator === 'undefined' || !navigator.mediaDevices) return false
+        if (typeof navigator.mediaDevices.getUserMedia !== 'function') return false
+        // 全部走 window.*：浏览器里 window 就是全局对象，测试里也能注入同一套桩
+        if (typeof window.MediaRecorder === 'undefined') return false
+        return typeof window.AudioContext !== 'undefined' || typeof window.webkitAudioContext !== 'undefined'
+      } catch (error) {
+        return false
+      }
     }
 
     // ────────────────────────────── 样式 ──────────────────────────────
@@ -274,8 +388,40 @@ window.__ModuleLoader__.load({
       '.dsh-sel-ask:focus-within{border-color:var(--sel-a1,#0d9488)}',
       '.dsh-sel-askbox{width:100%;min-height:26px;max-height:96px;overflow-y:auto;resize:none;padding:4px 0 0;',
       'border:0;background:transparent;color:inherit;font:inherit;font-size:13px;line-height:1.5;outline:none}',
+      // 引用区（composer 第一行之上）：每段一张小卡片，来源一行小字 + 内容一行（超出省略）+ 右侧 ✕。
+      // 卡片是**待发送**的引用，发送后整片清空 —— 它属于"这条消息"，不属于会话。
+      '.dsh-sel-quotes{display:none;flex-direction:column;gap:4px;max-height:96px;overflow-y:auto;',
+      'scrollbar-width:thin;padding:1px 0 0}',
+      '.dsh-sel-quotes[data-show="1"]{display:flex}',
+      '.dsh-sel-quotechip{display:flex;align-items:center;gap:7px;padding:4px 4px 4px 8px;border-radius:10px;',
+      'border-left:2px solid color-mix(in srgb,var(--sel-a1,#0d9488) 55%,transparent);',
+      'background:color-mix(in srgb,var(--sel-a1,#0d9488) 7%,transparent)}',
+      '.dsh-sel-quotechip-src{flex:0 0 auto;font-size:10.5px;line-height:1.5;opacity:.66;white-space:nowrap;',
+      'max-width:96px;overflow:hidden;text-overflow:ellipsis}',
+      '.dsh-sel-quotechip-text{flex:1 1 auto;min-width:0;font-size:12px;line-height:1.5;opacity:.9;',
+      'overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dsh-sel-quotechip-x{flex:0 0 auto;width:18px;height:18px;padding:0;border:0;border-radius:9px;cursor:pointer;',
+      'background:transparent;color:var(--dsw-alias-label-secondary,inherit);opacity:.5;font:inherit;font-size:11px;',
+      'line-height:1;display:inline-flex;align-items:center;justify-content:center}',
+      '.dsh-sel-quotechip-x:hover{opacity:1;background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.16))}',
+      // 气泡里的引用块（用户消息）：引用在上、问题在下 —— 和发出去给模型的那份顺序一致
+      '.dsh-sel-bq{display:flex;flex-direction:column;gap:3px;margin-bottom:6px}',
+      '.dsh-sel-bqitem{padding:3px 8px;border-radius:8px;border-left:2px solid color-mix(in srgb,var(--sel-a1,#0d9488) 45%,transparent);',
+      'background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.14));font-size:11.5px;line-height:1.55;',
+      'opacity:.82;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dsh-sel-bqitem b{font-weight:600;opacity:.75;margin-right:5px}',
+      // 「引用整条」：贴在助手气泡末尾，**平时不出现**（正文优先），鼠标移到这条消息上才浮出来。
+      // 键盘 Tab 也能到（:focus-visible 同样点亮），触屏上另有浮标那条路。
+      '.dsh-sel-bubquote{margin-top:7px;display:inline-flex;align-items:center;gap:4px;padding:2px 9px;',
+      'border:1px solid transparent;border-radius:9px;background:transparent;cursor:pointer;',
+      'color:var(--dsw-alias-label-secondary,inherit);font:inherit;font-size:11px;line-height:1.6;',
+      'opacity:0;transition:opacity .15s ease}',
+      '.dsh-sel-bubble:hover .dsh-sel-bubquote,.dsh-sel-bubquote:focus-visible{opacity:.66}',
+      '.dsh-sel-bubquote:hover{opacity:1;background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.14))}',
       // 下面那行：左侧网页模式（圆形浅底，和主会话的 + 同款），右侧发送（圆形实心）
-      '.dsh-sel-asktools{display:flex;align-items:center;gap:8px}',
+      // flex-wrap 是给窄屏兜底的：这一行现在有 4 件东西（输出偏好 / 模型 / 麦克风 / 发送），
+      // 窄面板下宁可折成两行，也不能把发送键挤出可视区（挤出去就点不到了）。
+      '.dsh-sel-asktools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;row-gap:6px}',
       '.dsh-sel-askspace{flex:1 1 auto}',
       // 页眉里的撑开占位（标题与右侧按钮之间）
       '.dsh-sel-headspace{flex:1 1 auto;min-width:8px}',
@@ -338,7 +484,39 @@ window.__ModuleLoader__.load({
       // 生成中：发送键变成"停止"（方形图标，点了打断当前输出）
       '.dsh-sel-asksend[data-mode="stop"]{background:var(--dsw-alias-label-secondary,rgba(120,120,120,.9));opacity:1}',
       '.dsh-sel-asksend[data-mode="stop"]:hover{filter:brightness(1.12)}',
-      // 页脚整条删掉了：状态改成**浮在输入框上方的短提示**，2.6 秒后自己淡出（不占版面）
+      // ── 语音输入（麦克风）──
+      // 平时和其它图标按钮同款；录音时变成"红点 + 呼吸圈"，一眼看出"正在听"。
+      // 呼吸圈的强弱跟着实时音量（--sel-mic-level，0..1）：说话时有反应，
+      // 用户才知道麦克风真的在收（比单纯一句"正在录音"可信得多）。
+      '.dsh-sel-mic{position:relative;transition:background .15s ease,color .15s ease}',
+      '.dsh-sel-mic[data-state="recording"]{background:var(--dsw-alias-state-error-primary,#e5484d);color:#fff}',
+      '.dsh-sel-mic[data-state="recording"]:hover{filter:brightness(1.06)}',
+      '.dsh-sel-mic[data-state="recording"]::after{content:"";position:absolute;inset:0;border-radius:inherit;',
+      'border:2px solid var(--dsw-alias-state-error-primary,#e5484d);opacity:calc(.15 + var(--sel-mic-level,0) * .85);',
+      'transform:scale(calc(1 + var(--sel-mic-level,0) * .5));pointer-events:none}',
+      '.dsh-sel-mic[data-state="done"]{background:var(--sel-fill,#0f766e);color:var(--sel-fill-fg,#fff)}',
+      '.dsh-sel-mic[data-state="requesting"],.dsh-sel-mic[data-state="transcribing"]{opacity:.75}',
+      '@keyframes dsh-sel-spin{to{transform:rotate(360deg)}}',
+      '.dsh-sel-mic[data-state="requesting"] svg,.dsh-sel-mic[data-state="transcribing"] svg{animation:dsh-sel-spin .9s linear infinite}',
+      '.dsh-sel-mic:disabled{cursor:default;opacity:.35}',
+      // 输入框上方的短提示（录音秒数 / 识别中 / 出错 / 要不要先装模型）。
+      // 它只在有事要说的时候出现，说完了自己收起 —— 不占版面、不给正常输入添噪。
+      '.dsh-sel-asknote{display:none;align-items:center;gap:8px;padding:5px 9px;border-radius:10px;font-size:11.5px;line-height:1.5;',
+      'background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.14));color:var(--dsw-alias-label-secondary,inherit)}',
+      '.dsh-sel-asknote[data-show="1"]{display:flex}',
+      // 配色用宿主的语义变量（深浅主题各一套）——和宿主自己的 warning 组件同一套做法：
+      // 深浅由宿主决定，插件不自带一套"浅色专用的橙字"（那种在深色底上根本读不清）。
+      '.dsh-sel-asknote[data-tone="error"]{background:color-mix(in srgb,var(--dsw-alias-state-error-primary,#e5484d) 14%,transparent);',
+      'color:var(--dsw-alias-state-error-primary,#b42318)}',
+      '.dsh-sel-asknote[data-tone="warn"]{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#d97706) 14%,transparent);',
+      'color:var(--dsw-alias-state-warn-primary,#b45309)}',
+      '.dsh-sel-asknotetext{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}',
+      '.dsh-sel-noteactions{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px}',
+      '.dsh-sel-noteactions:empty{display:none}',
+      '.dsh-sel-notebtn{flex:0 0 auto;height:20px;padding:0 8px;border:1px solid currentColor;border-radius:10px;cursor:pointer;',
+      'background:transparent;color:inherit;font:inherit;font-size:11px;line-height:1;opacity:.85}',
+      '.dsh-sel-notebtn:hover{opacity:1}',
+      '.dsh-sel-notebtn:disabled{opacity:.4;cursor:default}',
       '.dsh-sel-askbox:focus{border-color:var(--sel-a1,#0d9488)}',
       // 内容区里的「重新生成」：只在没有可用结果（失败 / 已停止 / 空回答）时出现
       '.dsh-sel-retry{margin-top:8px;border:1px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));background:transparent;',
@@ -1685,6 +1863,15 @@ window.__ModuleLoader__.load({
         stage: '',
         /** 追问轮次：[{ role: 'user' | 'assistant', text }]，只活在面板/内存里（临时）。 */
         turns: [],
+        /**
+         * 待发送的引用：[{ label: '小窗回答' | '主界面选中' …, text }]。
+         * 只属于**下一条**提问（发送即清空）；关掉面板不清 —— 回来接着写还看得见。
+         */
+        quotes: [],
+        /** 最近一次"可以引用"的选区：[{ text, label, rect, source }]（浮标据此显示）。 */
+        quoteSelection: null,
+        /** 正在取引用的会话上下文（这期间再按 Enter 不能空发一条）。 */
+        resolvingQuotes: false,
         /** 最近一条状态文本（界面上不显示，只给自检用）。 */
         lastStatus: '',
         /** 是不是"跟着最新消息走"（发完消息自动置真；用户自己往上滚就交回给他）。 */
@@ -1736,6 +1923,25 @@ window.__ModuleLoader__.load({
       button.appendChild(sparkleIcon())
       button.appendChild(el('span', null, '解读'))
       layer.appendChild(button)
+
+      /**
+       * 引用浮标（`❝ 引用`）：**小窗开着**的时候才有它 —— 这时候用户划词多半是想
+       * 接着问，而不是再开一个小窗（再开一个的入口是先把当前小窗收起来）。
+       * 两种来源共用它：
+       *   · 小窗自己正文里的选区（回答 / 翻译 / 详解 / 顶部选中文字条）；
+       *   · 小窗开着时主界面上的选区（含侧边栏网页里那条由桥报上来的）。
+       * 点一下 → 挂进小窗输入框的引用区，不打断输入。
+       */
+      var quoteButton = el('button', 'dsh-sel-btn dsh-sel-quotebtn')
+      quoteButton.type = 'button'
+      quoteButton.title = '引用到小窗输入框（作为下一句提问的材料）'
+      // **必须比面板高**：小窗里划词时，浮标是画在面板上面的那层（同一个浮层里的兄弟节点，
+      // 谁 z-index 大谁在上）。用 Z_BTN 的话浮标会被面板整个盖住 —— 看不见也点不着。
+      quoteButton.style.zIndex = String(Z_PANEL + 1)
+      quoteButton.style.pointerEvents = 'auto'
+      quoteButton.appendChild(quoteIcon())
+      quoteButton.appendChild(el('span', null, '引用'))
+      layer.appendChild(quoteButton)
 
       /**
        * 悬浮状态胶囊：显示"最近一次划词现在处于什么状态"，点一下回到那个小窗。
@@ -1794,6 +2000,19 @@ window.__ModuleLoader__.load({
       var chatLog = el('div', 'dsh-sel-chatlog')
       body.appendChild(chatLog)
       var askRow = el('div', 'dsh-sel-ask')
+      // 引用区是 composer 的**第一行**：挂在输入框上面（发送时随提问一起带走、发完清空）。
+      // 顺序很重要 —— 先 append 到 askRow 再 append 输入框，否则会排到工具行下面去。
+      var quotesBox = el('div', 'dsh-sel-quotes')
+      askRow.appendChild(quotesBox)
+      // 语音提示条：录音秒数 / 识别中 / 出错 / "模型还没准备"都在这一行说，
+      // 位置在引用区与输入框之间（视线从按钮到提示不用跳）。空着时 display:none。
+      var askNote = el('div', 'dsh-sel-asknote')
+      var askNoteText = el('span', 'dsh-sel-asknotetext', '')
+      // 提示里可能带一个动作（例如"准备模型"）：放在文字右边，不挤占文字换行
+      var noteActions = el('span', 'dsh-sel-noteactions')
+      askNote.appendChild(askNoteText)
+      askNote.appendChild(noteActions)
+      askRow.appendChild(askNote)
       var askBox = el('textarea', 'dsh-sel-askbox')
       askBox.rows = 1
       askBox.placeholder = '就这段文字继续追问…（Enter 发送，Shift+Enter 换行）'
@@ -1823,6 +2042,14 @@ window.__ModuleLoader__.load({
       askSend.type = 'button'
       askSend.setAttribute('aria-label', '发送')
       askSend.appendChild(sendIcon())
+      // 语音输入：麦克风贴在发送键左边（和主会话 composer 的顺序一致）。
+      // 默认是图标；录音中变成「圆形停止」——同一个位置同一个键，点一下就收尾去识别。
+      var micButton = el('button', 'dsh-sel-iconbtn dsh-sel-mic')
+      micButton.type = 'button'
+      micButton.setAttribute('data-state', 'idle')
+      micButton.setAttribute('aria-label', '语音输入')
+      micButton.title = '语音输入（点一下开始说，再点一下结束并转成文字）'
+      micButton.appendChild(micIcon())
       // 模型 + 推理等级（追问档）：胶囊在发送键左边，菜单向上弹
       var modelPill = el('button', 'dsh-sel-picker')
       modelPill.type = 'button'
@@ -1840,10 +2067,13 @@ window.__ModuleLoader__.load({
       askTools.appendChild(webMode)
       askTools.appendChild(el('span', 'dsh-sel-askspace'))
       askTools.appendChild(modelPill)
+      askTools.appendChild(micButton)
       askTools.appendChild(askSend)
       askRow.appendChild(askBox)
       askRow.appendChild(askTools)
       askRow.appendChild(modelMenu)
+      // 引用区先画一次（空态：data-show="0" 收起），别等第一次 addQuote 才建立初始状态
+      renderQuotes()
       // 「重新生成」不再常驻页脚：只在内容区没有可用结果时出现在正文里
       var retryButton = el('button', 'dsh-sel-retry', '重新生成')
       retryButton.type = 'button'
@@ -1939,8 +2169,127 @@ window.__ModuleLoader__.load({
         return false
       }
 
+      /**
+       * 这一段选区是不是**小窗正文**里的（可以引用）。
+       *
+       * 往上走到小窗的滚动内容区（body）为止：中途碰到输入框 / 按钮 / 引用卡片本身
+       * 就不算 —— 那些地方的选区要么是输入（textarea），要么引用了也没意义（"✕"这种按钮文字）。
+       * 历史列表、胶囊、模型菜单都在 panel/body 之外，自然被挡掉。
+       * 不用 closest()：无浏览器测试的桩 DOM 没有它，而按祖先链走一遍在两边都一样准。
+       */
+      function insidePanelContent(node) {
+        var current = node && node.nodeType === 3 ? node.parentNode : node
+        for (var depth = 0; current && depth < 32; depth += 1) {
+          if (current === body) return true
+          if (current === panel || current === layer || !panel.contains(current)) return false
+          var tag = String(current.tagName || '').toUpperCase()
+          if (tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'BUTTON' || tag === 'IFRAME') return false
+          var cls = typeof current.className === 'string' ? current.className : ''
+          if (cls.indexOf('dsh-sel-quotes') >= 0) return false
+          current = current.parentNode
+        }
+        return false
+      }
+
+      /** 小窗正文里这段选区的来源标签：翻到哪个容器就报哪个（给引用卡片与提示词用）。 */
+      function panelSourceLabel(node) {
+        var current = node && node.nodeType === 3 ? node.parentNode : node
+        for (var depth = 0; current && depth < 32; depth += 1) {
+          var cls = typeof current.className === 'string' ? current.className : ''
+          if (cls.indexOf('dsh-sel-quote') === 0) return '选中文字'
+          if (cls.indexOf('dsh-sel-chatlog') >= 0) return '小窗回答'
+          if (cls.indexOf('dsh-sel-sec') >= 0) {
+            var sec = current.getAttribute && current.getAttribute('data-sec')
+            if (sec === 'detail') return '小窗详解'
+            if (sec === 'translation') return '小窗解读'
+          }
+          if (current === body || current === panel || !current.parentNode) break
+          current = current.parentNode
+        }
+        return '小窗内容'
+      }
+
+      /**
+       * 小窗开着时的选区检查：这时候浮标是「❝ 引用」而不是「✦ 解读」。
+       *
+       * 两种来源都认：
+       *   ① 小窗正文里的选区（回答 / 两节 / 顶部选中文字条）→ 引用的就是小窗自己的内容；
+       *   ② 主界面上的选区 → 引用主界面选中的文字。
+       * 帧内（侧边栏网页）那条不在这里 —— 它由桥的 message 送过来，见 offBridgeMessage。
+       */
+      function checkQuoteSelection() {
+        hideButton() // 小窗开着时不提供「解读」：要解读直接在输入框里问
+        var selection = window.getSelection()
+        if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+          // 帧内那条选区还活着（本文档塌陷只是点浮标造成的）→ 留着浮标
+          if (state.bridgeActive && state.selection && state.selection.source === 'iframe') return
+          state.quoteSelection = null
+          hideQuoteButton()
+          return
+        }
+        var range
+        try {
+          range = selection.getRangeAt(0)
+        } catch (error) {
+          return
+        }
+        var text = String(selection.toString() || '')
+        if (!text.trim() || text.length > MAX_QUOTE_SELECTION) {
+          state.quoteSelection = null
+          hideQuoteButton()
+          return
+        }
+        if (insideEditable(range.startContainer)) {
+          state.quoteSelection = null
+          hideQuoteButton()
+          return
+        }
+        var inPanel = insidePanelContent(range.startContainer) || insidePanelContent(range.endContainer)
+        // 小窗里划词：帧内那条让位（两处同时有选区时以本文档为准）
+        state.bridgeActive = false
+        if (!inPanel && (insideOwnUI(range.startContainer) || insideOwnUI(range.endContainer))) {
+          // 历史列表 / 胶囊 / 工具行的选区：引用没有意义，也不该弹浮标
+          state.quoteSelection = null
+          hideQuoteButton()
+          return
+        }
+        var label = inPanel ? panelSourceLabel(range.startContainer) : '主界面选中'
+        var rects = range.getClientRects()
+        var rect = rects && rects.length > 0 ? rects[rects.length - 1] : range.getBoundingClientRect()
+        if (!rect || (rect.width === 0 && rect.height === 0)) {
+          state.quoteSelection = null
+          hideQuoteButton()
+          return
+        }
+        state.quoteSelection = {
+          text: text.trim(),
+          label: label,
+          source: inPanel ? 'panel' : 'document',
+          rect: rect,
+          // 上下文留到**点引用那一刻**才采（每次 selectionchange 都采太贵）：
+          // 这里只记下"在哪一轮上"（小窗）/ 选区本身（主界面，用来采局部窗口）
+          turnIndex: inPanel ? turnIndexOfNode(range.startContainer) : -1,
+          range: inPanel ? null : safeCloneRange(range),
+        }
+        showQuoteButton(rect)
+      }
+
+      /** 克隆选区（桩环境/老浏览器没有 cloneRange 就返回 null，后面走"取不到上下文"那条路）。 */
+      function safeCloneRange(range) {
+        try {
+          return typeof range.cloneRange === 'function' ? range.cloneRange() : null
+        } catch (error) {
+          return null
+        }
+      }
+
       function checkSelection() {
-        if (panelOpen) return
+        if (panelOpen) {
+          checkQuoteSelection()
+          return
+        }
+        hideQuoteButton()
+        state.quoteSelection = null
         var selection = window.getSelection()
         if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
           // 侧边栏网页里的选区**不在本文档**：点浮标会让本文档的选区塌掉
@@ -1991,17 +2340,8 @@ window.__ModuleLoader__.load({
       function showButton(rect) {
         // 浮标也在同一套配色下：它的底色是"页面背景"（浮层自身透明），按它判深浅
         if (!panelOpen) layer.setAttribute('data-theme', isDarkSurface(layer) ? 'dark' : 'light')
-        var wasHidden = button.style.display !== 'inline-flex'
-        button.style.display = 'inline-flex'
-        var width = button.offsetWidth || 62
-        var height = button.offsetHeight || 28
-        var left = clamp(rect.right - width, 8, Math.max(8, window.innerWidth - width - 8))
-        var top = rect.top - height - 7
-        if (top < 8) top = Math.min(rect.bottom + 7, window.innerHeight - height - 8)
-        button.style.left = Math.round(left) + 'px'
-        button.style.top = Math.round(top) + 'px'
         // 只在"浮现"那一次播动效；已经可见时（划选范围被拖动、键盘调整）只平移，避免一直闪
-        if (wasHidden) {
+        if (placeFloat(button, rect)) {
           setButtonPop(false)
           void button.offsetWidth // 强制重排，让动画能重播
           setButtonPop(true)
@@ -2011,6 +2351,391 @@ window.__ModuleLoader__.load({
       function hideButton() {
         button.style.display = 'none'
         setButtonPop(false)
+      }
+
+      /**
+       * 浮标定位（「解读」与「引用」两个浮标共用一套规则）：
+       * 贴选区右下角；上面放不下（贴到视口顶）就翻到选区下方；左右夹回视口内。
+       * 返回"这次是从隐藏变可见" —— 调用方据此决定要不要播浮现动效。
+       */
+      function placeFloat(node, rect) {
+        var wasHidden = node.style.display !== 'inline-flex'
+        node.style.display = 'inline-flex'
+        var width = node.offsetWidth || 62
+        var height = node.offsetHeight || 28
+        var left = clamp(rect.right - width, 8, Math.max(8, window.innerWidth - width - 8))
+        var top = rect.top - height - 7
+        if (top < 8) top = Math.min(rect.bottom + 7, window.innerHeight - height - 8)
+        node.style.left = Math.round(left) + 'px'
+        node.style.top = Math.round(top) + 'px'
+        return wasHidden
+      }
+
+      function setQuotePop(on) {
+        if (on) quoteButton.setAttribute('data-pop', '1')
+        else quoteButton.removeAttribute('data-pop')
+      }
+
+      function showQuoteButton(rect) {
+        if (placeFloat(quoteButton, rect)) {
+          setQuotePop(false)
+          void quoteButton.offsetWidth
+          setQuotePop(true)
+        }
+      }
+
+      function hideQuoteButton() {
+        quoteButton.style.display = 'none'
+        setQuotePop(false)
+      }
+
+      // ────────────────────── 引用（❝）：把别处的文字挂进输入框 ──────────────────────
+      //
+      // 两个入口，同一份数据（state.quotes）：
+      //   ① 划词浮标「❝ 引用」—— 小窗开着时，小窗正文里的选区 或 主界面上的选区；
+      //   ② 助手气泡末尾的「❝ 引用整条」（鼠标移上去才出现）—— 整条回答，网页回答先折成 Markdown。
+      // 引用只属于**下一条**提问：发送时拼进这条消息，发完清空。
+
+      /** 引用卡片的 id 计数（内容可能重复，DOM 与删除都靠 id 认人）。 */
+      var quoteSeq = 0
+
+      /** 卡片/气泡上的来源小字。 */
+      function quoteLabelOf(quote) {
+        return quote && quote.label ? String(quote.label) : '引用'
+      }
+
+      /** 卡片/气泡里的单行摘要（完整文本进 title 与发给模型的那份）。 */
+      function quoteBrief(text, max) {
+        var one = String(text || '').replace(/\s+/g, ' ').trim()
+        return one.length > max ? one.slice(0, max) + '…' : one
+      }
+
+      /**
+       * 加一段引用。加不进去也给一句状态 —— 点了浮标"什么都没发生"是最难查的那种观感。
+       * 同一段划两次不再加（引用区是材料清单，不是记事本）；超过 MAX_QUOTES 段也不再加。
+       *
+       * `extra` = { context, session }：引用**当时所在**的上下文（见 quoteContextFor），
+       * session=true 表示"这段文字来自主界面会话"，发送前会再问 host 要一份按轮取整的干净上下文。
+       */
+      function addQuote(text, label, extra) {
+        var clean = String(text || '').replace(/\u00a0/g, ' ').trim()
+        if (!clean) return false
+        var truncated = clean.length > MAX_QUOTE_CHARS
+        if (truncated) clean = clean.slice(0, MAX_QUOTE_CHARS) + '…'
+        for (var i = 0; i < state.quotes.length; i += 1) {
+          if (state.quotes[i].text === clean) {
+            setStatus('这段已经在引用里了')
+            return false
+          }
+        }
+        if (state.quotes.length >= MAX_QUOTES) {
+          setStatus('引用最多 ' + MAX_QUOTES + ' 段，先删掉一条再加')
+          return false
+        }
+        quoteSeq += 1
+        var context = extra && typeof extra.context === 'string' ? extra.context.trim() : ''
+        state.quotes.push({
+          id: quoteSeq,
+          label: label || '引用',
+          text: clean,
+          context: context,
+          session: !!(extra && extra.session === true),
+        })
+        renderQuotes()
+        refreshAskState()
+        // 输入框按阶段本来可能是藏着的（首轮还在跑）：引用一进来就得看得见，顺手聚焦
+        askRow.style.display = ''
+        try {
+          askBox.focus()
+        } catch (error) {
+          /* 桩环境没有焦点这回事 */
+        }
+        setStatus(
+          '已加入引用（' +
+            quoteLabelOf(state.quotes[state.quotes.length - 1]) +
+            ' · ' +
+            clean.length +
+            ' 字' +
+            (truncated ? '（原文更长，已截断）' : '') +
+            (context ? ' · 带上下文 ' + context.length + ' 字' : '') +
+            '）',
+        )
+        return true
+      }
+
+      function removeQuote(id) {
+        var next = []
+        for (var i = 0; i < state.quotes.length; i += 1) {
+          if (state.quotes[i].id !== id) next.push(state.quotes[i])
+        }
+        state.quotes = next
+        renderQuotes()
+        refreshAskState()
+      }
+
+      /** 清空待发送的引用（换了一段选中文字 / 回放了另一条历史 —— 那些引用已经不属于这段对话）。 */
+      function clearQuotes() {
+        if (state.quotes.length === 0) return
+        state.quotes = []
+        renderQuotes()
+        refreshAskState()
+      }
+
+      /** 重画引用区（空的时候整块收起来，不占版面）。 */
+      function renderQuotes() {
+        quotesBox.textContent = ''
+        quotesBox.setAttribute('data-show', state.quotes.length > 0 ? '1' : '0')
+        for (var i = 0; i < state.quotes.length; i += 1) {
+          var quote = state.quotes[i]
+          var chip = el('div', 'dsh-sel-quotechip')
+          chip.setAttribute('data-quote', String(quote.id))
+          chip.appendChild(el('span', 'dsh-sel-quotechip-src', '❝ ' + quoteLabelOf(quote)))
+          var brief = el('span', 'dsh-sel-quotechip-text', quoteBrief(quote.text, 42))
+          brief.title = quote.text
+          chip.appendChild(brief)
+          var remove = el('button', 'dsh-sel-quotechip-x', '✕')
+          remove.type = 'button'
+          remove.title = '移除这条引用'
+          remove.setAttribute('aria-label', '移除这条引用')
+          wireQuoteRemove(remove, quote.id)
+          chip.appendChild(remove)
+          quotesBox.appendChild(chip)
+        }
+      }
+
+      /** 卡片上的 ✕（卡片每次重画，监听跟着节点一起走，不需要单独回收）。 */
+      function wireQuoteRemove(node, id) {
+        listen(node, 'click', function (event) {
+          event.stopPropagation()
+          removeQuote(id)
+        })
+      }
+
+      // ── 引用的上下文：引用文字当时所在的那一组对话 ± 一组 ──
+      //
+      // 两处实现是**故意的重复**（host 的 quoteContextOf 与这里的 markQuoteInText /
+      // clampAroundQuote 算法一致）：客户端 bundle 是手写 ModuleLoader 包，不 import host 半，
+      // 而且客户端要能在 host 不认（引用来自侧边栏网页 / 文档预览）时自己兜住。
+
+      /** 在文本里找到引用那段并套上【】（直接找不到就按"空白等价"再找一次）。 */
+      function markQuoteInText(text, marker) {
+        if (!text || !marker) return text
+        var at = text.indexOf(marker)
+        if (at >= 0) return text.slice(0, at) + '【' + marker + '】' + text.slice(at + marker.length)
+        var tokens = String(marker)
+          .split(/\s+/)
+          .filter(Boolean)
+          .map(function (token) {
+            return token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          })
+        if (tokens.length === 0) return text
+        try {
+          var hit = new RegExp(tokens.join('\\s+')).exec(text)
+          if (hit && typeof hit.index === 'number') {
+            return text.slice(0, hit.index) + '【' + hit[0] + '】' + text.slice(hit.index + hit[0].length)
+          }
+        } catch (error) {
+          /* 极端输入：不标记，由 composeQuestion 另附原文 */
+        }
+        return text
+      }
+
+      /** 长文本围绕引用截断（引用本身必须留下；找不到引用就从头截）。 */
+      function clampAroundQuote(text, marker, max) {
+        if (text.length <= max) return text
+        var at = marker ? text.indexOf(marker) : -1
+        if (at < 0) return text.slice(0, max) + '…（已截断）'
+        var half = Math.max(0, Math.floor((max - marker.length) / 2))
+        var from = Math.max(0, at - half)
+        var to = Math.min(text.length, at + marker.length + half)
+        return (from > 0 ? '…' : '') + text.slice(from, to) + (to < text.length ? '…' : '')
+      }
+
+      /** 上下文里有没有引用原文（归一化后包含即可：【】是套在外面的，不影响包含关系）。 */
+      function contextHasQuote(context, text) {
+        var haystack = normalizeSpace(context)
+        var needle = normalizeSpace(text)
+        return needle.length > 0 && haystack.indexOf(needle) >= 0
+      }
+
+      /**
+       * 小窗里的引用 → 上下文 = 引用所在那一轮 ± QUOTE_CTX_TURNS 轮。
+       *
+       * 小窗的轮次就是它自己的对话（用户问 / 助手答），所以这里直接读 `state.turns`：
+       * 助手轮先折掉网页回答的 HTML（引用一整页 HTML 源码既长又没用），用户轮用它问的那句话。
+       * 选区不在任何一轮里（顶部选中文字条、翻译/详解卡片）→ 退回这次解读的局部上下文。
+       */
+      function panelQuoteContext(turnIndex, text) {
+        if (turnIndex < 0 || turnIndex >= state.turns.length) {
+          return String((state.payload && state.payload.context) || '')
+        }
+        var from = Math.max(0, turnIndex - QUOTE_CTX_TURNS)
+        var to = Math.min(state.turns.length - 1, turnIndex + QUOTE_CTX_TURNS)
+        var lines = []
+        var used = 0
+        for (var i = from; i <= to; i += 1) {
+          var turn = state.turns[i]
+          if (!turn || turn.hidden === true) continue
+          var role = turn.role === 'user' ? '用户' : '助手'
+          var body = turn.role === 'user' ? String(turn.text || '') : foldForHistory(sanitizeToolResidue(turn.text || ''))
+          body = body.replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
+          if (!body) continue
+          if (i === turnIndex) body = markQuoteInText(body, text)
+          body = clampAroundQuote(body, text, QUOTE_CTX_TURN_CHARS)
+          lines.push(role + '：' + body)
+          used += body.length
+          if (used >= QUOTE_CTX_MAX) break
+        }
+        return lines.join('\n')
+      }
+
+      /** 选区落在小窗的哪一轮上（往上找带 __turn 的气泡）；不在气泡里返回 -1。 */
+      function turnIndexOfNode(node) {
+        var current = node && node.nodeType === 3 ? node.parentNode : node
+        for (var depth = 0; current && depth < 32; depth += 1) {
+          if (current.__turn) {
+            var index = state.turns.indexOf(current.__turn)
+            if (index >= 0) return index
+          }
+          if (current === body || !panel.contains(current)) break
+          current = current.parentNode
+        }
+        return -1
+      }
+
+      /**
+       * 点「❝ 引用」那一刻才采上下文（划选过程中每次 selectionchange 都采太贵）。
+       * 会话里的引用（主界面）先用**局部窗口**兜底，发送前再问 host 要按轮取整的干净上下文。
+       */
+      function quoteContextFor(selection) {
+        if (!selection) return { context: '', session: false }
+        if (selection.source === 'panel') {
+          return { context: panelQuoteContext(selection.turnIndex, selection.text), session: false }
+        }
+        if (selection.source === 'iframe') {
+          // 侧边栏网页：帧内的桥已经把上下文采好了（±1500 字窗口，选中部分用【】标出）
+          return { context: String(selection.context || ''), session: false }
+        }
+        var context = String(selection.context || '')
+        if (!context && selection.range) {
+          try {
+            context = collectContext(rangeSelection(selection.range)).context || ''
+          } catch (error) {
+            context = ''
+          }
+        }
+        return { context: context, session: true }
+      }
+
+      /**
+       * 会话里的引用：向 host 要"引用所在那一组对话 ± 一组"（干净文本只有 host 那边有：
+       * 工具调用/结果、系统提示、harness 注入在 `transcriptOf` 那套规则里已经滤掉了）。
+       * 拿不到（引用不在会话里 / host 不认 / 超时）就保留客户端自己采的那份，不阻塞发送。
+       */
+      function resolveQuoteContexts(quotes) {
+        var jobs = []
+        for (var i = 0; i < quotes.length; i += 1) {
+          if (quotes[i].session === true) jobs.push(quotes[i])
+        }
+        var sessionId = currentSessionId()
+        if (jobs.length === 0 || !sessionId) return Promise.resolve(quotes)
+        return Promise.all(
+          jobs.map(function (quote) {
+            return fetchQuoteContext(sessionId, quote.text).then(function (context) {
+              if (context) quote.context = context
+              return quote
+            })
+          }),
+        ).then(function () {
+          return quotes
+        })
+      }
+
+      /** 取一次会话版引用上下文（带超时；失败一律返回空串走兜底）。 */
+      function fetchQuoteContext(sessionId, text) {
+        var controller = typeof AbortController === 'function' ? new AbortController() : null
+        var timer = setTimeout(function () {
+          if (controller) {
+            try {
+              controller.abort()
+            } catch (error) {
+              /* noop */
+            }
+          }
+        }, QUOTE_CONTEXT_TIMEOUT)
+        timers.push(timer)
+        return fetch(QUOTE_CONTEXT_API, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sessionId: sessionId, text: text }),
+          ...(controller ? { signal: controller.signal } : {}),
+        })
+          .then(function (response) {
+            return response.ok ? response.json() : null
+          })
+          .then(function (data) {
+            clearTimeout(timer)
+            if (data && data.ok === true && data.matched === true && typeof data.context === 'string') return data.context
+            return ''
+          })
+          .catch(function () {
+            clearTimeout(timer)
+            return ''
+          })
+      }
+
+      /**
+       * 引用 + 提问 → **真正发给模型**的那条消息。
+       *
+       * 拼在客户端而不是 host：引用本来就是"用户这条消息的一部分"，拼好之后
+       * 追问上下文、历史回放、升格全都天然带着它，host 只负责**给上下文**（那条路由）。
+       * 没有引用时**原样返回提问** —— 老路径一个字都不变。
+       *
+       * 每段引用固定给：来源 + 【引用处上下文】（被引用的部分用【】标出）。
+       * 上下文里没带上原文时（被截断、或标记失败）再补一段【引用原文】——
+       * 绝不让模型去猜"引的是哪句"。
+       */
+      function composeQuestion(quotes, question) {
+        var ask = String(question || '').trim()
+        var list = quotes || []
+        if (list.length === 0) return ask
+        var lines = []
+        for (var i = 0; i < list.length; i += 1) {
+          var quote = list[i]
+          var context = String(quote.context || '').trim()
+          lines.push('【引用 ' + (i + 1) + '】（来自' + quoteLabelOf(quote) + '）')
+          if (context) {
+            lines.push('【引用处上下文】（被引用的部分用【】标出）')
+            lines.push(context)
+            if (!contextHasQuote(context, quote.text)) {
+              lines.push('')
+              lines.push('【引用原文】')
+              lines.push(quote.text)
+            }
+          } else {
+            lines.push(quote.text)
+          }
+          lines.push('')
+        }
+        lines.push('【我的问题】')
+        lines.push(ask || QUOTE_ONLY_QUESTION)
+        return lines.join('\n')
+      }
+
+      /** 某一轮"实际发出去"的文本：用户那轮带引用块，助手轮就是正文。 */
+      function sentTextOf(turn) {
+        if (!turn) return ''
+        if (turn.role === 'user') return turn.sent || turn.text || ''
+        return turn.text || ''
+      }
+
+      /** 导出给 host 的轮次（历史落盘 / 升格）：用户那轮把引用块一起带走。 */
+      function exportTurns() {
+        var out = []
+        for (var i = 0; i < state.turns.length; i += 1) {
+          out.push({ role: state.turns[i].role, text: sentTextOf(state.turns[i]) })
+        }
+        return out
       }
 
       // —— 侧边栏网页（iframe）划词桥的父侧接线 ——
@@ -2231,8 +2956,9 @@ window.__ModuleLoader__.load({
       /**
        * 帧内桥报过来的选区：换算坐标 → 复用同一套浮标与面板。
        *
-       * 只认"我们桥过的帧"发来的消息（`frameBySource`）；面板开着时按主会话的老规矩
-       * 不另开一个（要划新词先按 Esc 收起）。
+       * 只认"我们桥过的帧"发来的消息（`frameBySource`）。
+       * 小窗开着时它走**引用**那条路（划侧边栏网页里的文字，同样能挂进输入框）；
+       * 小窗关着时才是「✦ 解读」（要划新词开新窗，先按 Esc 收起当前这扇）。
        */
       var offBridgeMessage = listen(window, 'message', function (event) {
         var data = event && event.data
@@ -2248,6 +2974,7 @@ window.__ModuleLoader__.load({
             state.bridgeActive = false
           }
           hideButton()
+          hideQuoteButton()
           return
         }
         if (data.kind === 'clear') {
@@ -2255,18 +2982,21 @@ window.__ModuleLoader__.load({
             state.selection = null
             state.bridgeActive = false
             hideButton()
+            hideQuoteButton()
           }
           return
         }
         if (data.kind !== 'selection' || !data.sel) return
-        if (panelOpen) return
         if (!frame.isConnected) return
         var text = String(data.sel.text || '')
         if (!text.trim() || text.length > MAX_SELECTION) return
         var rect = mapFrameRect(frame, data.sel.rect)
         if (!rect) {
           // 选区滚出帧的可视区：把浮标收掉（帧内再滚回来会重新报）
-          if (state.selection && state.selection.frame === frame) hideButton()
+          if (state.selection && state.selection.frame === frame) {
+            hideButton()
+            hideQuoteButton()
+          }
           return
         }
         state.selection = {
@@ -2281,6 +3011,19 @@ window.__ModuleLoader__.load({
           label: labelForFrame(frame, data.sel.label),
         }
         state.bridgeActive = true
+        if (panelOpen) {
+          // 小窗开着：帧内这条选区也只是"一段可以引用的文字"（上下文由帧内的桥给）
+          state.quoteSelection = {
+            text: text.trim(),
+            label: state.selection.label || '侧边栏网页',
+            source: 'iframe',
+            rect: rect,
+            context: String(state.selection.context || ''),
+            turnIndex: -1,
+          }
+          showQuoteButton(rect)
+          return
+        }
         showButton(rect)
       })
 
@@ -2418,6 +3161,8 @@ window.__ModuleLoader__.load({
         var cached = cache.get(cacheKey)
         state.cacheKey = cacheKey
         state.turns = []
+        // 换了一段选中文字 = 换了一次对话：上一段攒的引用不该跟过来
+        clearQuotes()
         state.parts = (cached && cached.parts) || { translation: '', detail: '' }
         state.stage = ''
         state.raw = ''
@@ -2689,6 +3434,10 @@ window.__ModuleLoader__.load({
 
       function showPanel(anchor) {
         panelOpen = true
+        // 小窗一开，浮标就换成「❝ 引用」那一套（解读浮标收掉，引用浮标等新选区）
+        hideButton()
+        hideQuoteButton()
+        state.quoteSelection = null
         panel.style.display = 'flex'
         panel.style.left = '0px'
         panel.style.top = '0px'
@@ -2710,6 +3459,12 @@ window.__ModuleLoader__.load({
         panelOpen = false
         panel.style.display = 'none'
         hideHistoryList()
+        // 小窗收起来了：引用浮标跟着走（它只在"小窗开着"时有意义）
+        hideQuoteButton()
+        state.quoteSelection = null
+        // 正在录音/识别就到此为止：麦**一定要松开**（不能让标签页一直显示"正在使用麦克风"），
+        // 识别出来的文字也没地方放了 —— 连同提示一起静默收掉。
+        cancelVoice()
         // 收起小窗不该被记成"失败"：打个标记，让 fail() 走「已停止」而不是「解读失败」
         if (state.request) state.aborted = true
         if (state.request) state.request.abort()
@@ -2843,7 +3598,7 @@ window.__ModuleLoader__.load({
         // 配色按**面板实际底色**选（不看系统偏好）：主题实现方式怎么变都不影响
         layer.setAttribute('data-theme', isDarkSurface(panel) ? 'dark' : 'light')
         panel.setAttribute('data-theme', isDarkSurface(panel) ? 'dark' : 'light')
-        askRow.style.display = wide || translationReady ? '' : 'none'
+        askRow.style.display = wide || translationReady || state.quotes.length > 0 ? '' : 'none'
         // 展开 CTA：翻译还在跑（含思考期）时先不出现——那时候该看的是等待特效，
         // 摆在下面只会是个灰着的按钮，反而像"没反应"；发过追问之后也收起（见 syncExpandCta）。
         syncExpandCta()
@@ -3249,6 +4004,9 @@ window.__ModuleLoader__.load({
        */
       function historyTextOf(turn, keepRaw) {
         if (!turn) return ''
+        // 用户那轮：发出去的是什么就带回什么（带引用时是拼好的那份，见 composeQuestion）。
+        // 引用块必须进历史 —— 否则下一轮模型只看到"上面那段呢？"，而"那段"已经在上下文里消失了。
+        if (turn.role === 'user') return sentTextOf(turn)
         if (keepRaw) return turn.text
         if (typeof turn.foldedCache === 'string') return turn.foldedCache
         if (turn.streaming === true) return turn.text
@@ -3311,10 +4069,12 @@ window.__ModuleLoader__.load({
         var payload = state.payload
         if (!payload || !state.cacheKey) return
         var turns = []
+        var exported = exportTurns()
         for (var i = 0; i < state.turns.length; i += 1) {
           var turn = state.turns[i]
           if (turn.hidden === true) continue
-          turns.push({ role: turn.role, text: turn.text || '' })
+          // 落盘的是"实际发出去的那份"（用户那轮带引用块）：回放出来时这轮对话是自洽的
+          turns.push(exported[i])
         }
         try {
           fetch(HISTORY, {
@@ -3343,6 +4103,8 @@ window.__ModuleLoader__.load({
         var parts = entry.parts || {}
         state.parts = { translation: parts.translation || '', detail: parts.detail || '' }
         state.turns = Array.isArray(entry.turns) ? entry.turns.slice() : []
+        // 回放的是**另一段**对话：输入框里攒的引用跟着清掉
+        clearQuotes()
         state.toolDigest = typeof entry.toolDigest === 'string' ? entry.toolDigest : ''
         state.cacheKey = entry.key
         state.payload = buildPayload(entry.text, entry.context, entry.label)
@@ -3767,7 +4529,12 @@ window.__ModuleLoader__.load({
         if (chatLog.children.length !== visible.length) {
           clearWaiting(chatLog)
           chatLog.textContent = ''
-          for (var j = 0; j < visible.length; j++) chatLog.appendChild(bubbleFor(visible[j]))
+          for (var j = 0; j < visible.length; j++) {
+            var bubble = bubbleFor(visible[j])
+            // 气泡记下自己属于哪一轮：引用时要据此取"这一轮 ± 一轮"的上下文
+            bubble.__turn = visible[j]
+            chatLog.appendChild(bubble)
+          }
           // 刚入列的"待答"气泡：此时才挂进 DOM，可以画等待特效了
           var fresh = visible[visible.length - 1]
           if (fresh && fresh.role === 'assistant' && fresh.asking === true && !fresh.text) {
@@ -3783,7 +4550,14 @@ window.__ModuleLoader__.load({
           var turn = visible[visible.length - 1]
           var painted = false
           node.className = 'dsh-sel-bubble ' + (turn.role === 'user' ? 'dsh-sel-bubble-user' : 'dsh-sel-bubble-bot') + (turn.error ? ' dsh-sel-bubble-err' : '')
-          if (turn.role === 'user' || turn.error) {
+          if (turn.role === 'user') {
+            // 用户气泡可能带引用块：签名包含引用，别每次重绘都白重建一遍
+            var usig = (turn.text || '') + '|' + (turn.quotes || []).map(function (item) { return item.text }).join('\u0000')
+            if (node.__sig !== usig) {
+              node.__sig = usig
+              fillUserBubble(node, turn)
+            }
+          } else if (turn.error) {
             node.textContent = turn.text
           } else if (turn.asking === true && !turn.text) {
             // 追问等待期：和首轮同一套等待特效（呼吸点 + 实时秒数 + 💭 思考尾巴）
@@ -3803,9 +4577,11 @@ window.__ModuleLoader__.load({
               renderRich(node, sanitizeToolResidue(turn.text) || '…', { settled: turn.streaming !== true })
             }
             paintNotice(node, turn)
+            paintQuoteAll(node, turn)
             painted = true
           }
           if (!painted && turn.role !== 'user') paintNotice(node, turn)
+          if (!painted && turn.role !== 'user') paintQuoteAll(node, turn)
         }
         // 可见性必须在这里定：追问路径只调 renderTurns()，不会触发 paint()，
         // 之前把它挪进 paint() 导致"发送后气泡画进了 display:none 的容器里，小窗没反应"
@@ -3831,18 +4607,81 @@ window.__ModuleLoader__.load({
         existing.textContent = text
       }
 
+      /**
+       * 用户气泡：有引用时**先画引用块、再画问题**（和发给模型的那份顺序一致）。
+       * 只写 textContent 的话引用就看不见了 —— 模型答的是"上面那段"，
+       * 而"上面那段"在气泡里根本不存在，回头看会一头雾水。
+       */
+      function fillUserBubble(node, turn) {
+        node.textContent = ''
+        var quotes = turn.quotes || []
+        if (quotes.length > 0) {
+          var box = el('div', 'dsh-sel-bq')
+          for (var i = 0; i < quotes.length; i += 1) {
+            var item = el('div', 'dsh-sel-bqitem')
+            item.appendChild(el('b', null, '❝ ' + quoteLabelOf(quotes[i])))
+            item.appendChild(document.createTextNode(quoteBrief(quotes[i].text, 60)))
+            item.title = quotes[i].text
+            box.appendChild(item)
+          }
+          node.appendChild(box)
+        }
+        if (turn.text) node.appendChild(el('div', null, turn.text))
+      }
+
       function bubbleFor(turn) {
         var bubble = el('div', 'dsh-sel-bubble ' + (turn.role === 'user' ? 'dsh-sel-bubble-user' : 'dsh-sel-bubble-bot'))
         if (turn.role === 'user') {
-          bubble.textContent = turn.text
+          fillUserBubble(bubble, turn)
         } else if (turn.error) {
           bubble.className += ' dsh-sel-bubble-err'
           bubble.textContent = turn.text
         } else {
           renderRich(bubble, sanitizeToolResidue(turn.text) || '…', { settled: turn.streaming !== true })
         }
-        if (turn.role !== 'user') paintNotice(bubble, turn)
+        if (turn.role !== 'user') {
+          paintNotice(bubble, turn)
+          paintQuoteAll(bubble, turn)
+        }
         return bubble
+      }
+
+      /**
+       * 助手气泡末尾的「❝ 引用整条」（鼠标移到这条消息上才浮出来）。
+       *
+       * 每次重画都要补一遍：renderRich() 会先清空气泡，按钮跟着一起没了。
+       * 点的时候现读 `source.text`（一轮还在流式时文本一直在长），并折掉网页回答里的 HTML
+       * —— 引用一整页 HTML 源码既长又没有提问价值，历史里本来也是折成 Markdown 的。
+       */
+      function paintQuoteAll(node, turn) {
+        var existing = null
+        for (var i = 0; i < node.children.length; i += 1) {
+          if (String(node.children[i].className).indexOf('dsh-sel-bubquote') >= 0) existing = node.children[i]
+        }
+        var ready = turn && turn.error !== true && turn.streaming !== true && String(turn.text || '').trim()
+        if (!ready) {
+          if (existing) node.removeChild(existing)
+          return
+        }
+        if (!existing) {
+          existing = el('button', 'dsh-sel-bubquote')
+          existing.type = 'button'
+          existing.appendChild(el('span', null, '❝ 引用整条'))
+          node.appendChild(existing)
+        }
+        existing.title = '把这一整条回答加进追问的引用'
+        existing.__turn = turn
+        if (existing.__wired !== true) {
+          existing.__wired = true
+          listen(existing, 'click', function (event) {
+            event.stopPropagation()
+            var source = existing.__turn
+            if (!source) return
+            var body = foldForHistory(sanitizeToolResidue(source.text))
+            // 整条引用同样带上下文：这一轮 ± 一轮（小窗里的"一组对话"）
+            addQuote(body, '小窗回答', { context: panelQuoteContext(state.turns.indexOf(source), body), session: false })
+          })
+        }
       }
 
       /** 把首轮解读结果作为追问的第一条助手上下文（截断，避免过长）。 */
@@ -3881,7 +4720,7 @@ window.__ModuleLoader__.load({
           askSend.setAttribute('aria-label', generating ? '停止' : '发送')
           askSend.title = generating ? '停止生成（点一下打断这次输出）' : '发送（Enter）'
         }
-        askSend.disabled = generating ? false : !String(askBox.value || '').trim()
+        askSend.disabled = generating ? false : !String(askBox.value || '').trim() && state.quotes.length === 0
       }
 
       /** 停止当前这一轮：追问走自己的 abort；首轮/详解复用"用户中止"那条路径。 */
@@ -3908,7 +4747,13 @@ window.__ModuleLoader__.load({
         return false
       }
 
-      /** 发送一个追问（多轮，带历史；走 host 的 chat 模式）。 */
+      /**
+       * 发送一个追问（多轮，带历史；走 host 的 chat 模式）。
+       *
+       * 两段式：先**取引用的上下文**（会话里那几段要问 host 要，见 resolveQuoteContexts），
+       * 再真正发。取上下文期间用 state.resolvingQuotes 挡住重复发送 ——
+       * 那一刻输入框和引用区都已经清空了，再按一次 Enter 会变成"空发一条"。
+       */
       function ask(question) {
         var generating = state.asking || state.phase === 'loading' || state.phase === 'streaming'
         if (generating) {
@@ -3916,12 +4761,47 @@ window.__ModuleLoader__.load({
           setStatus('还在生成，请稍候…（生成完就能追问）')
           return
         }
-        if (!question.trim() || !state.payload) return
+        // 这条消息发出去了，正在录的那一段就不再是"下一条提问"了：
+        // 收掉它可以避免"发送后麦克风还红着"（用户会以为还在录）。
+        // 已经识别出来的文字在输入框里，不受影响。
+        if (voice.phase === 'recording' || voice.phase === 'requesting' || voice.phase === 'transcribing') {
+          cancelVoice('已停止录音（这条先发出去）')
+        }
+        var asked = String(question || '').trim()
+        // 引用先取出来：只挂引用、没写问题也允许发（这时用一句兜底提问）
+        var quotes = state.quotes.slice()
+        if ((!asked && quotes.length === 0) || !state.payload) return
+        if (state.resolvingQuotes) {
+          setStatus('正在取引用的上下文…')
+          return
+        }
+        // 引用是"下一条提问"的：立刻清空（提问已经在手上，别让下一轮又带上）
+        if (quotes.length > 0) {
+          state.quotes = []
+          renderQuotes()
+          refreshAskState()
+        }
+        if (quotes.length === 0) {
+          sendAsk(asked, quotes)
+          return
+        }
+        state.resolvingQuotes = true
+        resolveQuoteContexts(quotes).then(function (resolved) {
+          state.resolvingQuotes = false
+          sendAsk(asked, resolved)
+        })
+      }
+
+      /** 真正把这一轮发出去（引用已经带上上下文了）。 */
+      function sendAsk(asked, quotes) {
         var payload = state.payload
+        if (!payload) return
+        // 引用拼进**这一条**消息：发给模型、进历史、升格用的都是拼好的那份
+        var sent = composeQuestion(quotes, asked)
         if (state.turns.length === 0 && (state.raw.trim() || state.parts.translation || state.parts.detail)) {
           state.turns.push({ role: 'assistant', text: seedHistoryFromExplanation(), seed: true, hidden: true })
         }
-        state.turns.push({ role: 'user', text: question })
+        state.turns.push({ role: 'user', text: asked || QUOTE_ONLY_QUESTION, quotes: quotes, sent: sent })
         // asking 只管"等待特效要不要显示"（首字一到就置 false），
         // streaming 才是"这一轮还没写完"。两者必须分开：以前拿 asking 当定稿判据，
         // 结果是首字一到就认定"定稿了"→ 每个 delta 都重建一个 iframe（实测一条回答建了 24 个），
@@ -4018,7 +4898,7 @@ window.__ModuleLoader__.load({
             context: payload.context,
             label: payload.label,
             sessionId: currentSessionId(),
-            question: question,
+            question: sent,
             history: history,
             ...(state.webAnswer ? { webAnswer: true } : {}),
             ...(state.modelChoice ? { provider: state.modelChoice.provider, model: state.modelChoice.model } : {}),
@@ -4510,7 +5390,8 @@ window.__ModuleLoader__.load({
             label: payload.label,
             translation: (sections.translation || '').trim(),
             detail: (sections.detail || '').trim(),
-            turns: state.turns,
+            // 带引用块的轮次：升格出来的会话里，用户当时发的就是拼好的那份
+            turns: exportTurns(),
           }),
         })
           .then(function (response) {
@@ -4587,8 +5468,15 @@ window.__ModuleLoader__.load({
         setButtonPop(false)
       })
 
+      var offQuotePopEnd = listen(quoteButton, 'animationend', function () {
+        setQuotePop(false)
+      })
+
       var offMouseUp = listen(document, 'mouseup', function (event) {
-        if (panel.contains(event.target) || button.contains(event.target)) return
+        // 面板里的 mouseup **也要走一次检查**：小窗开着时"划小窗正文"正是「引用」的主入口
+        // （早先这里对面板直接 return —— 那是"面板里划词一律不管"年代的写法，
+        //  结果就是小窗里划词毫无反应，只有气泡末尾的「引用整条」能用）。
+        if (button.contains(event.target) || quoteButton.contains(event.target)) return
         scheduleCheck()
       }, true)
 
@@ -4609,6 +5497,7 @@ window.__ModuleLoader__.load({
         if (historyList.contains(target)) return // 列表内部：行自己处理
         if (historyButton.contains(target)) return // 「最近」开关自己 toggle
         if (button.contains(target)) return // 浮标
+        if (quoteButton.contains(target)) return // 引用浮标：点它不能先把自己收掉
         // 状态胶囊：它自己就是开关，点它的 mousedown 不能被当成"点了外面"（否则先关后开，看着像没反应）
         if (pill.contains(target)) return
         // 到这里说明点的不是侧边栏本身：**含面板正文**（消息区/输入框/选中文字）在内，
@@ -4616,6 +5505,7 @@ window.__ModuleLoader__.load({
         hideHistoryList()
         if (panel.contains(target)) return // 面板内的点击只收侧边栏，不关面板
         hideButton()
+        hideQuoteButton()
         // 点面板外**不关小窗**（无论有没有追问过）：答案留在原地，只有 ✕ / Esc / 胶囊能收。
         // 曾经的规则是"没追问过才关"，但那会让用户在读第一屏翻译时被误关（点一下别处就没了）。
       }, true)
@@ -4633,8 +5523,26 @@ window.__ModuleLoader__.load({
         if (selection) openForSelection(selection)
       })
 
+      // 引用浮标：吞掉 mousedown（点了不能把选区打散、也不能让面板失焦），
+      // 点一下 = 把这段文字挂进输入框的引用区，然后自己收起来（"已经进去了"的信号）
+      var offQuoteDown = listen(quoteButton, 'mousedown', function (event) {
+        event.preventDefault()
+        event.stopPropagation()
+      })
+
+      var offQuoteClick = listen(quoteButton, 'click', function (event) {
+        event.preventDefault()
+        event.stopPropagation()
+        var selection = state.quoteSelection
+        if (!selection) return
+        // 上下文在这里才采：引用**当时**在哪一段对话里，是这条引用最有用的信息
+        addQuote(selection.text, selection.label, quoteContextFor(selection))
+        hideQuoteButton()
+      })
+
       var offScroll = listen(window, 'scroll', function (event) {
         hideButton()
+        hideQuoteButton()
         // 页面/面板滚动也收回侧边栏；滚动列表自身不算（它有自己的滚动条）。
         // event.target 不一定是 Node（合成事件可能是 window），contains 会抛，得自己挡一道
         var target = event && event.target
@@ -5044,6 +5952,7 @@ window.__ModuleLoader__.load({
 
       var offResize = listen(window, 'resize', function () {
         hideButton()
+        hideQuoteButton()
         // 拖窗口变小后，面板本身也要拉回视口内（否则历史列表会跟着算到屏幕外）
         keepInsideViewport()
         if (historyList.style.display === 'flex') placeHistoryList()
@@ -5090,7 +5999,8 @@ window.__ModuleLoader__.load({
         event.preventDefault()
         event.stopPropagation()
         var question = askBox.value
-        if (!question.trim()) return
+        // 空输入框照发**只在挂了引用时**成立（引用本身就是用户要送出去的内容）
+        if (!question.trim() && state.quotes.length === 0) return
         askBox.value = ''
         refreshAskState()
         ask(question)
@@ -5107,11 +6017,682 @@ window.__ModuleLoader__.load({
           return
         }
         var question = askBox.value
-        if (!question.trim()) return
+        if (!question.trim() && state.quotes.length === 0) return
         askBox.value = ''
         refreshAskState()
         ask(question)
       })
+
+      // ══════════════════════════ 语音输入（麦克风） ══════════════════════════
+      //
+      // 要解决的问题：追问往往只有一两句话（"这词在这里是不是贬义？"），
+      // 但**打字**这件事本身就要把手从鼠标挪到键盘——和"划词"这个动作是矛盾的。
+      //
+      // 交互：点麦克风 → 说 → 再点一下（或到 60 秒）→ 识别出来的文字**插进输入框**
+      // （不是直接发送：识别有错字，插进去还能改；而且在同一条里可以接着说第二段）。
+      // 录音中切走/收起小窗/停用插件都会立刻松开麦克风（不留下一直亮着的录音标识）。
+      //
+      // 边界都走"说清楚"而不是"静默失败"：浏览器不支持、权限被拒、没有麦克风设备、
+      // 模型没准备好、没听清——每一种都在输入框上方给一句话（有救的还带一个按钮，
+      // 例如"准备模型"，首次要下载 1G 左右，必须用户自己点）。
+
+      /** 录音/识别状态机：idle → requesting → recording → transcribing → idle。 */
+      var voice = {
+        phase: 'idle',
+        /**
+         * 第几轮。停/取消/关面板都会 +1 —— 晚到的回调据此丢弃自己。
+         * 没有它就会出现"明明取消了，过两秒却冒出一段文字"（异步的权限、识别都可能晚到）。
+         */
+        generation: 0,
+        capture: null,
+        abort: null,
+        ticker: 0,
+        startedAt: 0,
+        maxSeconds: VOICE_FALLBACK_SECONDS,
+        catalog: null,
+        catalogAt: 0,
+        /** 面板关掉/插件停用时，这一轮是不是"用户主动取消"（是的话不给错误提示）。 */
+        noteTimer: 0,
+        doneTimer: 0,
+        pollTimer: 0,
+        lastClock: -1,
+        level: 0,
+        lastText: '',
+      }
+
+      /** 录音失败的统一话术（浏览器抛的是 DOMException，用户看不懂）。 */
+      var VOICE_ERRORS = {
+        unavailable: '这个浏览器不能录音（需要麦克风权限和 MediaRecorder）',
+        permission: '麦克风权限被拒绝了（在浏览器地址栏里可以改回来）',
+        missing: '没有找到麦克风设备',
+        interrupted: '录音被打断了（麦克风被别的程序占用？）',
+        empty: '这段录音是空的（没听到声音）',
+        cancelled: '已取消录音',
+      }
+
+      function voiceError(kind, extra) {
+        var error = new Error(VOICE_ERRORS[kind] || '录音失败')
+        error.voiceKind = kind
+        if (extra) error.cause = extra
+        return error
+      }
+
+      /** 出错信息 → 一句人话。 */
+      function voiceMessageOf(error) {
+        if (!error) return '未知错误'
+        if (error.voiceKind) return VOICE_ERRORS[error.voiceKind] || '录音失败'
+        return String(error.message || error)
+      }
+
+      /**
+       * 输入框上方的短提示。
+       * @param text 文案（'' = 收起）
+       * @param tone '' | 'warn' | 'error'
+       * @param actions [{ label, run }]（有救的错误才带按钮）
+       * @param autoClear 自动收起毫秒数（0 = 一直留着，直到下一次操作）
+       */
+      function setNote(text, tone, actions, autoClear) {
+        clearTimeout(voice.noteTimer)
+        askNoteText.textContent = text || ''
+        askNote.setAttribute('data-tone', tone || '')
+        while (noteActions.firstChild) noteActions.removeChild(noteActions.firstChild)
+        var list = actions || []
+        for (var i = 0; i < list.length; i += 1) {
+          ;(function (action) {
+            var node = el('button', 'dsh-sel-notebtn', action.label)
+            node.type = 'button'
+            listen(node, 'click', function (event) {
+              event.stopPropagation()
+              if (action.run) action.run()
+            })
+            noteActions.appendChild(node)
+          })(list[i])
+        }
+        askNote.setAttribute('data-show', text ? '1' : '0')
+        askNote.style.display = text ? 'flex' : 'none'
+        if (text && autoClear > 0) {
+          voice.noteTimer = setTimeout(function () {
+            askNote.setAttribute('data-show', '0')
+            askNote.style.display = 'none'
+          }, autoClear)
+        }
+        return text || ''
+      }
+
+      /** 麦克风按钮：图标 + 提示语 + 可点性，全按当前状态来。 */
+      function paintMic() {
+        var phase = voice.phase
+        var icons = { idle: micIcon, done: micIcon, requesting: spinnerIcon, transcribing: spinnerIcon, recording: stopIcon }
+        micButton.setAttribute('data-state', phase)
+        micButton.setAttribute('aria-pressed', phase === 'recording' ? 'true' : 'false')
+        micButton.setAttribute('aria-label', phase === 'recording' ? '结束录音并转写' : '语音输入')
+        micButton.title =
+          phase === 'recording'
+            ? '结束并转成文字（Esc 取消）'
+            : phase === 'requesting'
+              ? '正在请求麦克风权限…（点一下取消）'
+              : phase === 'transcribing'
+                ? '正在识别…（点一下取消）'
+                : '语音输入（点一下开始说，再点一下结束并转成文字）'
+        micButton.textContent = ''
+        micButton.appendChild((icons[phase] || micIcon)())
+        if (phase !== 'recording' && micButton.style && typeof micButton.style.setProperty === 'function') {
+          micButton.style.setProperty('--sel-mic-level', '0')
+        }
+      }
+
+      /** 识别器：目录里默认那个（没有就第一个）。 */
+      function voiceProvider(catalog) {
+        if (!catalog || !catalog.providers || !catalog.providers.length) return null
+        var id = catalog.selection && catalog.selection.providerId
+        for (var i = 0; i < catalog.providers.length; i += 1) {
+          if (catalog.providers[i].id === id) return catalog.providers[i]
+        }
+        return catalog.providers[0]
+      }
+
+      /** 目录（有哪些识别器、能不能录、能录多久）：短暂缓存，别每点一次都问一遍 host。 */
+      function fetchSpeechCatalog(force) {
+        var now = Date.now()
+        if (!force && voice.catalog && now - voice.catalogAt < VOICE_CATALOG_TTL) {
+          return Promise.resolve(voice.catalog)
+        }
+        return fetch(SPEECH_API)
+          .then(function (response) {
+            return response.json()
+          })
+          .then(function (data) {
+            voice.catalog = data
+            voice.catalogAt = Date.now()
+            return data
+          })
+      }
+
+      function stopVoiceTicker() {
+        if (voice.ticker) clearInterval(voice.ticker)
+        voice.ticker = 0
+        voice.lastClock = -1
+      }
+
+      /**
+       * 一次录音的全部资源：麦克风流、MediaRecorder、AudioContext、分析器。
+       *
+       * 这几个东西**必须一起释放**：只停 MediaRecorder 的话，标签页上会一直挂着
+       * "正在使用麦克风"的标识（用户会以为在偷听），AudioContext 也会一直占着音频线程。
+       */
+      function createCapture(onError) {
+        var stream = null
+        var recorder = null
+        var context = null
+        var analyser = null
+        var samples = new Float32Array(256)
+        var chunks = []
+        var lifetime = new AbortController()
+        var disposal = null
+
+        function release() {
+          try {
+            lifetime.abort()
+          } catch (error) {
+            /* noop */
+          }
+          try {
+            if (recorder && recorder.state === 'recording') recorder.stop()
+          } catch (error) {
+            /* noop */
+          }
+          if (stream) {
+            var tracks = stream.getTracks ? stream.getTracks() : []
+            for (var i = 0; i < tracks.length; i += 1) {
+              try {
+                tracks[i].stop()
+              } catch (error) {
+                /* noop */
+              }
+            }
+          }
+          if (context && typeof context.close === 'function') {
+            try {
+              context.close()
+            } catch (error) {
+              /* noop */
+            }
+          }
+          return Promise.resolve()
+        }
+
+        function dispose() {
+          if (!disposal) disposal = release()
+          return disposal
+        }
+
+        /** decodeAudioData：新浏览器返回 Promise，老 Safari 只认回调 —— 两种都接住。 */
+        function decode(buffer) {
+          return new Promise(function (resolve, reject) {
+            var pending = context.decodeAudioData(buffer, resolve, reject)
+            if (pending && typeof pending.then === 'function') pending.then(resolve, reject)
+          })
+        }
+
+        return {
+          /** 拿麦克风并开始录（权限弹窗可能很久，晚到的授权要能作废）。 */
+          start: function () {
+            var devices = navigator.mediaDevices
+            if (!devices || typeof devices.getUserMedia !== 'function' || typeof window.MediaRecorder === 'undefined') {
+              return Promise.reject(voiceError('unavailable'))
+            }
+            return devices
+              .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false })
+              .then(
+                function (got) {
+                  stream = got
+                  if (lifetime.signal.aborted) {
+                    var granted = got.getTracks ? got.getTracks() : []
+                    for (var i = 0; i < granted.length; i += 1) granted[i].stop()
+                    throw voiceError('cancelled')
+                  }
+                  var Ctx = window.AudioContext || window.webkitAudioContext
+                  try {
+                    context = new Ctx()
+                    // 没有用户手势时浏览器会把 AudioContext 挂起：音量条要动就得唤醒它
+                    if (context.state === 'suspended' && typeof context.resume === 'function') {
+                      var resumed = context.resume()
+                      if (resumed && typeof resumed.catch === 'function') resumed.catch(function () {})
+                    }
+                    analyser = context.createAnalyser()
+                    analyser.fftSize = samples.length
+                    context.createMediaStreamSource(stream).connect(analyser)
+                    recorder = new window.MediaRecorder(stream)
+                    recorder.ondataavailable = function (event) {
+                      if (!lifetime.signal.aborted && event.data && event.data.size > 0) chunks.push(event.data)
+                    }
+                    recorder.onerror = function () {
+                      if (lifetime.signal.aborted) return
+                      dispose()
+                      if (onError) onError(voiceError('interrupted'))
+                    }
+                    recorder.start()
+                    return true
+                  } catch (error) {
+                    return dispose().then(function () {
+                      throw error
+                    })
+                  }
+                },
+                function (error) {
+                  if (error && error.name === 'NotAllowedError') throw voiceError('permission')
+                  if (error && error.name === 'NotFoundError') throw voiceError('missing')
+                  throw error
+                },
+              )
+          },
+
+          /** 实时音量（0..1 左右）：只用来驱动呼吸圈。 */
+          level: function () {
+            if (!analyser) return 0
+            try {
+              analyser.getFloatTimeDomainData(samples)
+            } catch (error) {
+              return 0
+            }
+            var sum = 0
+            for (var i = 0; i < samples.length; i += 1) sum += samples[i] * samples[i]
+            return Math.sqrt(sum / samples.length)
+          },
+
+          /**
+           * 结束录音 → 规范 WAV。
+           * 重采样交给 OfflineAudioContext（浏览器自带的重采样质量比自己写的线性插值好得多），
+           * 采样率固定 16kHz —— host 只收这一种（见 host 的 validateWave）。
+           */
+          stop: function (maxSeconds) {
+            return new Promise(function (resolve, reject) {
+              if (!recorder || !context || recorder.state !== 'recording') {
+                dispose().then(function () {
+                  reject(voiceError('empty'))
+                })
+                return
+              }
+              var settled = false
+              function giveUp(error) {
+                if (settled) return
+                settled = true
+                dispose().then(function () {
+                  reject(error)
+                })
+              }
+              recorder.onstop = function () {
+                if (settled) return
+                settled = true
+                var blob
+                try {
+                  var tracks = stream && stream.getTracks ? stream.getTracks() : []
+                  for (var i = 0; i < tracks.length; i += 1) tracks[i].stop()
+                  blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+                  if (!blob.size) throw voiceError('empty')
+                } catch (error) {
+                  dispose().then(function () {
+                    reject(error)
+                  })
+                  return
+                }
+                blob
+                  .arrayBuffer()
+                  .then(function (buffer) {
+                    return decode(buffer)
+                  })
+                  .then(function (decoded) {
+                    if (lifetime.signal.aborted) throw voiceError('cancelled')
+                    var rate = 16000
+                    var seconds = Math.min(decoded.duration || 0, maxSeconds)
+                    var frames = Math.max(1, Math.floor(seconds * rate))
+                    var Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext
+                    var offline = new Offline(1, frames, rate)
+                    var source = offline.createBufferSource()
+                    source.buffer = decoded
+                    source.connect(offline.destination)
+                    source.start()
+                    return offline.startRendering()
+                  })
+                  .then(function (rendered) {
+                    return encodeWave(rendered.getChannelData(0))
+                  })
+                  .then(resolve, function (error) {
+                    reject(error)
+                  })
+              }
+              recorder.onerror = function () {
+                giveUp(voiceError('empty'))
+              }
+              try {
+                recorder.stop()
+              } catch (error) {
+                giveUp(error)
+              }
+            }).then(
+              function (bytes) {
+                return dispose().then(function () {
+                  return bytes
+                })
+              },
+              function (error) {
+                return dispose().then(function () {
+                  throw error
+                })
+              },
+            )
+          },
+
+          dispose: dispose,
+        }
+      }
+
+      /** 录音中的心跳：更新音量圈、秒数、到点自动收尾。 */
+      function startVoiceTicker() {
+        stopVoiceTicker()
+        voice.ticker = setInterval(function () {
+          if (voice.phase !== 'recording') return
+          var elapsed = Date.now() - voice.startedAt
+          var level = 0
+          try {
+            level = voice.capture ? voice.capture.level() : 0
+          } catch (error) {
+            level = 0
+          }
+          // 说话时的 RMS 大概 0.02~0.25：乘 6 再夹住，圈子的强弱才看得出来
+          voice.level = clamp(level * 6, 0, 1)
+          if (micButton.style && typeof micButton.style.setProperty === 'function') {
+            micButton.style.setProperty('--sel-mic-level', voice.level.toFixed(2))
+          }
+          var limit = voice.maxSeconds || VOICE_FALLBACK_SECONDS
+          if (elapsed >= limit * 1000) {
+            finishVoice()
+            return
+          }
+          var clock = Math.floor(elapsed / 1000)
+          if (clock !== voice.lastClock) {
+            voice.lastClock = clock
+            setNote('正在录音 ' + formatClock(elapsed) + ' · 再点一下结束（最长 ' + limit + ' 秒，Esc 取消）', '')
+          }
+        }, 120)
+      }
+
+      /** 识别出来的文字 → 输入框（插在光标处，前后补空格，光标落在末尾，接着还能打字）。 */
+      function insertTranscript(text) {
+        var current = String(askBox.value || '')
+        var start = typeof askBox.selectionStart === 'number' && askBox.selectionStart >= 0 ? askBox.selectionStart : current.length
+        var end = typeof askBox.selectionEnd === 'number' && askBox.selectionEnd >= start ? askBox.selectionEnd : start
+        var before = current.slice(0, start)
+        var after = current.slice(end)
+        var prefix = before && !/\s$/.test(before) ? ' ' : ''
+        var suffix = after && !/^\s/.test(after) ? ' ' : ''
+        askBox.value = before + prefix + text + suffix + after
+        var caret = (before + prefix + text).length
+        try {
+          askBox.setSelectionRange(caret, caret)
+        } catch (error) {
+          /* 桩环境没有这个方法 */
+        }
+        try {
+          askBox.focus()
+        } catch (error) {
+          /* noop */
+        }
+        voice.lastText = text
+        refreshAskState()
+        return askBox.value
+      }
+
+      function failVoice(generation, error) {
+        if (generation !== voice.generation) return
+        voice.generation += 1
+        voice.phase = 'idle'
+        var capture = voice.capture
+        voice.capture = null
+        stopVoiceTicker()
+        if (capture) capture.dispose()
+        paintMic()
+        // "用户取消"不是错（点了取消、收了小窗、插件停用都走这里），不给错误提示
+        var kind = error && error.voiceKind
+        if (kind === 'cancelled') return
+        setNote(voiceMessageOf(error), 'error')
+      }
+
+      /** 开始一段录音（先问 host 要目录：能不能录、最长多久）。 */
+      function startVoice() {
+        if (!recordingSupported()) {
+          setNote(VOICE_ERRORS.unavailable, 'error')
+          return
+        }
+        var generation = ++voice.generation
+        voice.phase = 'requesting'
+        paintMic()
+        setNote('正在请求麦克风…', '')
+        fetchSpeechCatalog(true)
+          .then(function (catalog) {
+            if (generation !== voice.generation) return null
+            if (!catalog || catalog.available !== true) {
+              var provider = voiceProvider(catalog)
+              var reason = catalog ? catalog.reason : ''
+              var text =
+                reason === 'unprepared' || (provider && provider.phase !== 'ready' && provider.phase !== 'standby')
+                  ? '语音模型还没准备好' + (provider && provider.name ? '（' + provider.name + '）' : '')
+                  : catalog && catalog.error
+                    ? catalog.error
+                    : '这个部署没有可用的语音识别服务'
+              // 有救的（模型没装）给一个「准备」按钮：下载在 host 上跑，几百 MB 到 1G，得用户自己点
+              setNote(text, 'warn', provider ? [{ label: '准备模型', run: prepareVoice }] : [])
+              voice.phase = 'idle'
+              paintMic()
+              return null
+            }
+            var limits = catalog.limits || {}
+            voice.maxSeconds = clamp(Number(limits.maxSeconds) || VOICE_FALLBACK_SECONDS, 5, 600)
+            var capture = createCapture(function (error) {
+              failVoice(generation, error)
+            })
+            voice.capture = capture
+            return capture.start().then(function () {
+              if (generation !== voice.generation) {
+                capture.dispose()
+                return null
+              }
+              voice.phase = 'recording'
+              voice.startedAt = Date.now()
+              paintMic()
+              startVoiceTicker()
+              setNote('正在录音 0:00 · 再点一下结束（最长 ' + voice.maxSeconds + ' 秒，Esc 取消）', '')
+              return true
+            })
+          })
+          .catch(function (error) {
+            failVoice(generation, error)
+          })
+      }
+
+      /** 结束录音 → 送去识别 → 文字插进输入框。 */
+      function finishVoice() {
+        if (voice.phase !== 'recording') return
+        var generation = voice.generation
+        var capture = voice.capture
+        var maxSeconds = voice.maxSeconds || VOICE_FALLBACK_SECONDS
+        stopVoiceTicker()
+        voice.phase = 'transcribing'
+        paintMic()
+        setNote('正在识别…', '')
+        var abort = typeof AbortController === 'function' ? new AbortController() : null
+        voice.abort = abort
+        capture
+          .stop(maxSeconds)
+          .then(function (bytes) {
+            if (generation !== voice.generation) return null
+            if (!bytes || !bytes.length) throw voiceError('empty')
+            if (bytes.length > VOICE_MAX_BYTES) throw new Error('录音太长了，这一句请短一点')
+            return fetch(SPEECH_TRANSCRIBE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ audioBase64: bytesToBase64(bytes) }),
+              signal: abort ? abort.signal : undefined,
+            })
+          })
+          .then(function (response) {
+            if (generation !== voice.generation || !response) return null
+            return response.json().then(function (data) {
+              if (generation !== voice.generation) return null
+              if (!data || data.ok !== true) {
+                var error = String((data && data.error) || '识别失败')
+                if (data && data.code === 'unprepared') {
+                  setNote(error, 'warn', [{ label: '准备模型', run: prepareVoice }])
+                } else if (data && data.code === 'empty-transcript') {
+                  setNote('没听清（这句里没有识别到内容，再说一次试试）', 'warn', [], 4000)
+                } else {
+                  setNote('识别失败：' + error, 'error')
+                }
+                return null
+              }
+              var text = String(data.text || '').trim()
+              if (!text) {
+                setNote('没听清（这句里没有识别到内容，再说一次试试）', 'warn', [], 4000)
+                return null
+              }
+              insertTranscript(text)
+              // 成功也给一句：用户刚对着麦克风说话，总得知道"听成了什么、去哪了"
+              setNote('已插入 ' + text.length + ' 字（可以改完再发送）', '', [], 2600)
+              voice.phase = 'done'
+              if (voice.doneTimer) clearTimeout(voice.doneTimer)
+              voice.doneTimer = setTimeout(function () {
+                if (voice.phase !== 'done') return
+                voice.phase = 'idle'
+                paintMic()
+              }, 1200)
+              return text
+            })
+          })
+          .catch(function (error) {
+            if (generation !== voice.generation) return
+            // 用户点了取消 / 收起小窗：静默（这不是失败，是他自己不要了）
+            if (error && error.name === 'AbortError') return
+            var kind = error && error.voiceKind
+            if (kind === 'cancelled') return
+            setNote('识别失败：' + voiceMessageOf(error), 'error')
+          })
+          .then(function () {
+            if (generation !== voice.generation) return
+            if (voice.phase === 'done') return // 成功路径的收尾交给 doneTimer（留一下绿色反馈）
+            voice.phase = 'idle'
+            voice.capture = null
+            voice.abort = null
+            paintMic()
+          })
+      }
+
+      /**
+       * 取消当前这一轮（录音或识别）。关面板 / 停用插件 / Esc 都走它。
+       * 一定会松开麦克风、并且让晚到的回调全部作废（generation + 1）。
+       */
+      function cancelVoice(noteText) {
+        if (!voice) return
+        var capture = voice.capture
+        voice.generation += 1
+        voice.phase = 'idle'
+        voice.capture = null
+        if (voice.abort) {
+          try {
+            voice.abort.abort()
+          } catch (error) {
+            /* noop */
+          }
+        }
+        voice.abort = null
+        stopVoiceTicker()
+        if (voice.doneTimer) clearTimeout(voice.doneTimer)
+        voice.doneTimer = 0
+        if (voice.pollTimer) clearTimeout(voice.pollTimer)
+        voice.pollTimer = 0
+        if (capture) capture.dispose()
+        paintMic()
+        if (noteText) setNote(noteText, '', [], 2000)
+        else {
+          // 静默取消（收起小窗 / 停用插件）：连文字一起收掉 ——
+          // 只藏不删的话，下次开面板会先闪一下上一次那半句"正在录音"。
+          clearTimeout(voice.noteTimer)
+          askNoteText.textContent = ''
+          askNote.setAttribute('data-show', '0')
+          askNote.style.display = 'none'
+        }
+      }
+
+      /** 让 host 去准备识别模型（首次要下载）；下载在 host 上跑，关掉面板也继续。 */
+      function prepareVoice() {
+        setNote('正在准备语音模型（首次要下载模型文件，请稍候）…', 'warn')
+        fetch(SPEECH_PREPARE, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        })
+          .then(function (response) {
+            return response.json()
+          })
+          .then(function (data) {
+            if (!data || data.ok !== true) {
+              setNote('准备失败：' + ((data && data.error) || '未知原因'), 'error')
+              return
+            }
+            voice.catalog = data.catalog || null
+            voice.catalogAt = 0 // 状态变了，下一次点击重新问 host
+            pollPrepare(0)
+          })
+          .catch(function (error) {
+            setNote('准备失败：' + voiceMessageOf(error), 'error')
+          })
+      }
+
+      /** 轮询准备进度（下载在 host 上，这里只是播报）。 */
+      function pollPrepare(round) {
+        if (round > 480) return // 最多看 ~12 分钟，之后交给用户自己再来
+        if (voice.pollTimer) clearTimeout(voice.pollTimer)
+        voice.pollTimer = setTimeout(function () {
+          fetchSpeechCatalog(true)
+            .then(function (catalog) {
+              if (catalog && catalog.available) {
+                setNote('语音模型准备好了，点麦克风开始说话', '', [], 3000)
+                return
+              }
+              var provider = voiceProvider(catalog)
+              if (provider && provider.phase === 'failed') {
+                setNote('准备失败：' + (provider.message || '模型下载出错'), 'error')
+                return
+              }
+              var total = provider && provider.totalBytes ? provider.totalBytes : 0
+              var done = provider && provider.completedBytes ? provider.completedBytes : 0
+              var progress = total > 0 ? '（' + Math.round((done / total) * 100) + '%）' : ''
+              setNote('正在准备语音模型' + progress + '…（可以先去忙别的，下载在后台继续）', 'warn')
+              pollPrepare(round + 1)
+            })
+            .catch(function () {
+              pollPrepare(round + 1)
+            })
+        }, 1500)
+      }
+
+      var offMic = listen(micButton, 'click', function (event) {
+        event.stopPropagation()
+        if (voice.phase === 'recording') {
+          finishVoice()
+          return
+        }
+        if (voice.phase === 'requesting') {
+          cancelVoice('已取消（没有开始录音）')
+          return
+        }
+        if (voice.phase === 'transcribing') {
+          cancelVoice('已取消识别')
+          return
+        }
+        startVoice()
+      })
+      paintMic()
+      // ═════════════════════════ 语音输入（结束） ═════════════════════════
 
       // 用户自己滚消息区（滚轮/触摸）→ 不再强行把他拉回底部
       var offBodyWheel = listen(body, 'wheel', noteUserScroll)
@@ -5168,7 +6749,92 @@ window.__ModuleLoader__.load({
         turns: function () {
           return state.turns.slice()
         },
+        /** 自检用：当前待发送的引用（引用区里那几张卡片）。 */
+        quotes: function () {
+          return state.quotes.map(function (quote) {
+            return {
+              id: quote.id,
+              label: quote.label,
+              text: quote.text,
+              context: quote.context || '',
+              contextChars: (quote.context || '').length,
+              session: quote.session === true,
+            }
+          })
+        },
+        /** 自检用：手工加一段引用（等价于点了「❝ 引用」/「引用整条」）。 */
+        quote: function (text, label, extra) {
+          return addQuote(text, label || '调试', extra || {})
+        },
+        /** 自检用：某一段引用要用的上下文（等价于点引用那一刻采到的那份）。 */
+        quoteContext: function (source, turnIndex, text) {
+          return panelQuoteContext(source === 'panel' ? turnIndex : -1, text || '')
+        },
+        /** 自检用：引用 + 提问拼出来的那条消息原文（发给模型的就是它）。 */
+        compose: function (quotes, question) {
+          return composeQuestion(quotes || state.quotes, question)
+        },
+        /** 自检用：引用浮标与最近一次可引用选区的状态。 */
+        quoteState: function () {
+          return {
+            visible: quoteButton.style.display === 'inline-flex',
+            selection: state.quoteSelection
+              ? {
+                  text: state.quoteSelection.text,
+                  label: state.quoteSelection.label,
+                  source: state.quoteSelection.source,
+                  turnIndex: state.quoteSelection.turnIndex === undefined ? -1 : state.quoteSelection.turnIndex,
+                  hasRange: !!state.quoteSelection.range,
+                }
+              : null,
+            panelOpen: panelOpen,
+            resolving: state.resolvingQuotes === true,
+          }
+        },
+        /** 自检用：引用浮标的节点（无头环境里页面可能挂了两棵树，用这个拿真正带监听的那个）。 */
+        quoteNode: function () {
+          return quoteButton
+        },
         close: closePanel,
+        /**
+         * 自检用：语音输入的状态（阶段 / 提示 / 目录 / 最近一次转写）。
+         * phase：idle / requesting / recording / transcribing / done
+         */
+        voice: function () {
+          return {
+            phase: voice.phase,
+            supported: recordingSupported(),
+            note: askNoteText.textContent,
+            tone: askNote.getAttribute('data-tone') || '',
+            shown: askNote.getAttribute('data-show') === '1',
+            actions: noteActions.children.length,
+            maxSeconds: voice.maxSeconds || VOICE_FALLBACK_SECONDS,
+            level: Number(voice.level.toFixed(3)),
+            lastText: voice.lastText,
+            catalog: voice.catalog
+              ? {
+                  available: voice.catalog.available === true,
+                  reason: voice.catalog.reason || '',
+                  error: voice.catalog.error || '',
+                  providers: (voice.catalog.providers || []).map(function (provider) {
+                    return { id: provider.id, name: provider.name, phase: provider.phase }
+                  }),
+                }
+              : null,
+          }
+        },
+        /** 自检用：麦克风按钮节点（无头环境里页面可能挂了两棵树，用这个拿真正带监听的那个）。 */
+        voiceNode: function () {
+          return micButton
+        },
+        /** 自检用：读/写追问输入框（验证"转写文字插进输入框"）。 */
+        askValue: function (text) {
+          if (text !== undefined) {
+            askBox.value = String(text)
+            refreshAskState()
+          }
+          return askBox.value
+        },
         /** 自检用：清掉本地缓存，模拟"刷新页面后重开"（验证历史回放路径）。 */
         forget: function () {
           cache.clear()
@@ -5344,6 +7010,7 @@ window.__ModuleLoader__.load({
           state.bridgeActive = false
           state.parts = { translation: '', detail: '' }
           state.turns = []
+          clearQuotes()
           state.raw = ''
           state.phase = 'idle'
           state.error = ''
@@ -5373,11 +7040,14 @@ window.__ModuleLoader__.load({
         }
         return function () {
            offPopEnd()
+          offQuotePopEnd()
           offMouseUp()
           offKeyUp()
           offMouseDown()
           offButtonDown()
           offButtonClick()
+          offQuoteDown()
+          offQuoteClick()
           offScroll()
           offResize()
           offKeyDown()
@@ -5387,6 +7057,9 @@ window.__ModuleLoader__.load({
           offAskKey()
           offAskInput()
           offAskSend()
+          // 语音输入：摘掉麦克风监听，并把正在录/正在识别的这一轮彻底作废（松开麦克风）
+          offMic()
+          cancelVoice()
           offClose()
           offDrag()
           offPillDown()
@@ -5435,11 +7108,13 @@ window.__ModuleLoader__.load({
           })
           bridged.clear()
           state.turns = []
+          state.quotes = []
           if (state.request) state.request.abort()
           for (var i = 0; i < timers.length; i++) clearTimeout(timers[i])
           cache.clear()
           if (layer.parentNode) layer.parentNode.removeChild(layer)
           if (button.parentNode) button.parentNode.removeChild(button)
+          if (quoteButton.parentNode) quoteButton.parentNode.removeChild(quoteButton)
           if (panel.parentNode) panel.parentNode.removeChild(panel)
           if (pill.parentNode) pill.parentNode.removeChild(pill)
           if (styleEl.parentNode) styleEl.parentNode.removeChild(styleEl)
@@ -5597,6 +7272,51 @@ window.__ModuleLoader__.load({
       return svg
     }
 
+    /**
+     * 麦克风图标：话筒头（圆角矩形）+ 底座弧 + 支架。
+     * 用描边而不是实心：录音时这个位置要换成"红色实心停止键"，
+     * 平时轻一点，红起来的那一刻对比才够强。
+     */
+    function micIcon() {
+      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      svg.setAttribute('viewBox', '0 0 16 16')
+      svg.setAttribute('width', '14')
+      svg.setAttribute('height', '14')
+      svg.setAttribute('fill', 'none')
+      svg.setAttribute('stroke', 'currentColor')
+      svg.setAttribute('stroke-width', '1.5')
+      svg.setAttribute('stroke-linecap', 'round')
+      svg.setAttribute('aria-hidden', 'true')
+      var cap = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      cap.setAttribute('d', 'M8 1.9a2.1 2.1 0 0 1 2.1 2.1v3.4a2.1 2.1 0 0 1-4.2 0V4A2.1 2.1 0 0 1 8 1.9z')
+      svg.appendChild(cap)
+      var arc = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      arc.setAttribute('d', 'M3.6 7.2v.5a4.4 4.4 0 0 0 8.8 0v-.5')
+      svg.appendChild(arc)
+      var stem = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      stem.setAttribute('d', 'M8 12.1v2')
+      svg.appendChild(stem)
+      return svg
+    }
+
+    /** 转圈图标（权限请求中 / 识别中）：CSS 让它转起来。 */
+    function spinnerIcon() {
+      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      svg.setAttribute('viewBox', '0 0 16 16')
+      svg.setAttribute('width', '14')
+      svg.setAttribute('height', '14')
+      svg.setAttribute('fill', 'none')
+      svg.setAttribute('stroke', 'currentColor')
+      svg.setAttribute('stroke-width', '1.7')
+      svg.setAttribute('stroke-linecap', 'round')
+      svg.setAttribute('aria-hidden', 'true')
+      var arc = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      // 缺一个口的圆：转起来才看得出在动
+      arc.setAttribute('d', 'M8 1.8a6.2 6.2 0 1 1-4.4 1.8')
+      svg.appendChild(arc)
+      return svg
+    }
+
     /** 发送图标（上箭头，和主会话 composer 一致）。 */
     function sendIcon() {
       var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
@@ -5629,8 +7349,33 @@ window.__ModuleLoader__.load({
       return svg
     }
 
+    /**
+     * 引用浮标上的图标：两个引号块（❝ 的简化画法）。
+     * 用圆 + 左下角甩出的小尾巴拼 —— 13px 下也认得出，不依赖系统有没有那个字形。
+     */
+    function quoteIcon() {
+      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      svg.setAttribute('viewBox', '0 0 16 16')
+      svg.setAttribute('fill', 'currentColor')
+      svg.setAttribute('aria-hidden', 'true')
+      var marks = [
+        { cx: 5.4, cy: 6.1, tail: 'M3.9 7.4 2.1 12.2 6.1 10.2z' },
+        { cx: 11.6, cy: 6.1, tail: 'M10.1 7.4 8.3 12.2 12.3 10.2z' },
+      ]
+      for (var i = 0; i < marks.length; i += 1) {
+        var dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+        dot.setAttribute('cx', String(marks[i].cx))
+        dot.setAttribute('cy', String(marks[i].cy))
+        dot.setAttribute('r', '2.3')
+        svg.appendChild(dot)
+        var tail = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+        tail.setAttribute('d', marks[i].tail)
+        svg.appendChild(tail)
+      }
+      return svg
+    }
+
     exports.apply = apply
     exports.inject = ['slots']
     return module.exports
-  },
-})
+  },})

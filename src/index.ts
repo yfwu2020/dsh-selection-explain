@@ -75,6 +75,15 @@ export interface Config {
   sessionContextFastMessages: number
   /** 会话背景字符上限；0 = 不限（默认），只按消息条数取窗口。 */
   sessionContextMaxChars: number
+  /**
+   * 引用（❝）上下文：引用文字所在的那一组对话 ± 几组（一组 = 用户消息 + 它的助手回复）。
+   * 默认 1 = 上下各一组（需求：至少带上引用所在那一组与上下各一组）。
+   */
+  quoteContextRounds: number
+  /** 引用上下文里单条消息的字数上限（超了**围绕引用**截断，不裁掉引用本身）。 */
+  quoteContextMaxCharsPerTurn: number
+  /** 引用上下文整段的字数上限（超了丢最早的几组）。 */
+  quoteContextMaxChars: number
   /** 共享结果缓存 TTL（毫秒）：同会话+同选中+同局部片段+同背景时直接回放；0 = 关闭。 */
   resultCacheTtlMs: number
   /** 是否允许解读过程调用工具（联网搜索等）。 */
@@ -132,6 +141,9 @@ export const Config = z.object({
   sessionContextMaxMessages: z.number().min(1).max(200).default(24),
   sessionContextFastMessages: z.number().min(1).max(200).default(8),
   sessionContextMaxChars: z.number().min(0).max(2000000).default(0),
+  quoteContextRounds: z.number().min(0).max(10).default(1),
+  quoteContextMaxCharsPerTurn: z.number().min(200).max(20000).default(2000),
+  quoteContextMaxChars: z.number().min(400).max(100000).default(6000),
   resultCacheTtlMs: z.number().min(0).max(86400000).default(600000),
   tools: z.boolean().default(true),
   /**
@@ -527,6 +539,103 @@ function clampText(raw: unknown, max: number): string {
   return text.length > max ? `${text.slice(0, max)}\n…（已截断）` : text
 }
 
+// ────────────────────────────── 语音输入（小窗麦克风） ──────────────────────────────
+//
+// 小窗的追问输入框加一个麦克风：录一段话 → 转成文字**插进输入框**（不是直接发送，
+// 识别错了还能改）。转写这条链路在 host 这一侧收口：
+//
+//   GET  ${API_PREFIX}/speech            识别服务目录 + 就绪状态（客户端据此决定麦克风能不能点）
+//   POST ${API_PREFIX}/speech/transcribe 一段 16kHz 单声道 PCM16 WAV（base64）→ 文字
+//   POST ${API_PREFIX}/speech/prepare    显式准备本地识别模型（首次要下载，必须用户点头）
+//
+// 为什么不让浏览器自己去连识别服务：音频、provider 选择、模型路径全部留在 host，
+// 客户端只拿到"一段话的文字"；而且**音频不落盘、不进会话**（转写完即丢）。
+// 识别服务（@deepseek-ai/dsh-experimental-speech-to-text）是实验性的、可以不装：
+// 拿不到该服务就整条链路优雅降级（目录接口回 available:false，麦克风点了只给一句解释）。
+
+/** 单次录音时长上限（秒）：到了就自动收尾去识别，不让用户对着麦克风发呆。 */
+const SPEECH_MAX_SECONDS = 60
+/** 单条音频的字节上限（≈ 2 分钟 16kHz 单声道 PCM16）；与识别服务默认的 4MB 对齐。 */
+const SPEECH_MAX_BYTES = 4 * 1024 * 1024
+/** 识别请求体上限：base64 会膨胀 4/3，再留点余量给 JSON 外壳。 */
+const SPEECH_BODY_LIMIT = Math.ceil(SPEECH_MAX_BYTES / 3) * 4 + 4096
+/** 单次识别的等待上限（毫秒）：真机上 60 秒音频几秒内就回来了，这是兜底。 */
+const SPEECH_TIMEOUT_MS = 120_000
+
+/** 识别器的就绪状态（只声明我们用到的字段——服务是实验性的，形状可能变）。 */
+interface SpeechPreparationView {
+  phase: string
+  step?: string
+  resource?: string
+  completedBytes?: number
+  totalBytes?: number
+  message?: string
+  steps?: ReadonlyArray<{ kind: string; status: string }>
+}
+
+/** 一个可选的识别器（本机 SenseVoice / 云端）。 */
+interface SpeechProviderView {
+  id: string
+  name: string
+  location: string
+  languages: readonly string[]
+  downloadSources?: readonly string[]
+  preparation?: SpeechPreparationView
+}
+
+/** ctx.speechToText 的宽松视图（只用到这几个方法）。 */
+interface SpeechToTextLike {
+  snapshot: () => {
+    providers: readonly SpeechProviderView[]
+    selection: { providerId: string; language: string }
+  }
+  resolve: (request: { audio: Uint8Array; providerId?: string; language?: string }) => unknown
+  transcribe: (
+    spec: unknown,
+    signal: AbortSignal,
+  ) => Promise<{ text?: unknown; audioSeconds?: unknown; inferenceSeconds?: unknown }>
+  prepare: (id: string, options?: { downloadSource?: string }) => void
+}
+
+/**
+ * 校验客户端送上来的音频是不是**规范**的 16kHz 单声道 PCM16 WAV。
+ *
+ * 为什么抠得这么死：这个格式是浏览器端编码器（MediaRecorder → decodeAudioData →
+ * OfflineAudioContext 重采样 → 手写 WAV 头）唯一会产出的形状。逐字段对齐之后，
+ * "音频不对"就只剩两种可能——客户端版本对不上、或者有人手工构造了这个请求。
+ * 光看二进制长度不算数：头里写的采样率/声道/位深必须是那一套，否则识别服务会按
+ * 错误的采样率解释这段音频（听起来像快放/慢放），识别结果自然全错。
+ *
+ * @param audio 完整音频字节
+ * @param maxSeconds 允许的最长时长
+ * @returns 时长（秒）
+ */
+export function validateWave(audio: Buffer, maxSeconds: number): number {
+  if (
+    audio.length < 46 ||
+    audio.toString('ascii', 0, 4) !== 'RIFF' ||
+    audio.toString('ascii', 8, 12) !== 'WAVE' ||
+    audio.toString('ascii', 12, 16) !== 'fmt ' ||
+    audio.readUInt32LE(16) !== 16 ||
+    audio.readUInt16LE(20) !== 1 || // PCM
+    audio.readUInt16LE(22) !== 1 || // 单声道
+    audio.readUInt32LE(24) !== 16000 || // 16kHz
+    audio.readUInt32LE(28) !== 32000 || // 字节率 = 16000 × 1ch × 2B
+    audio.readUInt16LE(32) !== 2 || // 块对齐
+    audio.readUInt16LE(34) !== 16 || // 16 bit
+    audio.toString('ascii', 36, 40) !== 'data' ||
+    audio.readUInt32LE(4) !== audio.length - 8 ||
+    audio.readUInt32LE(40) !== audio.length - 44 ||
+    (audio.length - 44) % 2 !== 0
+  ) {
+    throw new Error('音频格式不是 16kHz 单声道 PCM16 WAV')
+  }
+  const seconds = (audio.length - 44) / 32000
+  if (seconds <= 0) throw new Error('录音是空的')
+  if (seconds > maxSeconds) throw new Error(`录音超过 ${maxSeconds} 秒`)
+  return seconds
+}
+
 /**
  * 「网页模式」的设计规范：从插件自带的 `skills/web-design/SKILL.md` 读（按 mtime 缓存）。
  *
@@ -832,6 +941,158 @@ export function transcriptOf(events: readonly unknown[], options: BackgroundOpti
   return { transcript, marked: picked.some((entry) => entry.marked) }
 }
 
+/** 引用上下文的结果。 */
+export interface QuoteContext {
+  /** 「用户：…／助手：…」逐行拼好的上下文（引用部分用【】标出）；没命中时为空串。 */
+  transcript: string
+  /** 引用文字是否在会话里定位到了（没定位到 → 客户端退回自己的局部上下文）。 */
+  matched: boolean
+  /** 带进来的对话组数（一组 = 一条用户消息 + 它的助手回复）。 */
+  rounds: number
+}
+
+/** 引用上下文的窗口与长度（默认值：上下各一组、单条 2000 字、总共 6000 字）。 */
+export interface QuoteContextOptions {
+  /** 引用前后各取几组对话（默认 1）。 */
+  roundsAround?: number
+  /** 单条消息的字数上限（超出时**围绕引用**截断，别把引用本身裁掉）。 */
+  maxCharsPerTurn?: number
+  /** 整段上下文的字数上限（超出时丢最早的那几组）。 */
+  maxChars?: number
+}
+
+/** 在文本里找到引用文字并套上【】（直接找不到就按"空白等价"再找一次）。 */
+function markQuoteInText(text: string, marker: string): string {
+  if (!text || !marker) return text
+  const at = text.indexOf(marker)
+  if (at >= 0) return `${text.slice(0, at)}【${marker}】${text.slice(at + marker.length)}`
+  // 归一化后匹配：把引用按空白切开，逐段允许任意空白（选中文字常与消息原文差在换行/缩进）
+  const tokens = marker.split(/\s+/).filter(Boolean).map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  if (tokens.length === 0) return text
+  try {
+    const hit = new RegExp(tokens.join('\\s+')).exec(text)
+    if (hit && typeof hit.index === 'number') {
+      return `${text.slice(0, hit.index)}【${hit[0]}】${text.slice(hit.index + hit[0].length)}`
+    }
+  } catch {
+    /* 正则构造失败（极端输入）：不标记，客户端会把原文另起一段补上 */
+  }
+  return text
+}
+
+/** 围绕引用截断长消息（引用本身必须留下；找不到引用就从头截）。 */
+function clampAroundQuote(text: string, marker: string, max: number): string {
+  if (text.length <= max) return text
+  const at = marker ? text.indexOf(marker) : -1
+  if (at < 0) return `${text.slice(0, max)}…（已截断）`
+  const half = Math.max(0, Math.floor((max - marker.length) / 2))
+  const from = Math.max(0, at - half)
+  const to = Math.min(text.length, at + marker.length + half)
+  return `${from > 0 ? '…' : ''}${text.slice(from, to)}${to < text.length ? '…' : ''}`
+}
+
+/**
+ * **引用上下文**：引用文字所在的那一组对话 ± N 组（一组 = 一条用户消息 + 它的助手回复）。
+ *
+ * 与 `transcriptOf`（解读用的会话背景）的区别，两条都是为引用量身定的：
+ *   ① 窗口是**锚点两侧** —— 引用常常是"上面那句"和"下面那句"的对照，只有上文不够；
+ *   ② 按**轮**取整 —— 上下各至少一整组（用户消息 + AI 回复），不会切在半个回合上。
+ * 噪音过滤与 `transcriptOf` 完全一致（工具调用/结果、系统提示、harness 注入一律不进）。
+ */
+export function quoteContextOf(
+  events: readonly unknown[],
+  marker: string,
+  options: QuoteContextOptions = {},
+): QuoteContext {
+  const roundsAround = Math.max(0, options.roundsAround ?? 1)
+  const maxCharsPerTurn = Math.max(200, options.maxCharsPerTurn ?? 2000)
+  const maxChars = Math.max(400, options.maxChars ?? 6000)
+
+  const entries: TranscriptEntry[] = []
+  for (const event of events) {
+    if (!event || typeof event !== 'object') continue
+    const typed = event as { type?: unknown; data?: unknown }
+    const data = (typed.data ?? {}) as {
+      message?: { content?: unknown }
+      content?: unknown
+      source?: { kind?: unknown }
+    }
+    let role = ''
+    let content: unknown
+    if (typed.type === 'user/message') {
+      if (data.source && data.source.kind !== 'user') continue
+      role = '用户'
+      content = data.content
+    } else if (typed.type === 'assistant/message') {
+      role = '助手'
+      content = data.message?.content
+    } else {
+      continue
+    }
+    const text = messageText(content)
+    if (!text) continue
+    entries.push({ role, text, marked: false })
+  }
+  if (entries.length === 0) return { transcript: '', matched: false, rounds: 0 }
+
+  const needle = normalizeSpace(marker)
+  let anchor = -1
+  if (needle.length >= 2) {
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      if (normalizeSpace(entries[i]?.text ?? '').includes(needle)) {
+        anchor = i
+        break
+      }
+    }
+  }
+  if (anchor < 0) return { transcript: '', matched: false, rounds: 0 }
+
+  // 按"轮"分组：一条用户消息开一轮（它之前的助手消息归上一轮）
+  const roundOf: number[] = []
+  let round = -1
+  for (const entry of entries) {
+    if (entry.role === '用户' || round < 0) round += 1
+    roundOf.push(round)
+  }
+  const anchorRound = roundOf[anchor] ?? 0
+  const fromRound = Math.max(0, anchorRound - roundsAround)
+  const toRound = Math.min(round, anchorRound + roundsAround)
+
+  const picked: TranscriptEntry[] = []
+  for (let i = 0; i < entries.length; i += 1) {
+    const r = roundOf[i] ?? 0
+    if (r < fromRound || r > toRound) continue
+    const entry = entries[i] as TranscriptEntry
+    const isAnchor = i === anchor
+    const raw = isAnchor ? markQuoteInText(entry.text, marker) : entry.text
+    picked.push({
+      role: entry.role,
+      text: clampAroundQuote(raw, marker, maxCharsPerTurn),
+      marked: isAnchor,
+    })
+  }
+
+  // 总量上限：超了先丢最早的几组，再丢引用之后的几组（**引用所在那条永远保留**）
+  let used = picked.reduce((sum, entry) => sum + entry.text.length, 0)
+  let droppedBefore = 0
+  let droppedAfter = 0
+  while (picked.length > 1 && used > maxChars && picked[0] && !picked[0].marked) {
+    const first = picked.shift()
+    droppedBefore += 1
+    used -= first ? first.text.length : 0
+  }
+  while (picked.length > 1 && used > maxChars && picked[picked.length - 1] && !picked[picked.length - 1]?.marked) {
+    const last = picked.pop()
+    droppedAfter += 1
+    used -= last ? last.text.length : 0
+  }
+  if (droppedBefore > 0) picked.unshift({ role: '提示', text: `（引用之前还有 ${droppedBefore} 条消息，未包含）`, marked: false })
+  if (droppedAfter > 0) picked.push({ role: '提示', text: `（引用之后还有 ${droppedAfter} 条消息，未包含）`, marked: false })
+
+  const transcript = picked.map((entry) => `${entry.role}：${entry.text}`).join('\n')
+  return { transcript, matched: true, rounds: toRound - fromRound + 1 }
+}
+
 /** 注册路由、解析模型路由、转发 LLM 流。 */
 export function apply(ctx: Context, rawConfig: Config): void {
   const config: Config = {
@@ -850,6 +1111,9 @@ export function apply(ctx: Context, rawConfig: Config): void {
     sessionContextMaxMessages: rawConfig?.sessionContextMaxMessages ?? 24,
     sessionContextFastMessages: rawConfig?.sessionContextFastMessages ?? 8,
     sessionContextMaxChars: rawConfig?.sessionContextMaxChars ?? 0,
+    quoteContextRounds: rawConfig?.quoteContextRounds ?? 1,
+    quoteContextMaxCharsPerTurn: rawConfig?.quoteContextMaxCharsPerTurn ?? 2000,
+    quoteContextMaxChars: rawConfig?.quoteContextMaxChars ?? 6000,
     resultCacheTtlMs: rawConfig?.resultCacheTtlMs ?? 600000,
     tools: rawConfig?.tools ?? true,
     toolNames: rawConfig?.toolNames ?? 'advanced_search,platform_search,read,grep,glob',
@@ -1214,6 +1478,305 @@ export function apply(ctx: Context, rawConfig: Config): void {
     pinned: entry.pinned,
   })
 
+  /**
+   * 引用上下文：客户端点了「❝ 引用」之后，拿引用文字来换它所在的那一组对话 ± 一组。
+   *
+   * 为什么走 host 而不是客户端读 DOM：会话正文的**干净文本**只有 host 这边有
+   * （`readSurface` 的事件流里工具调用/结果、系统提示、harness 注入全都被 `transcriptOf`
+   * 那套规则滤掉过）。客户端 DOM 里读到的会是"渲染后的样子"——思考块、工具卡片、
+   * 按钮文案全混在里面。定位不到（引用来自侧边栏网页/文档预览）就返回 matched:false，
+   * 客户端退回它自己采的局部上下文。
+   */
+  const handleQuoteContext = (req: IncomingMessage, res: ServerResponse): void => {
+    void (async () => {
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { ok: false, error: '只支持 POST' })
+        return
+      }
+      const raw = await readBody(req, 200_000)
+      let body: { sessionId?: unknown; text?: unknown } = {}
+      try {
+        body = raw ? (JSON.parse(raw) as { sessionId?: unknown; text?: unknown }) : {}
+      } catch {
+        sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' })
+        return
+      }
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
+      const text = clampText(body.text, config.maxSelectionChars)
+      if (!sessionId || !text.trim()) {
+        sendJson(res, 200, { ok: true, matched: false, context: '', rounds: 0 })
+        return
+      }
+      const events = await readSurfaceEvents(sessionId)
+      const context = quoteContextOf(events, text, {
+        roundsAround: config.quoteContextRounds,
+        maxCharsPerTurn: config.quoteContextMaxCharsPerTurn,
+        maxChars: config.quoteContextMaxChars,
+      })
+      sendJson(res, 200, {
+        ok: true,
+        matched: context.matched,
+        context: context.transcript,
+        rounds: context.rounds,
+        chars: context.transcript.length,
+      })
+    })().catch((error: unknown) => {
+      sendJson(res, 500, { ok: false, error: String((error as Error)?.message ?? error) })
+    })
+  }
+
+  /** ctx.speechToText：装了就给，没装/被停用给 undefined（麦克风据此优雅降级）。 */
+  const speechService = (): SpeechToTextLike | undefined => {
+    try {
+      const service = ctx.get('speechToText') as SpeechToTextLike | undefined
+      return service && typeof service.transcribe === 'function' ? service : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * 语音目录：有哪些识别器、各自什么状态、默认选谁、这次能录多久。
+   *
+   * 客户端据此决定麦克风的形态：能用 / 要先把模型准备好 / 这个部署根本没有识别服务。
+   * 不认识的状态一律当成"不能录"（宁可让用户看到一句解释，也不要录完才发现转不了）。
+   */
+  const speechCatalog = (): Record<string, unknown> => {
+    const service = speechService()
+    const limits = { maxSeconds: SPEECH_MAX_SECONDS, maxBytes: SPEECH_MAX_BYTES }
+    if (!service) {
+      return {
+        ok: true,
+        available: false,
+        reason: 'missing',
+        error: '这个 DSH 没有启用语音识别服务（缺 @deepseek-ai/dsh-experimental-speech-to-text）',
+        providers: [],
+        selection: null,
+        limits,
+      }
+    }
+    let snapshot: ReturnType<SpeechToTextLike['snapshot']>
+    try {
+      snapshot = service.snapshot()
+    } catch (error) {
+      return {
+        ok: true,
+        available: false,
+        reason: 'error',
+        error: String((error as Error)?.message ?? error),
+        providers: [],
+        selection: null,
+        limits,
+      }
+    }
+    const providers = (snapshot?.providers ?? []).map((provider) => {
+      const preparation = provider.preparation ?? { phase: 'ready' }
+      return {
+        id: String(provider.id),
+        name: String(provider.name ?? provider.id),
+        location: String(provider.location ?? ''),
+        languages: Array.isArray(provider.languages) ? provider.languages.map(String) : [],
+        // 下载源：本地模型已经装好时是空数组（没有可选项），装了才有得选
+        downloadSources: Array.isArray(provider.downloadSources) ? provider.downloadSources.map(String) : [],
+        phase: String(preparation.phase ?? 'unprepared'),
+        step: preparation.step ? String(preparation.step) : '',
+        // 下载进度（只在 downloading 时有意义）：客户端显示"还要下多少"
+        completedBytes: typeof preparation.completedBytes === 'number' ? preparation.completedBytes : 0,
+        totalBytes: typeof preparation.totalBytes === 'number' ? preparation.totalBytes : 0,
+        message: preparation.message ? String(preparation.message) : '',
+      }
+    })
+    const selection = snapshot?.selection
+      ? { providerId: String(snapshot.selection.providerId), language: String(snapshot.selection.language) }
+      : null
+    // 能录 = 至少有一个识别器已经就绪（standby 也算：本机模型在磁盘上，用到才唤醒）
+    const usable = providers.filter((provider) => provider.phase === 'ready' || provider.phase === 'standby')
+    return {
+      ok: true,
+      available: usable.length > 0,
+      reason: usable.length > 0 ? '' : providers.length > 0 ? 'unprepared' : 'empty',
+      error: '',
+      providers,
+      selection,
+      limits,
+    }
+  }
+
+  const handleSpeech = (req: IncomingMessage, res: ServerResponse): void => {
+    if (req.method !== 'GET') {
+      sendJson(res, 405, { ok: false, error: '只支持 GET' })
+      return
+    }
+    sendJson(res, 200, speechCatalog())
+  }
+
+  /**
+   * 显式准备识别模型（首次要下 1G 左右的模型，所以**只有用户点了才做**，不自动触发）。
+   * 只是把任务交给识别服务，进度走目录接口轮询（下载在 host 上跑，关掉页面也继续）。
+   */
+  const handleSpeechPrepare = (req: IncomingMessage, res: ServerResponse): void => {
+    void (async () => {
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { ok: false, error: '只支持 POST' })
+        return
+      }
+      const service = speechService()
+      if (!service) {
+        sendJson(res, 200, { ok: false, error: '这个 DSH 没有启用语音识别服务' })
+        return
+      }
+      let body: { providerId?: unknown; downloadSource?: unknown } = {}
+      try {
+        const raw = await readBody(req, 20_000)
+        body = raw ? (JSON.parse(raw) as { providerId?: unknown; downloadSource?: unknown }) : {}
+      } catch {
+        sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' })
+        return
+      }
+      const catalog = speechCatalog()
+      const wanted = typeof body.providerId === 'string' && body.providerId ? body.providerId : ''
+      const providers = (catalog.providers as Array<{ id: string; phase: string }>) ?? []
+      const target = wanted || (providers.find((item) => item.phase !== 'ready' && item.phase !== 'standby')?.id ?? providers[0]?.id ?? '')
+      if (!target) {
+        sendJson(res, 200, { ok: false, error: '没有可用的识别器' })
+        return
+      }
+      try {
+        const source = typeof body.downloadSource === 'string' && body.downloadSource ? body.downloadSource : undefined
+        service.prepare(target, source === undefined ? undefined : { downloadSource: source })
+      } catch (error) {
+        // 已经在准备中 / 下载源不认 / 服务生命周期已结束：都不算致命，把状态回给客户端自己看
+        sendJson(res, 200, { ok: false, error: String((error as Error)?.message ?? error), catalog: speechCatalog() })
+        return
+      }
+      sendJson(res, 200, { ok: true, providerId: target, catalog: speechCatalog() })
+    })().catch((error: unknown) => {
+      sendJson(res, 500, { ok: false, error: String((error as Error)?.message ?? error) })
+    })
+  }
+
+  /**
+   * 转写一段录音。
+   *
+   * 输入是浏览器端编码好的规范 WAV（base64），输出就是一段文字——**不落盘、不进会话**，
+   * 也不给模型看（用户要的是"把我说的变成字"，不是"让模型处理我的录音"）。
+   * 识别失败一律回 200 + { ok:false, code }：这是"这一句话没听清"，
+   * 不是 HTTP 层面的错误，客户端按 code 给不同的话术（换 HTTP 状态码反而会被
+   * 各种中间层改写或吞掉，用户看到的就只剩"请求失败"）。
+   */
+  const handleSpeechTranscribe = (req: IncomingMessage, res: ServerResponse): void => {
+    void (async () => {
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { ok: false, error: '只支持 POST' })
+        return
+      }
+      const service = speechService()
+      if (!service) {
+        sendJson(res, 200, {
+          ok: false,
+          code: 'missing',
+          error: '这个 DSH 没有启用语音识别服务（缺 @deepseek-ai/dsh-experimental-speech-to-text）',
+        })
+        return
+      }
+      let body: { audioBase64?: unknown; language?: unknown; providerId?: unknown } = {}
+      try {
+        const raw = await readBody(req, SPEECH_BODY_LIMIT)
+        body = raw ? (JSON.parse(raw) as typeof body) : {}
+      } catch (error) {
+        sendJson(res, 200, { ok: false, code: 'transport', error: String((error as Error)?.message ?? error) })
+        return
+      }
+      const encoded = typeof body.audioBase64 === 'string' ? body.audioBase64 : ''
+      if (!encoded) {
+        sendJson(res, 200, { ok: false, code: 'audio', error: '没有收到音频' })
+        return
+      }
+      let audio: Buffer
+      let seconds = 0
+      try {
+        if (encoded.length > Math.ceil(SPEECH_MAX_BYTES / 3) * 4) throw new Error('录音太大了')
+        audio = Buffer.from(encoded, 'base64')
+        // 规范 base64：随手传一段别的东西进来会在这一步被挡掉（解出来对不上原文）
+        if (audio.toString('base64') !== encoded) throw new Error('音频不是合法 base64')
+        if (audio.length > SPEECH_MAX_BYTES) throw new Error('录音太大了')
+        seconds = validateWave(audio, SPEECH_MAX_SECONDS)
+      } catch (error) {
+        sendJson(res, 200, { ok: false, code: 'audio', error: String((error as Error)?.message ?? error) })
+        return
+      }
+
+      const catalog = speechCatalog()
+      const providers = (catalog.providers as Array<{ id: string; phase: string; name: string }>) ?? []
+      // 这个部署默认用的语言（识别服务里配的，auto = 自动判断）；请求里带了就以请求为准
+      const catalogLanguage = String((catalog.selection as { language?: string } | null)?.language ?? '')
+      const wanted = typeof body.providerId === 'string' && body.providerId ? body.providerId : ''
+      const picked =
+        providers.find((item) => item.id === wanted) ??
+        providers.find((item) => item.phase === 'ready' || item.phase === 'standby') ??
+        providers[0]
+      if (!picked) {
+        sendJson(res, 200, { ok: false, code: 'empty', error: '没有可用的识别器' })
+        return
+      }
+      if (picked.phase !== 'ready' && picked.phase !== 'standby') {
+        sendJson(res, 200, {
+          ok: false,
+          code: 'unprepared',
+          providerId: picked.id,
+          phase: picked.phase,
+          error: `识别模型还没准备好（${picked.name}：${picked.phase}）`,
+          catalog,
+        })
+        return
+      }
+
+      // 客户端断开 / 用户取消 → 立刻掐掉识别（本机模型在跑推理，不能让它白跑）
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(new Error('识别超时')), SPEECH_TIMEOUT_MS)
+      const onClose = (): void => controller.abort(new Error('客户端已断开'))
+      req.on('close', onClose)
+      const startedAt = Date.now()
+      try {
+        const language = typeof body.language === 'string' && body.language ? body.language : undefined
+        const spec = service.resolve({
+          audio,
+          ...(wanted ? { providerId: wanted } : {}),
+          ...(language === undefined ? {} : { language }),
+        })
+        const transcript = await service.transcribe(spec, controller.signal)
+        const text = String(transcript?.text ?? '').trim()
+        if (!text) {
+          sendJson(res, 200, { ok: false, code: 'empty-transcript', error: '没听清（这段录音里没有识别到内容）' })
+          return
+        }
+        sendJson(res, 200, {
+          ok: true,
+          text,
+          providerId: picked.id,
+          providerName: picked.name,
+          language: language ?? catalogLanguage,
+          seconds,
+          elapsedMs: Date.now() - startedAt,
+        })
+      } catch (error) {
+        const message = String((error as Error)?.message ?? error)
+        const aborted = (error as Error)?.name === 'AbortError' || controller.signal.aborted
+        // 超时/断开与"识别失败"分开报：前者是这一句没转成，后者是识别服务本身有问题
+        sendJson(res, 200, {
+          ok: false,
+          code: aborted ? 'aborted' : 'failed',
+          error: aborted ? `这次识别被打断了（${message}）` : message,
+        })
+      } finally {
+        clearTimeout(timer)
+        req.off('close', onClose)
+      }
+    })().catch((error: unknown) => {
+      sendJson(res, 500, { ok: false, error: String((error as Error)?.message ?? error) })
+    })
+  }
+
   const handleHistory = (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
       await loadHistory()
@@ -1425,6 +1988,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
           sessionContextMaxMessages: config.sessionContextMaxMessages,
           sessionContextFastMessages: config.sessionContextFastMessages,
           sessionContextMaxChars: config.sessionContextMaxChars,
+          quoteContextRounds: config.quoteContextRounds,
+          quoteContextMaxChars: config.quoteContextMaxChars,
         },
       })
     })().catch((error: unknown) => {
@@ -2424,6 +2989,24 @@ export function apply(ctx: Context, rawConfig: Config): void {
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/promote`, handler: handlePromote }),
     `${name}: promote route`,
+  )
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/quote-context`, handler: handleQuoteContext }),
+    `${name}: quote-context route`,
+  )
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/speech`, handler: handleSpeech }),
+    `${name}: speech catalog route`,
+  )
+  ctx.effect(
+    () =>
+      ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/speech/transcribe`, handler: handleSpeechTranscribe }),
+    `${name}: speech transcribe route`,
+  )
+  ctx.effect(
+    () =>
+      ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/speech/prepare`, handler: handleSpeechPrepare }),
+    `${name}: speech prepare route`,
   )
 
   ctx.logger?.info?.(`[${name}] 划词解读路由就绪：${API_PREFIX}/analyze`)
