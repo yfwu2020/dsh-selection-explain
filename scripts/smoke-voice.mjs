@@ -69,14 +69,29 @@ async function ensureSpeechWav(dir) {
   }
   if (process.platform !== 'darwin') throw new Error('非 macOS：请用 SPEECH_WAV 指定一段 16kHz 单声道 WAV')
   const wav = join(dir, 'speech.wav')
-  const aiff = join(dir, 'speech.aiff')
-  const sentence = '你好，这是一段语音输入的测试，帮我解释一下划词解读。'
-  await execFileAsync('/usr/bin/say', ['-v', 'Tingting', '-o', aiff, sentence], { timeout: 60000 })
-  await execFileAsync(
-    'ffmpeg',
-    ['-y', '-v', 'error', '-i', aiff, '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-fflags', '+bitexact', '-map_metadata', '-1', wav],
-    { timeout: 60000 },
-  )
+  /** 一句短的（≤3 秒）：好让"停顿"在录音里早一点出现。 */
+  const say = async (text, out) => {
+    const aiff = join(dir, out + '.aiff')
+    const one = join(dir, out + '.wav')
+    await execFileAsync('/usr/bin/say', ['-v', 'Tingting', '-o', aiff, text], { timeout: 60000 })
+    await execFileAsync(
+      'ffmpeg',
+      ['-y', '-v', 'error', '-i', aiff, '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-fflags', '+bitexact', '-map_metadata', '-1', one],
+      { timeout: 60000 },
+    )
+    return readFileSync(one)
+  }
+  // 两句不同的话 + 各自 1.3 秒停顿：Chrome 循环播放这个文件，麦克风里于是周期性地出现**真实停顿**，
+  // 冒烟才会走到"停顿定稿"和"定稿之后继续出字"——正是用户报的那条路（只跟第一句、后面不吐字）。
+  const first = await say('你好，这是一段语音输入的测试。', 'speech-a')
+  const second = await say('帮我解释一下划词解读。', 'speech-b')
+  const gap = Buffer.alloc(16000 * 2 * 1.3)
+  const pieces = [first.subarray(44), gap, second.subarray(44), gap]
+  const body = Buffer.concat(pieces)
+  const headerOut = Buffer.from(first.subarray(0, 44))
+  headerOut.writeUInt32LE(36 + body.length, 4)
+  headerOut.writeUInt32LE(body.length, 40)
+  writeFileSync(wav, Buffer.concat([headerOut, body]))
   return wav
 }
 
@@ -565,7 +580,24 @@ try {
 } catch (error) {
   console.log('（录音态窄窗口检查跳过：' + String(error.message || error).slice(0, 120) + '）')
 }
-await sleep(2300)
+await sleep(4000)
+
+// 回归（用户报过：只跟第一句、后面不吐字）：样本里带停顿，所以到这里应该已经**定稿过至少一次**，
+// 而定稿之后实时层必须继续跟着出字 —— 这正是当时挂掉的地方（"没听清"被当成失败计数）。
+const afterPause = await cdp.eval(
+  `(() => { const box = document.querySelector('.dsh-sel-askbox'); const v = window.__dshSelectionExplain.voice(); return { value: box ? box.value : '', live: v.live } })()`,
+)
+assert('真浏览器里走到"停顿定稿"（样本里两句之间停了 1.3 秒）', afterPause.live.passes.commit >= 1 && afterPause.live.committed.length > 0, JSON.stringify(afterPause.live).slice(0, 220))
+assert(
+  '定稿之后照样继续出字（停顿那几拍"没听清"不能把实时层关掉）',
+  afterPause.live.disabled === false && afterPause.live.reason === '',
+  JSON.stringify({ disabled: afterPause.live.disabled, reason: afterPause.live.reason, value: afterPause.value }).slice(0, 200),
+)
+assert(
+  '输入框里两句都在：第一句定稿 + 第二句半句预览（用户报的 bug 就是这里断的）',
+  /你好|语音|测试/.test(afterPause.value) && /帮我|解释|划词|画词/.test(afterPause.value),
+  JSON.stringify(afterPause.value),
+)
 
 // 结束录音按的是录音行里的 ■（不再是 🎤 —— 录音中 🎤 让位给录音行，和主会话一样）
 const stopBox = await clickSelector(cdp, '.dsh-sel-stop')

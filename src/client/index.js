@@ -6907,7 +6907,12 @@ window.__ModuleLoader__.load({
         return true
       }
 
-      /** 送一段（16k 采样，[from,to)）去识别。 */
+      /**
+       * 送一段（16k 采样，[from,to)）去识别。
+       * **"没听清"不是故障**：停顿那几秒里窗口是纯静音，识别本来就该返回空
+       *（曾经把空结果当失败计数，连挂 3 次就把整个实时层关了 —— 表现是"只跟第一句，后面不吐字"）。
+       * @returns 识别到的文字（可能是 ''）
+       */
       function liveSend(from, to) {
         var live = voice.live
         var capture = voice.capture
@@ -6926,8 +6931,9 @@ window.__ModuleLoader__.load({
             return response.json()
           })
           .then(function (data) {
-            if (!data || data.ok !== true) throw new Error(String((data && data.error) || '识别失败'))
-            return String(data.text || '').trim()
+            if (data && data.ok === true) return String(data.text || '').trim()
+            if (data && data.code === 'empty-transcript') return ''
+            throw new Error(String((data && data.error) || '识别失败'))
           })
       }
 
@@ -6942,6 +6948,7 @@ window.__ModuleLoader__.load({
         liveSend(from, to)
           .then(function (text) {
             if (!live.active) return
+            live.previewFails = 0
             if (text) {
               live.committed = liveJoin(live.committed, text)
               live.preview = ''
@@ -6968,6 +6975,9 @@ window.__ModuleLoader__.load({
         var live = voice.live
         var capture = voice.capture
         if (!capture || !capture.tap) return false
+        // 上次定稿之后还没开口（一直是静音）→ 不浪费调用，也别把上一拍预览抹掉
+        var loudIndex = capture.tap.loudIndex()
+        if (loudIndex < 0 || loudIndex <= live.phraseStart) return false
         var length = capture.tap.length()
         var from = Math.max(live.phraseStart, length - 16000 * VOICE_PREVIEW_WINDOW)
         if (length - from < 16000 * 0.5) return false
@@ -6976,16 +6986,20 @@ window.__ModuleLoader__.load({
         liveSend(from, length)
           .then(function (text) {
             if (!live.active) return
+            live.previewFails = 0
             if (text === live.preview) return
+            // 这一拍没识别到内容（窗口里正好都是静音）：留着上一拍的预览，别闪没
+            if (!text) return
             live.preview = text
             liveWrite()
           })
           .catch(function (error) {
             if (!live.active) return
-            // 预览连续失败就不再打扰用户（停止时那条路仍然会出字）
+            // 预览连续失败就不再打扰用户（停止时那条路仍然会出字）；
+            // 阈值给宽一点：偶发一次超时不该把实时字幕整个关掉
             if (error && error.name === 'AbortError') return
             live.previewFails = (live.previewFails || 0) + 1
-            if (live.previewFails >= 3) {
+            if (live.previewFails >= 5) {
               live.disabled = true
               live.reason = 'preview-failed'
               stopLive()

@@ -3785,6 +3785,85 @@ function sliceFunction(text, name) {
     hook.askValue('')
   }
 
+  // ── ⑳ 回归：停顿那几拍"没听清"不能把实时层关掉（用户报的 bug）──────
+  // 症状："实时预览只跟第一句，后面就不吐字了"。
+  // 原因：停顿里的预览窗口是纯静音 → 识别返回空转写（没听清）→ 被当成"失败"计数，
+  //       连挂 3 次就把整个实时层 disable 了。
+  {
+    hook.askValue('')
+    speechTranscriptQueue = [{ ok: true, text: '第一句' }]
+    micButton.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'recording')
+    const context = AudioContextStub.instances[AudioContextStub.instances.length - 1]
+    const tap = context.processors[context.processors.length - 1]
+    feedTap(tap, 1.2, 0.3)
+    await waitVoice(() => hook.voice().live.preview === '第一句', 3000)
+
+    // 连续 5 拍都返回"没听清"（对应停顿里那些纯静音窗口）
+    speechTranscriptRepeat = { ok: false, code: 'empty-transcript', error: '没听清（这段录音里没有识别到内容）' }
+    for (let i = 0; i < 5; i += 1) {
+      feedTap(tap, 0.2, 0.3)
+      hook.voiceTick()
+      await sleep(150)
+    }
+    assert('空转写不算失败：连来 5 拍"没听清"也不关实时层', hook.voice().live.active === true && hook.voice().live.disabled === false, JSON.stringify({ active: hook.voice().live.active, disabled: hook.voice().live.disabled, reason: hook.voice().live.reason }))
+    assert('空结果也不会把上一拍的预览抹掉（不闪没）', hook.voice().live.preview === '第一句' && askBox.value.indexOf('第一句') >= 0, JSON.stringify({ preview: hook.voice().live.preview, value: askBox.value }))
+
+    // 后面的话照样跟着出字（正面用例）
+    speechTranscriptRepeat = { ok: true, text: '第二句照样跟' }
+    feedTap(tap, 1.2, 0.3)
+    await waitVoice(() => hook.voice().live.preview === '第二句照样跟', 3000)
+    // 预览本来就是"这一拍窗口的识别结果"，新文本会替换旧的；而且它随时可能被"停顿定稿"接手
+    //（这里喂完就停手，600ms 后确实会定稿）。这条回归要的是：**实时层还活着、新的话确实进了输入框**。
+    assert(
+      '同一段录音里，后面的话照样跟着出字（实时层没死）',
+      askBox.value.indexOf('第二句照样跟') >= 0 && hook.voice().live.disabled === false && hook.voice().live.reason === '',
+      JSON.stringify({ preview: hook.voice().live.preview, committed: hook.voice().live.committed, value: askBox.value, reason: hook.voice().live.reason }),
+    )
+    speechTranscriptRepeat = null
+    nodes.cancel.dispatch('click', { stopPropagation() {} })
+    await sleep(30)
+    hook.askValue('')
+  }
+
+  // ── ㉑ 真故障连续 5 次才让位；静音窗口根本不发请求 ────────────────
+  {
+    speechTranscriptQueue = [{ ok: true, text: '先定稿一句' }]
+    micButton.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'recording')
+    const context = AudioContextStub.instances[AudioContextStub.instances.length - 1]
+    const tap = context.processors[context.processors.length - 1]
+    feedTap(tap, 1.2, 0.3)
+    await waitVoice(() => hook.voice().live.passes.preview >= 1, 3000)
+
+    // 定稿之后一直是静音：窗口里没有新语音 → 一次调用都不该发
+    speechTranscriptQueue = [{ ok: true, text: '定稿的那句' }]
+    feedTap(tap, 0.9, 0)
+    await waitVoice(() => hook.voice().live.committed !== '', 3000)
+    const callsBefore = speechTranscribeCalls.length
+    feedTap(tap, 1.0, 0)
+    hook.voiceTick()
+    await sleep(250)
+    hook.voiceTick()
+    await sleep(250)
+    assert('定稿后一直静音：不再浪费识别调用（也避免把预览刷没）', speechTranscribeCalls.length === callsBefore && hook.voice().live.disabled === false, `${speechTranscribeCalls.length} vs ${callsBefore}`)
+
+    // 真故障（不是"没听清"）：连续 5 次才让位
+    speechTranscriptRepeat = { ok: false, code: 'failed', error: '识别服务挂了' }
+    for (let i = 0; i < 6; i += 1) {
+      feedTap(tap, 0.25, 0.3)
+      hook.voiceTick()
+      await sleep(180)
+    }
+    assert('真故障连续 5 次才让位（不让偶发一次超时把字幕关掉）', hook.voice().live.disabled === true && hook.voice().live.reason === 'preview-failed', JSON.stringify({ disabled: hook.voice().live.disabled, reason: hook.voice().live.reason }))
+    speechTranscriptRepeat = null
+    speechTranscriptQueue = [{ ok: true, text: '让位之后停止照样出字' }]
+    nodes.stop.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'idle', 3000)
+    assert('让位之后停止仍然出字（整段那条路不受影响）', askBox.value.indexOf('让位之后停止照样出字') >= 0, JSON.stringify(askBox.value))
+    hook.askValue('')
+  }
+
   // ── ⑫ 音频格式：和 host 的 validateWave 同源（纯函数打表）────────
   const helpers = new Function(
     [
