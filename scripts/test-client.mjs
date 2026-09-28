@@ -1044,11 +1044,16 @@ const textEl = new FakeEl('span')
 textEl._text = 'Dev: the migration ran long, so we ship Wednesday. PM: fine, freeze features.'
 container.appendChild(textEl)
 body.appendChild(container)
+/** 选区桩：记下 removeAllRanges 有没有被调用（点「解读」后要把本文档选区收掉）。 */
+const clearedSelections = { count: 0 }
 const selection = {
   isCollapsed: false,
   rangeCount: 1,
   toString: () => 'the migration ran long',
   getRangeAt: () => documentStub.createRange(),
+  removeAllRanges() {
+    clearedSelections.count += 1
+  },
 }
 windowStub.getSelection = () => selection
 documentStub.dispatch('mouseup', { target: body })
@@ -1092,6 +1097,17 @@ const chatLog = Array.from(walk(panel)).find((node) => node.className === 'dsh-s
 const askRow = Array.from(walk(panel)).find((node) => node.className === 'dsh-sel-ask')
 assert('弹窗打开', !!panel && panel.style.display === 'flex')
 assert('弹窗显示选中文字', !!panel && textOf(panel).indexOf('the migration ran long') >= 0)
+// 点完「解读」立刻把本文档选区收掉：留着它，小窗开着时按个方向键又会冒出一个「❝ 引用」，
+// 指的是刚才解读的那段文字（解读要的文字与上下文在 mouseup 那刻就抓好了，见 openForSelection）
+assert('点「解读」后本文档选区被收掉', clearedSelections.count >= 1, `removeAllRanges 调用 ${clearedSelections.count} 次`)
+{
+  const quoteBtnNode = Array.from(walk(mount)).find((n) => String(n.className).indexOf('dsh-sel-quotebtn') >= 0)
+  assert(
+    '点「解读」后引用浮标不出现（旧选区不该复活它）',
+    !quoteBtnNode || quoteBtnNode.style.display === 'none',
+    quoteBtnNode ? String(quoteBtnNode.style.display) : '浮标节点还没建出来（= 没显示）',
+  )
+}
 
 const hook = windowStub.__dshSelectionExplain
 assert('自检钩子可用', !!hook && typeof hook.state === 'function')

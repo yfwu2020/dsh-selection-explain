@@ -161,6 +161,17 @@ function mouseUpOn(node) {
 function clickOn(node) {
   node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
 }
+/**
+ * 像用户那样点一下：mousedown → mouseup → click。
+ * 只派发 click 是"程序化点击"，浏览器不会走聚焦/选区那套默认行为 ——
+ * 而浮标靠 mousedown 的 preventDefault 保住选区，正是那条路要验。
+ */
+function realClick(node) {
+  var opts = { bubbles: true, cancelable: true, view: window, detail: 1 }
+  node.dispatchEvent(new MouseEvent("mousedown", opts))
+  node.dispatchEvent(new MouseEvent("mouseup", opts))
+  node.dispatchEvent(new MouseEvent("click", opts))
+}
 /** 浮标是不是**最上层**（z-index 低于面板时 elementFromPoint 会返回面板）。 */
 function onTop(node) {
   var rect = node.getBoundingClientRect()
@@ -343,6 +354,43 @@ async function main() {
     var docp = document.getElementById('docp')
     var picked8 = await quoteOnce('主界面划词', function () { return { node: docp, needle: 'the migration ran long' } })
     check('主界面引用标成会话里的', !!picked8 && picked8.session === true, picked8 && String(picked8.session))
+  }
+
+  // ⑨ 点「✦ 解读」后立刻收掉本文档选区（用户报的：小窗亮起时旧选区又触发「❝ 引用」浮标）
+  {
+    hook.close()
+    await sleep(80)
+    var planBtn = document.querySelector('.dsh-sel-btn:not(.dsh-sel-quotebtn)')
+    var docp2 = document.getElementById('docp')
+    selectIn(docp2, 'the migration ran long')
+    mouseUpOn(docp2)
+    var planShown = await waitFor(function () {
+      return planBtn && planBtn.style.display !== 'none' && planBtn.getBoundingClientRect().width > 0
+    }, 1500)
+    check('主界面划词：浮出「✦ 解读」', planShown === true, planBtn ? planBtn.style.display : '未找到按钮')
+    if (planShown) {
+      realClick(planBtn)
+      // ⚠️ 这里**同步**检查，一下都不 await：开窗自动聚焦那一下是异步的（要等输入框可见），
+      //    所以"选区这会儿已经没了"只可能是我们自己在点的时候清的 —— 它骗不过这一条。
+      var live = window.getSelection()
+      check(
+        '点「解读」后选区立刻收掉（同步检查，不等聚焦那一下）',
+        !!live && (live.rangeCount === 0 || live.isCollapsed === true),
+        live ? 'rangeCount=' + live.rangeCount + ' collapsed=' + live.isCollapsed : 'null',
+      )
+      check('选区记录也一并作废（不再拿它当"当前选区"）', hook.selection() === null, JSON.stringify(hook.selection()))
+      await sleep(120)
+      check('旧选区没有让「❝ 引用」浮标复活', !onTop(quoteBtn), String(quoteBtn.style.display))
+      // 用户报症状的那一步：小窗亮着时在输入框里按方向键（keyup 会触发一次选区检查）
+      var askBox = document.querySelector('.dsh-sel-askbox')
+      if (askBox) {
+        askBox.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowLeft', bubbles: true }))
+        await sleep(120)
+        check('开窗后按方向键也不再冒出引用浮标', !onTop(quoteBtn), String(quoteBtn.style.display))
+      }
+      hook.close()
+      await sleep(60)
+    }
   }
 
   finish()

@@ -3155,14 +3155,45 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /**
+       * 点完「✦ 解读」就把**本文档**那次选区收掉。
+       *
+       * 为什么必须收：小窗一开，浮标就切成「❝ 引用」，而引用浮标是按"有没有活选区"判定的 ——
+       * 留着解读用的那次选区，用户在小窗里敲字、按一下方向键（keyup 会触发一次检查），
+       * 就会在小窗上方又冒出一个「❝ 引用」，指的是他刚才解读的那段文字，莫名其妙。
+       *
+       * 为什么能安全收掉：解读要的东西**在 mouseup 那一刻就都抓好了** ——
+       * `state.selection` 里存的是文字副本 + **克隆的 Range**，上下文也是从克隆 Range 采的
+       * （checkSelection → openForSelection），之后的请求、缓存 key、展开详解、历史回放、
+       * 升格都不再读活选区。唯一的代价是那行字的高亮没了 —— 而小窗顶部本来就写着选中文字。
+       *
+       * 顺序要紧：必须在 openForSelection **采完上下文之后**调用 —— 万一环境没有 cloneRange，
+       * 那边会退回读活选区（老浏览器），先清就采不到了。
+       */
+      function clearDocSelection() {
+        try {
+          var selection = window.getSelection && window.getSelection()
+          if (selection && typeof selection.removeAllRanges === 'function' && selection.rangeCount > 0) {
+            selection.removeAllRanges()
+          }
+        } catch (error) {
+          /* 桩环境/老浏览器没有 removeAllRanges：留着就留着，不影响主流程 */
+        }
+      }
+
       function openForSelection(selection) {
         // 侧边栏网页里的选区：父页面读不到那个文档，上下文只能由帧内桥就地采好带过来
         if (selection.source === 'iframe') {
           openPanelWith(selection.text, selection.context || '', selection.label, selection.rect, selection.keyContext)
+          // 帧内那条高亮清不掉（不透明源，父页面碰不到它的选区）——只能让浮标自己收着；
+          // 好在帧内的桥按指纹去重，同一条选区不会反复上报。
           return
         }
         var contextInfo = collectContext(selection.range ? rangeSelection(selection.range) : window.getSelection())
         openPanelWith(selection.text, contextInfo.context, contextInfo.label, selection.rect, contextInfo.keyContext)
+        clearDocSelection()
+        // 选区连同它的记录一起作废：之后要引用就重新划一段（那会走 checkQuoteSelection）
+        state.selection = null
       }
 
       /**
