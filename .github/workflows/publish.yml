@@ -94,6 +94,11 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           TGZ="${{ steps.pack.outputs.tgz }}"
           NOTES_FILE="$(mktemp)"
+          # 先把 tag **强制**取回一次：actions/checkout 按 tag 检出时，本地留下的可能是
+          # 一个指向 commit 的**轻量**引用（注解对象没跟过来），此时 %(contents) 会静默回落成
+          # commit message —— v0.4.0 实测踩到（Release 说明变成了提交信息）。
+          # 强制取回会把本地引用换成远端那个 annotated tag 对象，注解就读得到了。
+          git fetch --force --quiet origin "+refs/tags/$TAG:refs/tags/$TAG" || true
           git tag -l --format='%(contents)' "$TAG" > "$NOTES_FILE"
           if [ -s "$NOTES_FILE" ]; then
             NOTES_ARG=(--notes-file "$NOTES_FILE")
