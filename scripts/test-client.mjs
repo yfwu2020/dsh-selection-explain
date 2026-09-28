@@ -3904,6 +3904,55 @@ function sliceFunction(text, name) {
     hook.askValue('')
   }
 
+  // ── ㉓ Esc 分两级：先取消语音，再关窗（+ 开窗聚焦输入框）────────────
+  {
+    // 开窗 → 输入框可见后自动聚焦一次（假 DOM 里 focus 是空实现，这里换成探针）
+    let focused = 0
+    const realFocus = askBox.focus
+    askBox.focus = () => {
+      focused += 1
+    }
+    hook.open('voice-probe', '', 'Esc 语义')
+    await waitVoice(() => hook.state().phase === 'done', 3000)
+    assert('开窗后自动聚焦输入框（键盘用户不用先 Tab）', focused === 1, String(focused))
+
+    // ① 语音进行中按 Esc：只取消这一次语音，面板留着
+    speechTranscriptQueue = [{ ok: true, text: '按 Esc 之前已经在框里的字' }]
+    micButton.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'recording')
+    const context = AudioContextStub.instances[AudioContextStub.instances.length - 1]
+    const tap = context.processors[context.processors.length - 1]
+    feedTap(tap, 1.2, 0.3)
+    await waitVoice(() => hook.voice().live.preview !== '', 3000)
+    const track = micTracks[micTracks.length - 1]
+    documentStub.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} })
+    await sleep(40)
+    assert('语音中按 Esc：录音取消、麦克风松开', hook.voice().phase === 'idle' && track.stopped === true && hook.voice().capture === false, JSON.stringify({ phase: hook.voice().phase, stopped: track.stopped }))
+    assert('语音中按 Esc：面板**留着**（不再顺手关掉整个小窗）', hook.quoteState().panelOpen === true && panel.style.display === 'flex', String(hook.quoteState().panelOpen))
+    assert('语音中按 Esc：这次插进输入框的字按"取消"处理（整块撤掉）', askBox.value === '', JSON.stringify(askBox.value))
+
+    // ② 不录音时再按 Esc：这次才关窗
+    documentStub.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} })
+    await sleep(40)
+    assert('不录音时按 Esc：关窗（两级 Esc 的第二级）', hook.quoteState().panelOpen === false && panel.style.display === 'none', String(hook.quoteState().panelOpen))
+
+    // ③ 提示行还在（feedback）时按 Esc：先收起提示，面板不关
+    micDenied = true
+    hook.open('voice-probe', '', 'Esc 语义')
+    await waitVoice(() => hook.state().phase === 'done', 3000)
+    micButton.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'feedback')
+    documentStub.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} })
+    await sleep(40)
+    assert('失败提示还在时按 Esc：收起提示、面板留着', hook.voice().phase === 'idle' && hook.quoteState().panelOpen === true, JSON.stringify({ phase: hook.voice().phase, open: hook.quoteState().panelOpen }))
+    micDenied = false
+    documentStub.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} })
+    await sleep(40)
+    assert('提示收掉之后再按 Esc 才关窗', hook.quoteState().panelOpen === false, String(hook.quoteState().panelOpen))
+    askBox.focus = realFocus
+    hook.askValue('')
+  }
+
   // ── ⑫ 音频格式：和 host 的 validateWave 同源（纯函数打表）────────
   const helpers = new Function(
     [

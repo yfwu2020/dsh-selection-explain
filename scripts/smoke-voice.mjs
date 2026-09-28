@@ -719,6 +719,30 @@ try {
   console.log('（截图失败：' + String(error.message || error).slice(0, 120) + '）')
 }
 
+// ── Esc 两级 + 开窗聚焦（真按键、真焦点）─────────────────────────────
+async function pressEscape() {
+  const base = { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 }
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', ...base })
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
+}
+
+await cdp.eval(`window.__dshSelectionExplain.open('voice-probe', '', 'Esc 冒烟')`)
+await cdp.waitFor(`window.__dshSelectionExplain.state().phase === 'done'`, 15000)
+const focused = await cdp.waitFor(`document.activeElement && document.activeElement.className.indexOf('dsh-sel-askbox') >= 0`, 5000)
+assert('开窗后输入框自动获得焦点（键盘用户直接就能打字）', focused, await cdp.eval('String(document.activeElement && document.activeElement.className)'))
+
+await clickSelector(cdp, '.dsh-sel-mic')
+await cdp.waitFor(`window.__dshSelectionExplain.voice().phase === 'recording'`, 10000)
+await pressEscape()
+await sleep(400)
+const afterEsc = await cdp.eval(`(() => { const v = window.__dshSelectionExplain.voice(); return { phase: v.phase, capture: v.capture, open: window.__dshSelectionExplain.quoteState().panelOpen, display: getComputedStyle(document.querySelector('.dsh-sel-panel')).display } })()`)
+assert('录音中按 Esc：只取消录音，面板留着（不再顺手关窗）', afterEsc.phase === 'idle' && afterEsc.capture === false && afterEsc.open === true && afterEsc.display !== 'none', JSON.stringify(afterEsc))
+
+await pressEscape()
+await sleep(300)
+const afterEsc2 = await cdp.eval(`window.__dshSelectionExplain.quoteState().panelOpen`)
+assert('不录音时再按 Esc：这才关窗（两级 Esc 的第二级）', afterEsc2 === false, String(afterEsc2))
+
 cdp.close()
 cleanup()
 

@@ -2159,6 +2159,8 @@ window.__ModuleLoader__.load({
        * React 组件只负责把 layer 容器挂进浮层；浮标/面板由上面的命令式代码管理，
        * React 不接管它们的子树（容器本身无 children，不会被 diff 清空）。
        */
+      /** 开窗后"还没聚焦过输入框"（见 focusComposerOnce）。 */
+      var askFocusPending = false
       var offSlot = null
       if (ctx.slots && typeof ctx.slots.inject === 'function') {
         try {
@@ -3501,6 +3503,8 @@ window.__ModuleLoader__.load({
 
       function showPanel(anchor) {
         panelOpen = true
+        // 键盘用户开窗即可打字：这一轮的输入框一旦可见就聚焦一次（见 focusComposerOnce）
+        askFocusPending = true
         // 小窗一开，浮标就换成「❝ 引用」那一套（解读浮标收掉，引用浮标等新选区）
         hideButton()
         hideQuoteButton()
@@ -3715,6 +3719,36 @@ window.__ModuleLoader__.load({
         refreshAskState()
         paintPill()
         keepInsideViewport()
+        focusComposerOnce()
+      }
+
+      /**
+       * 开窗后**只聚焦一次**输入框（键盘用户不用先 Tab 两下）。
+       *
+       * 三个克制的地方：
+       *   · 等输入框真的可见才聚焦（首轮翻译还在跑时它是藏着的，聚焦藏着的元素没意义）；
+       *   · 用户已经在别处打字（主会话输入框、侧边栏…）就**不抢**焦点，并就此作罢；
+       *   · preventScroll：别因为聚焦把页面滚一下（划完词页面跳走最难受）。
+       */
+      function focusComposerOnce() {
+        if (!askFocusPending || !panelOpen) return
+        if (askRow.style.display === 'none') return
+        var active = document.activeElement
+        var inside = active && (active === panel || active === askBox || (panel.contains && panel.contains(active)))
+        if (active && active !== document.body && !inside) {
+          askFocusPending = false // 人家已经在别处打字了，这次开窗就不再抢
+          return
+        }
+        askFocusPending = false
+        try {
+          askBox.focus({ preventScroll: true })
+        } catch (error) {
+          try {
+            askBox.focus()
+          } catch (ignored) {
+            /* 桩环境 */
+          }
+        }
       }
 
       /** 内容变高后把面板拉回视口内。 */
@@ -6065,13 +6099,20 @@ window.__ModuleLoader__.load({
       })
 
       var offKeyDown = listen(document, 'keydown', function (event) {
-        // Esc：**任何时候、一次到位**关掉小窗（不受"有没有追问过"限制）。
-        // closePanel() 内部会顺带收起模型菜单与「最近」侧边栏，所以不再需要"第一下只收侧边栏"那一级。
-        if (event.key === 'Escape' && panelOpen) {
+        if (event.key !== 'Escape' || !panelOpen) return
+        // Esc 分两级，和主会话一致：**先退出正在进行的事，再关窗**。
+        //   ① 语音进行中（录音行还在）→ 只取消这一次语音（等价于点 ✕），面板留着；
+        //   ② 其余情况 → 关掉小窗（一次到位，不受"有没有追问过"限制）。
+        // 以前是一律关窗：正在说一句话时按 Esc 想放弃这句话，结果整个小窗没了。
+        if (captureRow.getAttribute('data-show') === '1') {
           event.preventDefault()
           event.stopPropagation()
-          closePanel()
+          cancelVoice({ discard: true })
+          return
         }
+        event.preventDefault()
+        event.stopPropagation()
+        closePanel()
       }, true)
 
       var offHistory = listen(historyButton, 'click', function (event) {
