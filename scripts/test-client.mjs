@@ -3700,22 +3700,24 @@ function sliceFunction(text, name) {
     assert('整段与实时对不上时：整块替换，并以自检记一笔', askBox.value === '整段识别给的是完全不同的句子' && hook.voice().live.rewritten === true, JSON.stringify({ value: askBox.value, rewritten: hook.voice().live.rewritten }))
   }
 
-  // ── ⑮ ✕ 取消 = 丢弃这次插进去的文字 ─────────────────────────────
+  // ── ⑮ ✕ 取消 = 只停，已经说出来的字留着（用户明确要的语义）──────────
   {
     hook.askValue('手写的一句')
-    speechTranscriptQueue = [{ ok: true, text: '要是丢不掉就糟了' }]
+    speechTranscriptQueue = [{ ok: true, text: '取消之后这句要留着' }]
     micButton.dispatch('click', { stopPropagation() {} })
     await waitVoice(() => hook.voice().phase === 'recording')
     const context = AudioContextStub.instances[AudioContextStub.instances.length - 1]
     const tap = context.processors[context.processors.length - 1]
     feedTap(tap, 1.2, 0.3)
-    await waitVoice(() => hook.voice().live.preview === '要是丢不掉就糟了', 3000)
+    await waitVoice(() => hook.voice().live.preview === '取消之后这句要留着', 3000)
     await waitVoice(() => hook.voice().live.passes.preview >= 1, 500)
-    assert('取消前：预览已经在输入框里', askBox.value.indexOf('要是丢不掉就糟了') >= 0, JSON.stringify(askBox.value))
+    assert('取消前：预览已经在输入框里', askBox.value.indexOf('取消之后这句要留着') >= 0, JSON.stringify(askBox.value))
+    const track = micTracks[micTracks.length - 1]
     nodes.cancel.dispatch('click', { stopPropagation() {} })
     await sleep(40)
-    assert('✕ 取消 = 把这次插进去的文字整块撤掉（手写的那句不动）', askBox.value === '手写的一句', JSON.stringify(askBox.value))
-    assert('取消后实时层关掉', hook.voice().live.active === false && hook.voice().live.text === '', JSON.stringify({ active: hook.voice().live.active, text: hook.voice().live.text }))
+    assert('✕ 取消 = 停录、松开麦克风', hook.voice().phase === 'idle' && hook.voice().capture === false && track.stopped === true, JSON.stringify({ phase: hook.voice().phase, stopped: track.stopped }))
+    assert('✕ 取消 = 已经说出来的字**留着**（连着手写那句一起）', askBox.value === '手写的一句 取消之后这句要留着', JSON.stringify(askBox.value))
+    assert('取消后实时层关掉（不再更新那段文字）', hook.voice().live.active === false, JSON.stringify({ active: hook.voice().live.active }))
   }
 
   // ── ⑯ 失焦 / 收起小窗：录音停下，屏幕上的字留着 ─────────────────
@@ -3929,7 +3931,7 @@ function sliceFunction(text, name) {
     await sleep(40)
     assert('语音中按 Esc：录音取消、麦克风松开', hook.voice().phase === 'idle' && track.stopped === true && hook.voice().capture === false, JSON.stringify({ phase: hook.voice().phase, stopped: track.stopped }))
     assert('语音中按 Esc：面板**留着**（不再顺手关掉整个小窗）', hook.quoteState().panelOpen === true && panel.style.display === 'flex', String(hook.quoteState().panelOpen))
-    assert('语音中按 Esc：这次插进输入框的字按"取消"处理（整块撤掉）', askBox.value === '', JSON.stringify(askBox.value))
+    assert('语音中按 Esc：已经说出来的字留着（取消只停，不删字）', askBox.value.indexOf('按 Esc 之前已经在框里的字') >= 0, JSON.stringify(askBox.value))
 
     // ② 不录音时再按 Esc：这次才关窗
     documentStub.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} })
@@ -3950,6 +3952,68 @@ function sliceFunction(text, name) {
     await sleep(40)
     assert('提示收掉之后再按 Esc 才关窗', hook.quoteState().panelOpen === false, String(hook.quoteState().panelOpen))
     askBox.focus = realFocus
+    hook.askValue('')
+  }
+
+  // ── ㉔ 开窗聚焦的两种情形 + 录音时光标跟着预览走 ────────────────
+  {
+    let focused = 0
+    const realFocus = askBox.focus
+    askBox.focus = () => {
+      focused += 1
+    }
+    const realActive = documentStub.activeElement
+
+    // ① 焦点在浮标上 —— 这就是真实点开小窗时的情形（Chrome 点 <button> 会把焦点给它）
+    hook.close()
+    documentStub.activeElement = new FakeEl('button')
+    hook.open('voice-probe', '', '聚焦')
+    await waitVoice(() => hook.state().phase === 'done', 3000)
+    assert('开窗聚焦：焦点在浮标按钮上时也要把光标交给输入框（真实路径）', focused === 1, String(focused))
+
+    // ② 人家正在别处（主会话输入框）打字 → 不抢
+    hook.close()
+    focused = 0
+    documentStub.activeElement = new FakeEl('textarea')
+    hook.open('voice-probe', '', '聚焦')
+    await waitVoice(() => hook.state().phase === 'done', 3000)
+    assert('开窗聚焦：别人正在别处打字就不抢（那才是真的别打扰）', focused === 0, String(focused))
+
+    // ③ 录音一开始就把光标交给输入框；预览落字后光标停在最新文字后面
+    hook.close()
+    documentStub.activeElement = realActive
+    focused = 0
+    hook.askValue('')
+    speechTranscriptQueue = [{ ok: true, text: '第一拍预览' }]
+    micButton.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'recording')
+    assert('录音开始就把光标交给输入框（不聚焦就看不见光标跳）', focused >= 1, String(focused))
+    const context = AudioContextStub.instances[AudioContextStub.instances.length - 1]
+    const tap = context.processors[context.processors.length - 1]
+    feedTap(tap, 1.2, 0.3)
+    await waitVoice(() => hook.voice().live.preview === '第一拍预览', 3000)
+    assert('预览落字后：光标停在最新文字末尾（会在那里跳）', askBox.selectionStart === askBox.value.length && askBox.value.length > 0, `${askBox.selectionStart}/${askBox.value.length}`)
+
+    // ④ 预览换成更长的一句 → 光标跟着新末尾走
+    speechTranscriptRepeat = { ok: true, text: '第二拍预览更长一些' }
+    feedTap(tap, 1.2, 0.3)
+    hook.voiceTick()
+    await waitVoice(() => hook.voice().live.preview === '第二拍预览更长一些', 3000)
+    assert('预览整段替换时：光标跟到新末尾（不会留在旧位置）', askBox.selectionStart === askBox.value.length, `${askBox.selectionStart}/${askBox.value.length}`)
+
+    // ⑤ 用户自己把光标挪走 → 不再跟着挪（不抢他的位置）
+    speechTranscriptRepeat = { ok: true, text: '第三拍再长一点的预览文字' }
+    askBox.setSelectionRange(0, 0)
+    feedTap(tap, 1.2, 0.3)
+    hook.voiceTick()
+    await sleep(250)
+    assert('用户自己挪了光标之后就不再跟着挪（不跟他抢位置）', askBox.selectionStart === 0, String(askBox.selectionStart))
+
+    speechTranscriptRepeat = null
+    nodes.cancel.dispatch('click', { stopPropagation() {} })
+    await sleep(40)
+    askBox.focus = realFocus
+    documentStub.activeElement = realActive
     hook.askValue('')
   }
 

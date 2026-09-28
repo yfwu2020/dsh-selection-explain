@@ -270,7 +270,9 @@ const server = createServer((req, res) => {
         await proxy(req, res, pathname)
         return
       }
-      json(res, { ok: true, available: true, reason: '', error: '', providers: [{ id: 'fixture', name: 'Fixture', location: 'cloud', languages: ['auto'], downloadSources: [], phase: 'ready' }], selection: { providerId: 'fixture', language: 'auto' }, limits: { maxSeconds: 60, maxBytes: 4194304 } })
+      // 夹具替身 = 本机识别器（location 必须是 host-local：写成 cloud 会被"云端不做实时预览"那条闸门关掉，
+      // 于是降级模式下实时字幕整层不工作，报出来的错会指向完全无关的地方）
+      json(res, { ok: true, available: true, reason: '', error: '', providers: [{ id: 'fixture', name: 'Fixture', location: 'host-local', languages: ['auto'], downloadSources: [], phase: 'ready' }], selection: { providerId: 'fixture', language: 'auto' }, limits: { maxSeconds: 60, maxBytes: 4194304 } })
       return
     }
     res.writeHead(404, { 'content-type': 'text/plain' })
@@ -576,6 +578,15 @@ assert(
 )
 assert('真浏览器：恢复成短草稿后又缩回去（不会一直占着高度）', layout.restored.clientHeight <= 40, JSON.stringify(layout.restored))
 
+// 光标：录音时焦点在输入框里、光标停在最新文字末尾（否则看不见"光标在跳"）
+const caret = await cdp.eval(`(() => {
+  const box = document.querySelector('.dsh-sel-askbox')
+  const focused = document.activeElement === box
+  return { focused, start: box.selectionStart, end: box.selectionEnd, length: box.value.length }
+})()`)
+assert('录音时输入框有焦点（textarea 没焦点就不画光标）', caret.focused === true, JSON.stringify(caret))
+assert('光标停在最新文字末尾（预览落字时它跟着往后跳）', caret.start === caret.length && caret.end === caret.length && caret.length > 0, JSON.stringify(caret))
+
 // 录音中留一张图：录音行（✕ / 波形 / ■）+ 输入框里跟着长出来的字（README 的演示图就是它）
 try {
   const file = await shotPanel(cdp, process.env.SMOKE_SHOT_RECORDING || join(tmpdir(), 'dsh-voice-smoke-recording.png'))
@@ -726,17 +737,28 @@ async function pressEscape() {
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
 }
 
-await cdp.eval(`window.__dshSelectionExplain.open('voice-probe', '', 'Esc 冒烟')`)
+await cdp.eval(`(() => {
+  // 先造一个 <button> 并把焦点给它：真实路径上点浮标就是这个情形
+  //（Chrome 点按钮会把焦点交给按钮，早先的"焦点不在面板里就不抢"就是这么把自己挡住的）
+  const probe = document.createElement('button')
+  probe.id = 'smoke-focus-probe'
+  document.body.appendChild(probe)
+  probe.focus()
+  window.__dshSelectionExplain.close()
+  window.__dshSelectionExplain.open('voice-probe', '', 'Esc 冒烟')
+  return document.activeElement.id
+})()`)
 await cdp.waitFor(`window.__dshSelectionExplain.state().phase === 'done'`, 15000)
 const focused = await cdp.waitFor(`document.activeElement && document.activeElement.className.indexOf('dsh-sel-askbox') >= 0`, 5000)
-assert('开窗后输入框自动获得焦点（键盘用户直接就能打字）', focused, await cdp.eval('String(document.activeElement && document.activeElement.className)'))
+assert('焦点在按钮上时开窗，输入框照样拿到焦点（真实路径）', focused, await cdp.eval('String(document.activeElement && document.activeElement.className)'))
 
 await clickSelector(cdp, '.dsh-sel-mic')
 await cdp.waitFor(`window.__dshSelectionExplain.voice().phase === 'recording'`, 10000)
 await pressEscape()
 await sleep(400)
-const afterEsc = await cdp.eval(`(() => { const v = window.__dshSelectionExplain.voice(); return { phase: v.phase, capture: v.capture, open: window.__dshSelectionExplain.quoteState().panelOpen, display: getComputedStyle(document.querySelector('.dsh-sel-panel')).display } })()`)
+const afterEsc = await cdp.eval(`(() => { const v = window.__dshSelectionExplain.voice(); const box = document.querySelector('.dsh-sel-askbox'); return { phase: v.phase, capture: v.capture, value: box ? box.value : '', open: window.__dshSelectionExplain.quoteState().panelOpen, display: getComputedStyle(document.querySelector('.dsh-sel-panel')).display } })()`)
 assert('录音中按 Esc：只取消录音，面板留着（不再顺手关窗）', afterEsc.phase === 'idle' && afterEsc.capture === false && afterEsc.open === true && afterEsc.display !== 'none', JSON.stringify(afterEsc))
+assert('录音中按 Esc：已经说出来的字留着（取消只停，不删字）', afterEsc.value.trim().length > 0, JSON.stringify(afterEsc.value))
 
 await pressEscape()
 await sleep(300)

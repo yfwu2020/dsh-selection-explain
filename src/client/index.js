@@ -3732,14 +3732,31 @@ window.__ModuleLoader__.load({
        */
       function focusComposerOnce() {
         if (!askFocusPending || !panelOpen) return
-        if (askRow.style.display === 'none') return
+        if (!composerVisible()) return
         var active = document.activeElement
         var inside = active && (active === panel || active === askBox || (panel.contains && panel.contains(active)))
-        if (active && active !== document.body && !inside) {
-          askFocusPending = false // 人家已经在别处打字了，这次开窗就不再抢
+        // 只有"人家正在别处打字"才值得让路。
+        // 注意别把普通的按钮焦点也算进去：点浮标时焦点正好落在浮标那个 <button> 上
+        //（Chrome 点按钮会给它焦点），照"非 body 就不抢"的老写法会把我们自己挡在门外 ——
+        // 这正是"开窗后没有自动聚焦"的原因。
+        if (!inside && isTypingTarget(active)) {
+          askFocusPending = false // 人家真的在别处打字，这次开窗就不再抢
           return
         }
         askFocusPending = false
+        focusAskBox()
+      }
+
+      /** 正在打字的地方（input / textarea / 可编辑区）—— 只有这种焦点值得让路。 */
+      function isTypingTarget(node) {
+        if (!node || node === askBox) return false
+        var tag = String(node.tagName || '').toLowerCase()
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return true
+        return node.isContentEditable === true
+      }
+
+      /** 把光标交给输入框（preventScroll：别因为聚焦把页面滚一下）。 */
+      function focusAskBox() {
         try {
           askBox.focus({ preventScroll: true })
         } catch (error) {
@@ -3749,6 +3766,19 @@ window.__ModuleLoader__.load({
             /* 桩环境 */
           }
         }
+      }
+
+      /** 输入框这会儿真的看得见吗（藏着的元素聚焦没有意义）。 */
+      function composerVisible() {
+        if (!askRow || askRow.style.display === 'none') return false
+        if (typeof askBox.getBoundingClientRect !== 'function') return true
+        try {
+          var rect = askBox.getBoundingClientRect()
+          if (rect && rect.width === 0 && rect.height === 0) return false
+        } catch (error) {
+          /* noop */
+        }
+        return true
       }
 
       /** 内容变高后把面板拉回视口内。 */
@@ -6101,13 +6131,13 @@ window.__ModuleLoader__.load({
       var offKeyDown = listen(document, 'keydown', function (event) {
         if (event.key !== 'Escape' || !panelOpen) return
         // Esc 分两级，和主会话一致：**先退出正在进行的事，再关窗**。
-        //   ① 语音进行中（录音行还在）→ 只取消这一次语音（等价于点 ✕），面板留着；
+        //   ① 语音进行中（录音行还在）→ 只取消这一次语音（等价于点 ✕，已经说出来的字留着），面板留着；
         //   ② 其余情况 → 关掉小窗（一次到位，不受"有没有追问过"限制）。
         // 以前是一律关窗：正在说一句话时按 Esc 想放弃这句话，结果整个小窗没了。
         if (captureRow.getAttribute('data-show') === '1') {
           event.preventDefault()
           event.stopPropagation()
-          cancelVoice({ discard: true })
+          cancelVoice()
           return
         }
         event.preventDefault()
@@ -6327,7 +6357,7 @@ window.__ModuleLoader__.load({
         waveSvg.style.display = recording ? '' : 'none'
         voiceActivity.style.display = recording ? 'none' : 'flex'
         voiceStop.style.display = recording ? 'inline-grid' : 'none'
-        voiceCancel.title = phase === 'feedback' ? '关闭（Esc）' : '取消（Esc）'
+        voiceCancel.title = phase === 'feedback' ? '关闭（Esc）' : '取消这次语音（Esc，已经说出来的字留着）'
         voiceCancel.setAttribute('aria-label', voiceCancel.title)
         // 🎤 触发键的状态：只在"请求权限"时转圈（其余都是普通图标 —— 和主会话一致）
         micButton.setAttribute('data-state', phase === 'requesting' ? 'requesting' : 'idle')
@@ -6752,6 +6782,11 @@ window.__ModuleLoader__.load({
       }
 
       /** 录音中的心跳：到点自动收尾 + 记一次电平（波形另有自己的 50ms 循环）。 */
+      /** 录音开始时把光标交给输入框：预览落字时光标要在末尾跳（textarea 没焦点就不显示光标）。 */
+      function focusAskForRecording() {
+        focusAskBox()
+      }
+
       function startVoiceTicker() {
         stopVoiceTicker()
         voice.ticker = setInterval(function () {
@@ -6882,12 +6917,15 @@ window.__ModuleLoader__.load({
         if (start < 0) start = caretIndex()
         var end = previous ? start + previous.length : start
         var caret = typeof askBox.selectionStart === 'number' ? askBox.selectionStart : end
+        // 光标原本就贴在这段文字的末尾（= 用户没在改这段，只是在看）→ 跟着最新文字走，
+        // 这样光标一直在新冒出来的字后面跳；用户把光标挪到别处（或在后面打字）就原位保留。
+        var atBlockEnd = previous ? caret === end : caret === start
         var next = liveCompose()
         askBox.value = value.slice(0, start) + next + value.slice(end)
         live.start = next ? start : -1
         live.text = next
         var moved = next.length - previous.length
-        var nextCaret = caret >= end ? caret + moved : caret
+        var nextCaret = atBlockEnd ? start + next.length : caret > end ? caret + moved : caret
         if (nextCaret < 0) nextCaret = 0
         if (nextCaret > askBox.value.length) nextCaret = askBox.value.length
         try {
@@ -6899,38 +6937,7 @@ window.__ModuleLoader__.load({
         return true
       }
 
-      /** 从输入框里把我们这段整块撤掉（内容没被改过才撤；改过就留着，不跟用户抢字）。 */
-      function liveDiscard() {
-        var live = voice.live
-        var value = String(askBox.value || '')
-        var text = live.text
-        var start = live.start
-        if (text) {
-          if (value.indexOf(text) >= 0) start = value.indexOf(text)
-          else if (!(start >= 0 && value.slice(start, start + text.length) === text)) {
-            stopLive()
-            return false
-          }
-          if (start >= 0) {
-            askBox.value = value.slice(0, start) + value.slice(start + text.length)
-            var caret = Math.min(start, askBox.value.length)
-            try {
-              askBox.setSelectionRange(caret, caret)
-            } catch (error) {
-              /* noop */
-            }
-            refreshAskState()
-          }
-        }
-        stopLive()
-        // 撤掉之后这一段就不存在了：状态一起清空（否则停止时还会去和一个已经没有的段落对齐）
-        live.text = ''
-        live.start = -1
-        live.committed = ''
-        live.preview = ''
-        return true
-      }
-
+      
       function stopLive() {
         var live = voice.live
         live.active = false
@@ -7214,6 +7221,8 @@ window.__ModuleLoader__.load({
               resetWave()
               setVoiceActivity('', {})
               paintVoice()
+              // 光标交给输入框：实时字幕落字时要看见光标在末尾跳（textarea 没焦点就不画光标）
+              focusAskForRecording()
               startVoiceTicker()
               // 实时字幕：说话时字就往输入框里长（拿不到采样水龙头就自动退回"停止后出字"）
               startLive(capture)
@@ -7333,10 +7342,10 @@ window.__ModuleLoader__.load({
         voice.abort = null
         if (voice.pollTimer) clearTimeout(voice.pollTimer)
         voice.pollTimer = 0
-        // 实时字幕：✕ 取消 = 把这次插进输入框的文字整块撤掉（"丢弃识别文字"）；
-        // 其它中断（失焦 / 收起小窗 / 这条消息发出去）**留着屏幕上的字**，只是不再更新。
-        if (opts.discard) liveDiscard()
-        else stopLive()
+        // 取消 = 只停（不再更新那段实时文字），**已经说出来的字一律留着**。
+        // 早先跟着主会话的 ✕ 做过"丢弃识别文字"，实际用起来是"我按了取消，字没了" ——
+        // 录到一半反悔时更常见的诉求是"留着我已经说出来的"，所以统一成都留。
+        stopLive()
         if (capture) capture.dispose()
         resetVoiceRow()
         // 少数情况下要交代一句（例如"这条消息先发出去了"）：留在 feedback 里，2 秒后自己回 idle
@@ -7418,9 +7427,9 @@ window.__ModuleLoader__.load({
       })
       var offVoiceCancel = listen(voiceCancel, 'click', function (event) {
         event.stopPropagation()
-        // feedback 阶段点 ✕ 只是"关掉这条提示"，其余阶段是取消录音/识别。
-        // 录音中按 ✕ = 丢弃这次已经插进输入框的文字（主会话那个 ✕ 也是这个语义）。
-        cancelVoice({ discard: true })
+        // feedback 阶段点 ✕ 只是"关掉这条提示"，其余阶段是取消这次录音/识别。
+        // 取消**不删字**：已经说出来的（含半句预览）一律留在输入框里。
+        cancelVoice()
       })
       var offVoiceStop = listen(voiceStop, 'click', function (event) {
         event.stopPropagation()

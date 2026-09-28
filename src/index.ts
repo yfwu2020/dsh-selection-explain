@@ -2634,12 +2634,13 @@ export function apply(ctx: Context, rawConfig: Config): void {
           ...(sessionId ? { sessionId: sessionId as never } : {}),
           system: undefined,
           messages: [
+            // 只传正文：当前 dsh-llm 的 createSystemMessage(text) 只收一个参数，
+            // SystemMessage 也没有 name 字段（旧的第二参数是历史遗留，传了也会被忽略）。
             createSystemMessage(
               wrapUp
                 ? `${systemPrompt}\n\n【收尾】工具轮次已用完：直接基于已经拿到的信息给出结论，不要再请求工具，也不要复述查询过程。` +
                     '正文里不要出现任何工具调用格式（包括 DeepSeek 的 DSML 写法，如 invoke/parameter 标记）——那些会被当作乱码展示给用户。'
                 : systemPrompt,
-              name,
             ),
             ...(round === 0 ? [baseMessage, ...openingMessages] : [baseMessage, ...openingMessages, ...toolMessages]),
           ],
@@ -2875,7 +2876,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
               ...(sessionId ? { sessionId: sessionId as never } : {}),
               system: undefined,
               messages: [
-                createSystemMessage(systemPrompt, name),
+                createSystemMessage(systemPrompt),
                 createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: conclusionUser }] }),
               ],
               ...(config.temperature >= 0 ? { temperature: config.temperature } : {}),

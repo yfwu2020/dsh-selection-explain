@@ -16,8 +16,10 @@ cd "$ROOT"
 probe() {
   local base="${1:-}"
   [ -n "$base" ] || return 1
-  if [ -d "$base/@deepseek-ai/dsh-llm" ]; then echo "$base"; return 0; fi
-  if [ -d "$base/node_modules/@deepseek-ai/dsh-llm" ]; then echo "$base/node_modules"; return 0; fi
+  # 同时要 dsh-llm 和 cordis：过期链接可能只剩一个 dsh-llm（实测踩过——tsc 报
+  # "Cannot find module '@deepseek-ai/cordis'"，构建失败还会**静默跳过 client 拷贝**，测试于是拿旧 lib 跑出假结果）
+  if [ -d "$base/@deepseek-ai/dsh-llm" ] && [ -d "$base/@deepseek-ai/cordis" ]; then echo "$base"; return 0; fi
+  if [ -d "$base/node_modules/@deepseek-ai/dsh-llm" ] && [ -d "$base/node_modules/@deepseek-ai/cordis" ]; then echo "$base/node_modules"; return 0; fi
   return 1
 }
 
