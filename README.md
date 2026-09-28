@@ -479,9 +479,15 @@ git tag v0.2.0 && git push origin v0.2.0
 
 npm 侧只需配一次：包设置 → **Trusted Publisher** → GitHub Actions，填 `yfwu2020` / `dsh-selection-explain` / `publish.yml`，并勾选允许 **`npm publish`**（默认只允许 `npm stage publish`）。
 
-> 注意：`devDependencies` 里的 `@deepseek-ai/*` 钉在 **`0.1.5-rc.3`**（与插件开发所依据的运行时一致）。
+> 注意：`devDependencies` 里的 `@deepseek-ai/*` 钉在 **`0.1.5-rc.3`**（CI 构建校验用的就是这份类型）。
 > npm 上这些包的 `latest` 还停在 `0.0.1-rc.x`，API 更旧（缺 `WebServer`、`createSystemMessage` 等），
 > 用 `latest` 会编译失败——升级运行时时要同步改这里。
+>
+> **本机运行时通常比它新**（如 `0.1.7-rc.2`），两者 API 会漂移：例如 `createSystemMessage` 在
+> `0.1.5-rc.3` 是 `(text, plugin)` 两个必填参数，在 `0.1.7-rc.x` 只剩 `(text)`。此时**别只按本机类型写**，
+> 走一层宽松别名兼容两边（见 `src/index.ts` 的 `systemMessageOf`）——v0.4.0 就是漏了这一步，
+> 本机构建全绿、CI 构建报 TS2554，整条发布卡在第一步（与 Trusted Publisher 无关）。
+> 想提前发现：把仓库复制到临时目录、`npm install --no-save`（会装到 `0.1.5-rc.3`）再 `bash scripts/build.sh`。
 
 ## 目录
 
