@@ -538,6 +538,44 @@ assert(
   JSON.stringify({ value: liveState.value, preview: liveState.live.preview }).slice(0, 200),
 )
 
+// 输入框自适应拉伸：真浏览器里量一次（多行要撑开、超长要内部滚动并停在最新一行）
+const layout = await cdp.eval(`(() => {
+  const box = document.querySelector('.dsh-sel-askbox')
+  const NL = String.fromCharCode(10) // 换行符：这段代码写在 Node 的模板字符串里，反斜杠转义会被提前吃掉
+  const read = () => {
+    const style = getComputedStyle(box)
+    return {
+      clientHeight: box.clientHeight,
+      scrollHeight: box.scrollHeight,
+      height: box.style.height,
+      overflowY: style.overflowY,
+      atBottom: box.scrollTop + box.clientHeight >= box.scrollHeight - 2,
+    }
+  }
+  const saved = box.value
+  box.value = ['第一行', '第二行', '第三行', '第四行'].join(NL)
+  box.dispatchEvent(new Event('input', { bubbles: true }))
+  const grown = read()
+  box.value = Array.from({ length: 40 }, (_, i) => '第 ' + (i + 1) + ' 行').join(NL)
+  box.dispatchEvent(new Event('input', { bubbles: true }))
+  const capped = read()
+  box.value = saved
+  box.dispatchEvent(new Event('input', { bubbles: true }))
+  return { grown, capped, restored: read() }
+})()`)
+assert(
+  '真浏览器：四行草稿把输入框撑开、下面的字没被裁掉',
+  layout.grown.clientHeight >= 70 && layout.grown.clientHeight > 30 && layout.grown.scrollHeight <= layout.grown.clientHeight + 2,
+  JSON.stringify(layout.grown),
+)
+assert(
+  '真浏览器：超过上限（132px）改成内部滚动，并且停在最新一行',
+  // 132px 是内容上限，加上 padding-top 4px = 136；超过就内部滚动，并且停在最新一行
+  layout.capped.clientHeight <= 140 && layout.capped.scrollHeight > layout.capped.clientHeight && layout.capped.overflowY === 'auto' && layout.capped.atBottom === true,
+  JSON.stringify(layout.capped),
+)
+assert('真浏览器：恢复成短草稿后又缩回去（不会一直占着高度）', layout.restored.clientHeight <= 40, JSON.stringify(layout.restored))
+
 // 录音中留一张图：录音行（✕ / 波形 / ■）+ 输入框里跟着长出来的字（README 的演示图就是它）
 try {
   const file = await shotPanel(cdp, process.env.SMOKE_SHOT_RECORDING || join(tmpdir(), 'dsh-voice-smoke-recording.png'))

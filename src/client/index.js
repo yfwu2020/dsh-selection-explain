@@ -400,7 +400,10 @@ window.__ModuleLoader__.load({
       'border-radius:22px;border:1px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));',
       'background:var(--dsw-alias-bg-base,transparent)}',
       '.dsh-sel-ask:focus-within{border-color:var(--sel-a1,#0d9488)}',
-      '.dsh-sel-askbox{width:100%;min-height:26px;max-height:96px;overflow-y:auto;resize:none;padding:4px 0 0;',
+      // 高度由 JS 跟着内容长（autoGrowAskBox）：textarea 自己只会缩在 rows=1 的高度里，
+      // 换行之后下面的字就被裁掉了（语音输入时最明显 —— 字是自己长出来的，用户根本没在敲键盘）。
+      // 这里给个上限：过了就内部滚动，面板不会被一段长文顶穿。
+      '.dsh-sel-askbox{width:100%;min-height:26px;max-height:132px;overflow-y:hidden;resize:none;padding:4px 0 0;',
       'border:0;background:transparent;color:inherit;font:inherit;font-size:13px;line-height:1.5;outline:none}',
       // 引用区（composer 第一行之上）：每段一张小卡片，来源一行小字 + 内容一行（超出省略）+ 右侧 ✕。
       // 卡片是**待发送**的引用，发送后整片清空 —— 它属于"这条消息"，不属于会话。
@@ -3505,6 +3508,8 @@ window.__ModuleLoader__.load({
         panel.style.display = 'flex'
         panel.style.left = '0px'
         panel.style.top = '0px'
+        // 面板刚显示出来才量得到 scrollHeight：草稿里原来的几行要立刻撑开
+        autoGrowAskBox()
         var width = panel.offsetWidth
         var height = panel.offsetHeight
         var left = anchor ? anchor.left : window.innerWidth / 2 - width / 2
@@ -4774,7 +4779,39 @@ window.__ModuleLoader__.load({
        * 发送键 = 「发送」还是「停止」：生成中变成方形停止键（点了打断这次输出），
        * 空闲时是上箭头发送键（空输入才禁用）。
        */
+      /**
+       * 输入框跟着内容长高（到 132px 为止，再高就内部滚动）。
+       *
+       * textarea 的**高度由 rows 决定**，内容换行它不会自己长 —— 不补这一步，第二行起
+       * 下面的字就被裁掉了。语音输入的实时字幕最吃亏：字是边说边自己长出来的，
+       * 用户根本没在敲键盘，也就不会想到去拖那个框。
+       * 超过上限时把最新那几行滚进视野（实时落字时光标一直在末尾）。
+       */
+      function autoGrowAskBox() {
+        if (!askBox || !askBox.style) return
+        var cap = 132
+        // 先松开高度再量，否则量到的是上一次的高度（经典递归式变高）
+        askBox.style.height = 'auto'
+        var content = typeof askBox.scrollHeight === 'number' ? askBox.scrollHeight : 0
+        if (content > 0) {
+          askBox.style.height = Math.min(content, cap) + 'px'
+          askBox.style.overflowY = content > cap ? 'auto' : 'hidden'
+        } else {
+          // 量不到内容（面板收着 / DOM 桩）：交回 CSS 的 min-height
+          askBox.style.height = ''
+          askBox.style.overflowY = ''
+        }
+        try {
+          if (content > cap) askBox.scrollTop = askBox.scrollHeight
+        } catch (error) {
+          /* 桩环境没有 scrollTop 语义 */
+        }
+        // 长高之后面板可能顶出视口：拉回来（面板没开时它自己会早退）
+        keepInsideViewport()
+      }
+
       function refreshAskState() {
+        autoGrowAskBox()
         var generating = isGenerating()
         var mode = generating ? 'stop' : 'send'
         if (askSend.getAttribute('data-mode') !== mode) {
@@ -6017,6 +6054,8 @@ window.__ModuleLoader__.load({
       var offResize = listen(window, 'resize', function () {
         hideButton()
         hideQuoteButton()
+        // 宽度变了 → 换行位置变了 → 输入框高度要重量（否则会是按旧宽度算出来的高度）
+        autoGrowAskBox()
         // 拖窗口变小后，面板本身也要拉回视口内（否则历史列表会跟着算到屏幕外）
         keepInsideViewport()
         if (historyList.style.display === 'flex') placeHistoryList()

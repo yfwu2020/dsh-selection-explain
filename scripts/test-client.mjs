@@ -3864,6 +3864,46 @@ function sliceFunction(text, name) {
     hook.askValue('')
   }
 
+  // ── ㉒ 输入框自适应拉伸（用户报：换行后下面的字看不见）────────────────
+  // 桩里的 scrollHeight 是可控的：直接改它再触发一次刷新，就是"内容变高了"。
+  {
+    const box = askBox
+    const originalScrollHeight = Object.getOwnPropertyDescriptor(box, 'scrollHeight')
+    box.value = ''
+    // 一行：高度=内容高度（和 CSS 的 min-height 一致），且不该出现滚动条
+    box.scrollHeight = 26
+    hook.askValue('一行')
+    assert('输入框：一行内容时高度就是内容高（不出滚动条）', box.style.height === '26px' && box.style.overflowY === 'hidden', JSON.stringify({ height: box.style.height, overflow: box.style.overflowY }))
+    box.scrollHeight = 78
+    hook.askValue('第一行\n第二行\n第三行')
+    assert('输入框：多行了就自己长高（高度=内容高）', box.style.height === '78px' && box.style.overflowY === 'hidden', JSON.stringify({ height: box.style.height, overflow: box.style.overflowY }))
+
+    box.scrollHeight = 400
+    hook.askValue('很多行'.repeat(80))
+    assert('输入框：到上限（132px）就停住、改成内部滚动', box.style.height === '132px' && box.style.overflowY === 'auto', JSON.stringify({ height: box.style.height, overflow: box.style.overflowY }))
+    assert('输入框：超过上限时自动滚到最新一行（语音输入一直在末尾加字）', box.scrollTop === 400, String(box.scrollTop))
+
+    // 语音输入落字 → 也会走同一条自适应（liveWrite → refreshAskState）
+    box.scrollHeight = 104
+    hook.askValue('')
+    speechTranscriptQueue = [{ ok: true, text: '这一句会比较长，长到换行以后还能看得见' }]
+    micButton.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'recording')
+    const context = AudioContextStub.instances[AudioContextStub.instances.length - 1]
+    const tap = context.processors[context.processors.length - 1]
+    feedTap(tap, 1.2, 0.3)
+    box.scrollHeight = 104
+    await waitVoice(() => hook.voice().live.preview !== '', 3000)
+    assert('语音输入落字时输入框同样跟着长高', box.style.height === '104px', JSON.stringify({ height: box.style.height, value: box.value }))
+    nodes.cancel.dispatch('click', { stopPropagation() {} })
+    await sleep(30)
+
+    // 恢复桩的 scrollHeight 语义（后面的用例还要用）
+    box.scrollHeight = 0
+    if (originalScrollHeight) Object.defineProperty(box, 'scrollHeight', originalScrollHeight)
+    hook.askValue('')
+  }
+
   // ── ⑫ 音频格式：和 host 的 validateWave 同源（纯函数打表）────────
   const helpers = new Function(
     [
