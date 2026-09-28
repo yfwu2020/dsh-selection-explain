@@ -73,13 +73,17 @@
 | 操作 | 结果 |
 | --- | --- |
 | 点一下 🎤 | 工具行换成**录音行**：`✕` 取消 · **实时波形**（跟着说话强弱） · `■` 停止 |
-| 再说一句 / 点 `■` / 到了 60 秒 | 结束录音 → 识别（其间显示「识别中…」+ 呼吸点）→ **文字插进输入框**（不是直接发送） |
-| 点 `✕` / 按 `Esc` / 收起小窗 / 切走这个窗口 | 立刻取消，并且**松开麦克风**（不会留下"正在使用麦克风"的标识） |
-| 录音中把这条消息发出去了 | 正在录的那段自动收掉（已经识别出来的文字不受影响） |
+| **说话的时候** | **字就跟着往输入框里长**：半句预览（说了 1 秒多就出字，之后每 ~1.3 秒刷新）+ 停顿定稿（停 0.6 秒算这句说完，定稿的字不再变） |
+| 点 `■` / 到了 60 秒 | 结束录音 → 整段再识别一次做收口（这段时间显示「识别中…」+ 呼吸点） |
+| 点 `✕` | 取消，并且把**这次插进输入框的文字整块撤掉**（"丢弃识别文字"） |
+| 按 `Esc` / 收起小窗 / 切走这个窗口 | 停录、**松开麦克风**（不会留下"正在使用麦克风"的标识），屏幕上已有的字留着 |
+| 录音中把这条消息发出去了 | 停止录音（已经写进输入框的字跟着这条消息发出去） |
 
-<img src="assets/voice.png" alt="录音中的小窗：工具行换成「✕ 取消 · 实时波形 · ■ 停止」，右侧发送键原位不动" width="540">
+<img src="assets/voice.png" alt="录音中的小窗：工具行是「✕ 取消 · 实时波形 · ■ 停止」，输入框里已经跟着长出了文字" width="540">
 
 - **插进去，不是发出去**：识别结果落在光标处，可以和已经写了一半的话接着拼、改错字、再补第二段。识别有错字是常态，能改才有用。
+- **实时字幕是"预览 + 定稿"两层**：说的过程中每 ~1.3 秒把没说完的半句送去识别一次，半句预览**整段替换**上一拍（窗口固定 ≤10 秒，所以说到第 40 秒也不会变慢）；停 0.6 秒就算这句说完，送一次识别后**定稿**，之后不再变。点 `■` 结束时用整段录音再识别一次收口——**整段结果以已定稿的文字开头就只补后半句，定稿的字一个不动**（对不上才整块替换）。
+- **实时字幕只在本地识别器上默认开**：每一拍都是一次识别调用，本机模型不花钱、只占点 CPU（实测 8 秒窗口约 0.2 秒）；云端识别器按次计费，不做预览。拿不到麦克风原始采样（老浏览器）、或你手动改了预览那半句，就自动退回"停止后出字"。
 - **音频不落盘、不进会话**：录到的音频只在这一次识别里用一下，host 转写完即丢——不会写进 `~/.dsh`，也不会出现在会话记录里。
 - **识别在 host 上做**（装了本地 SenseVoice 就是**在你机器上**）：音频不出机器；识别器走 DSH 的语音识别服务，本机模型 / 云端服务都能用。
 - **出错留在录音行里说清是哪一种**：没授权 / 没麦克风设备 / 浏览器不支持 / 没启用识别服务 / 录音太长 / 没听清——各给一句原因 + 一个行内动作（🎤 重录，或模型没准备好时的 **`准备模型`** 按钮，下载在 host 上跑、关掉面板也继续）。按 `✕` 就收起、工具行原样还回来。
@@ -299,7 +303,8 @@ window.__dshSelectionExplain.quotes()    // 待发送的引用：[{ id, label, t
 window.__dshSelectionExplain.quote('某段文字', '主界面选中') // 手工加一段引用（等价于点浮标）
 window.__dshSelectionExplain.compose()   // 引用 + 提问拼出来的那条消息原文（发给模型的就是它）
 window.__dshSelectionExplain.quoteState() // 引用浮标：{ visible, selection:{text,label,source}, panelOpen }
-window.__dshSelectionExplain.voice()        // 语音输入：{ phase:'idle'|'requesting'|'recording'|'transcribing'|'feedback', capture, activity, dot, waveform, stop, action, bars, lastText, catalog }
+window.__dshSelectionExplain.voice()        // 语音输入：{ phase, capture, activity, dot, waveform, stop, action, bars, lastText, catalog, live:{ active, committed, preview, passes, rewritten, tap } }
+window.__dshSelectionExplain.voiceTick()    // 手动催一拍实时字幕（测试用，不用等 1.3 秒节流）
 window.__dshSelectionExplain.voiceNode()    // 🎤 触发键节点（无头环境里可能挂了两棵树，用它拿真正带监听的那个）
 window.__dshSelectionExplain.voiceNodes()   // 录音行的各部件：{ row, cancel, wave, activity, action, stop }
 window.__dshSelectionExplain.askValue()     // 读追问输入框（传参即写入），用来验"转写文字插进去了"

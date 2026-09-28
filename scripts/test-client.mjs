@@ -281,6 +281,10 @@ let speechCatalog = {
 }
 /** 下一次转写的返回（测试里逐条改成失败 / 空 / 正常）。 */
 let speechTranscript = { ok: true, text: '这段是语音转出来的问题', providerId: 'sensevoice-local', seconds: 2.4 }
+/** 按顺序取用的返回（实时字幕一次录音要发好几个请求：预览 / 定稿 / 最终整段）。 */
+let speechTranscriptQueue = []
+/** 粘住的返回：一直返回同一个（模拟"人还在说，每拍预览都该是这句"）。 */
+let speechTranscriptRepeat = null
 let speechCatalogCalls = 0
 let speechPrepareCalls = 0
 const speechTranscribeCalls = []
@@ -481,9 +485,8 @@ const routeFetch = (input, init) => {
         payload = { parse_error: String(error) }
       }
       speechTranscribeCalls.push(payload)
-      return Promise.resolve(
-        new Response(JSON.stringify(speechTranscript), { headers: { 'content-type': 'application/json' } }),
-      )
+      const scripted = speechTranscriptRepeat || (speechTranscriptQueue.length ? speechTranscriptQueue.shift() : speechTranscript)
+      return Promise.resolve(new Response(JSON.stringify(scripted), { headers: { 'content-type': 'application/json' } }))
     }
     if (url.indexOf('/prepare') >= 0) {
       speechPrepareCalls += 1
@@ -3369,7 +3372,18 @@ function sliceFunction(text, name) {
     constructor() {
       this.state = 'running'
       this.closed = false
+      /** 真实浏览器里通常是 44100/48000：实时字幕的线性重采样要按这个走 */
+      this.sampleRate = 48000
+      this.processors = []
       AudioContextStub.instances.push(this)
+    }
+    createGain() {
+      return { gain: { value: 1 }, connect() {}, disconnect() {} }
+    }
+    createScriptProcessor(size) {
+      const node = { size, onaudioprocess: null, connect() {}, disconnect() {} }
+      this.processors.push(node)
+      return node
     }
     createAnalyser() {
       return {
@@ -3611,6 +3625,165 @@ function sliceFunction(text, name) {
   await sleep(30)
   assert('收起小窗：音轨停掉、状态回 idle', openTrack.stopped === true && hook.voice().phase === 'idle', `${openTrack.stopped} ${hook.voice().phase}`)
   assert('收起小窗：录音行一起收掉（不留半句"正在录音"）', hook.voice().capture === false && hook.voice().activity === '', JSON.stringify({ capture: hook.voice().capture, activity: hook.voice().activity }))
+
+  // ══════════ ⑬ 实时字幕：半句预览 + 停顿定稿（采样水龙头驱动）══════════
+  // 真浏览器里 onaudioprocess 会自己喂采样；桩里由测试直接喂（同一段代码路径）。
+  const feedTap = (node, seconds, amplitude) => {
+    const frames = Math.round(seconds * 48000)
+    const chunk = new Float32Array(frames)
+    for (let i = 0; i < frames; i += 1) chunk[i] = amplitude
+    node.onaudioprocess({ inputBuffer: { getChannelData: () => chunk } })
+  }
+
+  {
+    const before = askBox.value
+    micButton.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'recording')
+    const context = AudioContextStub.instances[AudioContextStub.instances.length - 1]
+    const tap = context.processors[context.processors.length - 1]
+    assert('录音时接上了采样水龙头（实时字幕的前提）', !!tap && hook.voice().live.active === true && hook.voice().live.disabled === false, JSON.stringify(hook.voice().live).slice(0, 120))
+
+    // 说 1.2 秒（响）→ 第一拍半句预览
+    speechTranscriptQueue = [{ ok: true, text: '这半句还在说' }]
+    feedTap(tap, 1.2, 0.3)
+    await waitVoice(() => hook.voice().live.passes.preview >= 1, 2000)
+    await waitVoice(() => hook.voice().live.preview !== '', 2000)
+    assert('说话时字就往输入框里长（半句预览）', hook.voice().live.preview === '这半句还在说' && askBox.value.indexOf('这半句还在说') >= 0, `${hook.voice().live.preview} / ${JSON.stringify(askBox.value)}`)
+    assert('预览是插在原来那段文字后面，不是另起一段', askBox.value.startsWith(before), JSON.stringify(askBox.value))
+
+    // 静音 0.9 秒 → 这句说完了：定稿
+    speechTranscriptQueue = [{ ok: true, text: '这句定稿了' }]
+    feedTap(tap, 0.9, 0)
+    await waitVoice(() => hook.voice().live.passes.commit >= 1, 2500)
+    await waitVoice(() => hook.voice().live.committed !== '', 2500)
+    assert('停顿 0.6 秒以上 → 这句定稿（预览换成定稿）', hook.voice().live.committed === '这句定稿了' && hook.voice().live.preview === '', JSON.stringify({ committed: hook.voice().live.committed, preview: hook.voice().live.preview }))
+    assert('定稿的文字留在输入框里', askBox.value.indexOf('这句定稿了') >= 0, JSON.stringify(askBox.value))
+
+    // 还在说（持续有声，不产生停顿）→ 第二句以"半句预览"接在定稿后面
+    hook.voiceTick()
+    speechTranscriptRepeat = { ok: true, text: '下一句也在跟' }
+    const keepTalking = setInterval(() => feedTap(tap, 0.2, 0.3), 120)
+    await waitVoice(() => hook.voice().live.preview === '下一句也在跟', 4000)
+    assert('定稿不丢、新的半句接在后面', hook.voice().live.committed === '这句定稿了' && hook.voice().live.preview === '下一句也在跟', JSON.stringify({ committed: hook.voice().live.committed, preview: hook.voice().live.preview }))
+    clearInterval(keepTalking)
+    speechTranscriptRepeat = null
+    assert('输入框里是「定稿 + 空格 + 预览」', askBox.value.indexOf('这句定稿了 下一句也在跟') >= 0, JSON.stringify(askBox.value))
+
+    // ■ 停止：整段识别以定稿开头 → 只补后半句，定稿的字一个不动
+    speechTranscriptQueue = [{ ok: true, text: '这句定稿了 下一句也在跟，而且整段还多说了几个字' }]
+    nodes.stop.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'idle', 3000)
+    assert(
+      '停止时以整段为准收口：定稿部分原样保留，只把后面补全',
+      askBox.value.indexOf('这句定稿了 下一句也在跟，而且整段还多说了几个字') >= 0 && hook.voice().live.rewritten === false,
+      JSON.stringify(askBox.value),
+    )
+    assert('停止后实时层关掉（不再刷新）', hook.voice().live.active === false, String(hook.voice().live.active))
+  }
+
+  // ── ⑭ 整段识别"对不上"时：以整段为准整块替换（并记一笔）──────────
+  {
+    hook.askValue('')
+    speechTranscriptQueue = [{ ok: true, text: '实时那段' }, { ok: true, text: '实时定稿的那句' }]
+    micButton.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'recording')
+    const context = AudioContextStub.instances[AudioContextStub.instances.length - 1]
+    const tap = context.processors[context.processors.length - 1]
+    feedTap(tap, 1.2, 0.3)
+    await waitVoice(() => hook.voice().live.passes.preview >= 1, 2000)
+    feedTap(tap, 0.9, 0)
+    await waitVoice(() => hook.voice().live.committed !== '', 3000)
+    assert('（前置）这一句已经定稿', hook.voice().live.committed === '实时定稿的那句', JSON.stringify(hook.voice().live.committed))
+    speechTranscriptQueue = [{ ok: true, text: '整段识别给的是完全不同的句子' }]
+    nodes.stop.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'idle', 3000)
+    assert('整段与实时对不上时：整块替换，并以自检记一笔', askBox.value === '整段识别给的是完全不同的句子' && hook.voice().live.rewritten === true, JSON.stringify({ value: askBox.value, rewritten: hook.voice().live.rewritten }))
+  }
+
+  // ── ⑮ ✕ 取消 = 丢弃这次插进去的文字 ─────────────────────────────
+  {
+    hook.askValue('手写的一句')
+    speechTranscriptQueue = [{ ok: true, text: '要是丢不掉就糟了' }]
+    micButton.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'recording')
+    const context = AudioContextStub.instances[AudioContextStub.instances.length - 1]
+    const tap = context.processors[context.processors.length - 1]
+    feedTap(tap, 1.2, 0.3)
+    await waitVoice(() => hook.voice().live.preview === '要是丢不掉就糟了', 3000)
+    await waitVoice(() => hook.voice().live.passes.preview >= 1, 500)
+    assert('取消前：预览已经在输入框里', askBox.value.indexOf('要是丢不掉就糟了') >= 0, JSON.stringify(askBox.value))
+    nodes.cancel.dispatch('click', { stopPropagation() {} })
+    await sleep(40)
+    assert('✕ 取消 = 把这次插进去的文字整块撤掉（手写的那句不动）', askBox.value === '手写的一句', JSON.stringify(askBox.value))
+    assert('取消后实时层关掉', hook.voice().live.active === false && hook.voice().live.text === '', JSON.stringify({ active: hook.voice().live.active, text: hook.voice().live.text }))
+  }
+
+  // ── ⑯ 失焦 / 收起小窗：录音停下，屏幕上的字留着 ─────────────────
+  {
+    hook.askValue('')
+    speechTranscriptQueue = [{ ok: true, text: '切走也别丢字' }]
+    micButton.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'recording')
+    const context = AudioContextStub.instances[AudioContextStub.instances.length - 1]
+    const tap = context.processors[context.processors.length - 1]
+    feedTap(tap, 1.2, 0.3)
+    await waitVoice(() => hook.voice().live.preview === '切走也别丢字', 3000)
+    windowStub.dispatch('blur', {})
+    await sleep(40)
+    assert('失焦停录，但已经写进输入框的字留着', hook.voice().phase === 'idle' && askBox.value.indexOf('切走也别丢字') >= 0, JSON.stringify({ phase: hook.voice().phase, value: askBox.value }))
+    hook.askValue('')
+  }
+
+  // ── ⑰ 用户在实时那段里改字 → 实时层让位（不跟用户抢）────────────
+  {
+    speechTranscriptQueue = [{ ok: true, text: '我是预览' }]
+    micButton.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'recording')
+    const context = AudioContextStub.instances[AudioContextStub.instances.length - 1]
+    const tap = context.processors[context.processors.length - 1]
+    feedTap(tap, 1.2, 0.3)
+    await waitVoice(() => hook.voice().live.preview === '我是预览' && askBox.value.indexOf('我是预览') >= 0, 3000)
+    askBox.value = askBox.value.replace('我是预览', '我改成别的了')
+    askBox.dispatch('input', {})
+    feedTap(tap, 1.2, 0.3)
+    hook.voiceTick()
+    await sleep(300)
+    assert('用户改了实时那段 → 实时层让位（不改他的字）', hook.voice().live.disabled === true && hook.voice().live.reason === 'edited' && askBox.value.indexOf('我改成别的了') >= 0, JSON.stringify({ reason: hook.voice().live.reason, value: askBox.value }))
+    nodes.stop.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'idle', 3000)
+    assert('让位之后停止仍然出最终文字（退回普通插入）', askBox.value.indexOf('我是预览'.slice(0, 0)) >= 0 && askBox.value.indexOf('我改成别的了') >= 0, JSON.stringify(askBox.value))
+    hook.askValue('')
+  }
+
+  // ── ⑱ 没有采样水龙头（老浏览器）：功能自动退回"停止后出字" ───────
+  {
+    const realScriptProcessor = AudioContextStub.prototype.createScriptProcessor
+    AudioContextStub.prototype.createScriptProcessor = undefined
+    speechTranscriptQueue = [{ ok: true, text: '没有水龙头也能出字' }]
+    micButton.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'recording')
+    assert('拿不到水龙头：实时层自己关掉（不报错、不空转）', hook.voice().live.active === false && hook.voice().live.disabled === true && hook.voice().live.reason === 'no-tap', JSON.stringify(hook.voice().live).slice(0, 120))
+    nodes.stop.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'idle', 3000)
+    assert('停止后照样把整段文字插进输入框（老行为不变）', askBox.value.indexOf('没有水龙头也能出字') >= 0, JSON.stringify(askBox.value))
+    AudioContextStub.prototype.createScriptProcessor = realScriptProcessor
+    hook.askValue('')
+  }
+
+  // ── ⑲ 云端识别器：不做实时预览（每拍一次付费调用），停止后照常出字 ──
+  {
+    const hostCatalogFixture = speechCatalog
+    speechCatalog = { ...hostCatalogFixture, providers: [{ ...hostCatalogFixture.providers[0], location: 'cloud' }] }
+    speechTranscriptQueue = [{ ok: true, text: '云端也能出字，只是没有预览' }]
+    micButton.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'recording')
+    assert('云端识别器：实时层不开（reason=cloud）', hook.voice().live.active === false && hook.voice().live.disabled === true && hook.voice().live.reason === 'cloud', JSON.stringify(hook.voice().live).slice(0, 120))
+    nodes.stop.dispatch('click', { stopPropagation() {} })
+    await waitVoice(() => hook.voice().phase === 'idle', 3000)
+    assert('云端：停止后照常把文字插进输入框（退化成"说完再出字"）', askBox.value.indexOf('云端也能出字，只是没有预览') >= 0, JSON.stringify(askBox.value))
+    speechCatalog = hostCatalogFixture
+    hook.askValue('')
+  }
 
   // ── ⑫ 音频格式：和 host 的 validateWave 同源（纯函数打表）────────
   const helpers = new Function(

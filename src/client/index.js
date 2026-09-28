@@ -43,6 +43,20 @@ window.__ModuleLoader__.load({
     var VOICE_MAX_BYTES = 4 * 1024 * 1024
     /** 目录缓存时长：同一分钟内反复点麦克风不再重复问 host。 */
     var VOICE_CATALOG_TTL = 60 * 1000
+    /**
+     * 实时字幕（半句预览 + 停顿定稿）：
+     *   · 说话时每 ~1.3s 把"还没定稿的这半句"送去识别一次，结果**整段替换**上一拍的预览；
+     *   · 检测到 ~0.6s 静音（一句话说完了）就把这句送去识别并**定稿**，之后不再变。
+     * 只在本地识别器上默认开（云端每拍一次都是付费调用）；窗口固定 ≤10 秒，
+     * 这样说到第 40 秒也不会变慢（实测 8s 窗口 185ms、40s 整段要 1.1s）。
+     */
+    var VOICE_PREVIEW_EVERY = 1300
+    var VOICE_PREVIEW_WINDOW = 10
+    var VOICE_PAUSE_MS = 600
+    var VOICE_PAUSE_MIN_MS = 400
+    var VOICE_COMMIT_MAX_SECONDS = 25
+    /** "有声"的门限（RMS）：低于它算静音，连着 0.6s 就是一句话说完了。 */
+    var VOICE_SILENCE_RMS = 0.012
     /** 选区长度上限（与 host 默认值一致，host 还会再校验一次）。 */
     var MAX_SELECTION = 4000
     /** 上下文窗口：选区前后各取多少字符。 */
@@ -4815,7 +4829,7 @@ window.__ModuleLoader__.load({
         // 收掉它可以避免"发送后麦克风还红着"（用户会以为还在录）。
         // 已经识别出来的文字在输入框里，不受影响。
         if (voice.phase === 'recording' || voice.phase === 'requesting' || voice.phase === 'transcribing') {
-          cancelVoice('已停止录音（这条先发出去）')
+          cancelVoice({ note: '已停止录音（这条先发出去）' })
         }
         var asked = String(question || '').trim()
         // 引用先取出来：只挂引用、没写问题也允许发（这时用一句兜底提问）
@@ -6112,6 +6126,30 @@ window.__ModuleLoader__.load({
         lastText: '',
         /** feedback 阶段的行内动作（null = 只显示原因，不给按钮）。 */
         action: null,
+        /**
+         * 实时字幕（半句预览 + 停顿定稿）的运行时状态。
+         * text/committed/preview 都是输入框里那一段的一部分，start 是它在 value 里的起点。
+         */
+        live: {
+          active: false,
+          disabled: false,
+          reason: '',
+          separator: '',
+          start: -1,
+          text: '',
+          committed: '',
+          preview: '',
+          boundary: 0,
+          phraseStart: 0,
+          inflight: false,
+          controller: null,
+          timer: 0,
+          tickAt: 0,
+          startedAt: 0,
+          previewFails: 0,
+          passes: { preview: 0, commit: 0 },
+          rewritten: false,
+        },
       }
 
       /** 录音失败的统一话术（浏览器抛的是 DOMException，用户看不懂）。 */
@@ -6323,12 +6361,85 @@ window.__ModuleLoader__.load({
         var chunks = []
         var lifetime = new AbortController()
         var disposal = null
+        // ── 采样水龙头（实时字幕用）──
+        var tap = null
+        var tapGain = null
+        /** 16k 采样的分片表（按时序），tapLength 是总采样数。 */
+        var tapChunks = []
+        var tapLength = 0
+        /** 线性重采样的分数位置：跨回调连续，接缝处才不会每 93ms 丢一个点。 */
+        var tapPos = 0
+        /** 最近一次"有声"的采样位置与墙钟时间（停顿定稿靠它切边界）。 */
+        var tapLoudIndex = -1
+        var tapLoudAt = 0
+
+        /** 把一块原始采样（context 采样率）重采样到 16k 攒起来，同时判"有声/静音"。 */
+        function acceptChunk(input) {
+          var rate = context && context.sampleRate ? context.sampleRate : 48000
+          var step = rate / 16000
+          var out = []
+          var pos = tapPos
+          while (pos + 1 < input.length) {
+            var index = Math.floor(pos)
+            var frac = pos - index
+            out.push(input[index] * (1 - frac) + input[index + 1] * frac)
+            pos += step
+          }
+          tapPos = pos - input.length
+          if (out.length) {
+            var piece = Float32Array.from(out)
+            tapChunks.push(piece)
+            tapLength += piece.length
+          }
+          var sum = 0
+          for (var i = 0; i < input.length; i += 1) sum += input[i] * input[i]
+          if (Math.sqrt(sum / input.length) >= VOICE_SILENCE_RMS) {
+            tapLoudIndex = tapLength
+            tapLoudAt = Date.now()
+          }
+        }
+
+        /** 取 [from, to) 的 16k 采样（越界自动夹住）。 */
+        function readSamples(from, to) {
+          var a = Math.max(0, Math.floor(from))
+          var b = Math.min(tapLength, Math.ceil(to))
+          if (b <= a) return new Float32Array(0)
+          var out = new Float32Array(b - a)
+          var cursor = 0
+          for (var i = 0; i < tapChunks.length; i += 1) {
+            var piece = tapChunks[i]
+            var end = cursor + piece.length
+            if (end > a && cursor < b) {
+              var s = Math.max(0, a - cursor)
+              var e = Math.min(piece.length, b - cursor)
+              out.set(piece.subarray(s, e), cursor + s - a)
+            }
+            cursor = end
+            if (cursor >= b) break
+          }
+          return out
+        }
 
         function release() {
           try {
             lifetime.abort()
           } catch (error) {
             /* noop */
+          }
+          if (tap) {
+            try {
+              tap.onaudioprocess = null
+              tap.disconnect()
+            } catch (error) {
+              /* noop */
+            }
+          }
+          if (tapGain) {
+            try {
+              tapGain.disconnect()
+            } catch (error) {
+              /* noop */
+            }
           }
           try {
             if (recorder && recorder.state === 'recording') recorder.stop()
@@ -6395,7 +6506,28 @@ window.__ModuleLoader__.load({
                     }
                     analyser = context.createAnalyser()
                     analyser.fftSize = samples.length
-                    context.createMediaStreamSource(stream).connect(analyser)
+                    var source = context.createMediaStreamSource(stream)
+                    source.connect(analyser)
+                    // 原始采样水龙头（只服务于实时字幕）：
+                    // MediaRecorder 那条路不变，最终那份规范 WAV 还是它出的；这里多接一路，
+                    // 直接把麦克风的采样按 16k 攒起来 —— 切窗口时不用每个 tick 去 decode 整个 blob。
+                    // ScriptProcessorNode 已废弃但仍在（实测 Chrome 153 可用）；没有就关掉实时层。
+                    try {
+                      if (typeof context.createScriptProcessor === 'function') {
+                        tap = context.createScriptProcessor(4096, 1, 1)
+                        tapGain = context.createGain()
+                        tapGain.gain.value = 0 // 静音：别把麦克风回灌到扬声器（会啸叫）
+                        tap.onaudioprocess = function (event) {
+                          var input = event && event.inputBuffer ? event.inputBuffer.getChannelData(0) : null
+                          if (input) acceptChunk(input)
+                        }
+                        source.connect(tap)
+                        tap.connect(tapGain)
+                        tapGain.connect(context.destination)
+                      }
+                    } catch (error) {
+                      tap = null
+                    }
                     recorder = new window.MediaRecorder(stream)
                     recorder.ondataavailable = function (event) {
                       if (!lifetime.signal.aborted && event.data && event.data.size > 0) chunks.push(event.data)
@@ -6518,6 +6650,24 @@ window.__ModuleLoader__.load({
           },
 
           dispose: dispose,
+          /** 实时字幕的水龙头：没接上（浏览器没有 ScriptProcessor）时为 null。 */
+          tap: {
+            supported: function () {
+              return !!tap
+            },
+            length: function () {
+              return tapLength
+            },
+            loudIndex: function () {
+              return tapLoudIndex
+            },
+            loudAt: function () {
+              return tapLoudAt
+            },
+            read: readSamples,
+            /** 自检/单测用：直接喂一块原始采样（真浏览器里由 onaudioprocess 调）。 */
+            accept: acceptChunk,
+          },
         }
       }
 
@@ -6583,6 +6733,7 @@ window.__ModuleLoader__.load({
       /** 回到 idle：工具行原样还回去。 */
       function resetVoiceRow() {
         stopVoiceTicker()
+        stopLive()
         if (voice.idleTimer) clearTimeout(voice.idleTimer)
         voice.idleTimer = 0
         voice.phase = 'idle'
@@ -6590,6 +6741,340 @@ window.__ModuleLoader__.load({
         while (voiceActionSlot.firstChild) voiceActionSlot.removeChild(voiceActionSlot.firstChild)
         setVoiceActivity('', {})
         paintVoice()
+      }
+
+      // ── 实时字幕（半句预览 + 停顿定稿）──────────────────────────────────────
+      //
+      // 说话时字就往输入框里长：每 ~1.3s 把"还没定稿的这半句"送去识别一次，整段替换上一拍
+      // 的预览；检测到 ~0.6s 静音（这句说完了）就把这句送去识别并**定稿**，之后不再变。
+      // 停止（■）时仍然走原来那条"整段规范 WAV"的路，回来的结果给这一整段收口：
+      //   · 整段识别**以已定稿的文字开头**（正常情况）→ 只补后半句，定稿的字一个不动；
+      //   · 对不上（整段上下文让引擎改了前面）→ 以整段为准整块替换，并在自检里记一笔。
+      // ✕ 取消 = 把这次插进去的文字整块撤掉（对应主会话那个 aria-label「丢弃识别文字」）。
+      //
+      // 为什么预览用**采样水龙头**而不是 MediaRecorder 的 blob：切窗口只要一段连续采样，
+      // 而每个 tick 去 decode 整个 blob 是 O(总时长) 的白活（说到 60 秒就是每秒 decode 60 秒音频）。
+
+      /** 定稿与预览拼起来时的连接处（中文直接接，英文补一个空格）。 */
+      function liveJoin(left, right) {
+        if (!left) return right
+        if (!right) return left
+        if (/[\s]$/.test(left) || /^[\s，。；：！？、,.!?;:]/.test(right)) return left + right
+        return left + ' ' + right
+      }
+
+      /** 光标位置（拿不到就当作末尾）。 */
+      function caretIndex() {
+        var value = String(askBox.value || '')
+        return typeof askBox.selectionStart === 'number' && askBox.selectionStart >= 0
+          ? Math.min(askBox.selectionStart, value.length)
+          : value.length
+      }
+
+      /** 这一段（分隔空格 + 定稿 + 预览）在输入框里该长什么样。 */
+      function liveCompose() {
+        var live = voice.live
+        var body = liveJoin(live.committed, live.preview)
+        live.text = body ? live.separator + body : ''
+        return live.text
+      }
+
+      /**
+       * 把这一段落到输入框里（原位替换）。
+       * 用户在我们这段**里面**改过字就不抢他的编辑：停掉实时层，以后按"停止后再出字"走。
+       */
+      function liveWrite() {
+        var live = voice.live
+        var value = String(askBox.value || '')
+        var previous = live.text
+        var start = live.start
+        if (previous) {
+          if (value.indexOf(previous) >= 0) start = value.indexOf(previous)
+          else if (start >= 0 && value.slice(start, start + previous.length) === previous) {
+            /* 位置没变 */
+          } else {
+            live.disabled = true
+            live.reason = 'edited'
+            stopLive()
+            return false
+          }
+        }
+        if (start < 0) start = caretIndex()
+        var end = previous ? start + previous.length : start
+        var caret = typeof askBox.selectionStart === 'number' ? askBox.selectionStart : end
+        var next = liveCompose()
+        askBox.value = value.slice(0, start) + next + value.slice(end)
+        live.start = next ? start : -1
+        live.text = next
+        var moved = next.length - previous.length
+        var nextCaret = caret >= end ? caret + moved : caret
+        if (nextCaret < 0) nextCaret = 0
+        if (nextCaret > askBox.value.length) nextCaret = askBox.value.length
+        try {
+          askBox.setSelectionRange(nextCaret, nextCaret)
+        } catch (error) {
+          /* 桩环境没有这个方法 */
+        }
+        refreshAskState()
+        return true
+      }
+
+      /** 从输入框里把我们这段整块撤掉（内容没被改过才撤；改过就留着，不跟用户抢字）。 */
+      function liveDiscard() {
+        var live = voice.live
+        var value = String(askBox.value || '')
+        var text = live.text
+        var start = live.start
+        if (text) {
+          if (value.indexOf(text) >= 0) start = value.indexOf(text)
+          else if (!(start >= 0 && value.slice(start, start + text.length) === text)) {
+            stopLive()
+            return false
+          }
+          if (start >= 0) {
+            askBox.value = value.slice(0, start) + value.slice(start + text.length)
+            var caret = Math.min(start, askBox.value.length)
+            try {
+              askBox.setSelectionRange(caret, caret)
+            } catch (error) {
+              /* noop */
+            }
+            refreshAskState()
+          }
+        }
+        stopLive()
+        // 撤掉之后这一段就不存在了：状态一起清空（否则停止时还会去和一个已经没有的段落对齐）
+        live.text = ''
+        live.start = -1
+        live.committed = ''
+        live.preview = ''
+        return true
+      }
+
+      function stopLive() {
+        var live = voice.live
+        live.active = false
+        live.inflight = false
+        if (live.timer) clearInterval(live.timer)
+        live.timer = 0
+        if (live.controller) {
+          try {
+            live.controller.abort()
+          } catch (error) {
+            /* noop */
+          }
+        }
+        live.controller = null
+      }
+
+      /** 开实时层（拿不到采样水龙头就不开：功能退回"说完点 ■ 再出字"）。 */
+      function startLive(capture) {
+        var live = voice.live
+        stopLive()
+        live.committed = ''
+        live.preview = ''
+        live.text = ''
+        live.start = -1
+        live.inflight = false
+        live.passes = { preview: 0, commit: 0 }
+        live.rewritten = false
+        live.disabled = false
+        live.reason = ''
+        if (!capture || !capture.tap || !capture.tap.supported()) {
+          live.disabled = true
+          live.reason = 'no-tap'
+          return false
+        }
+        // 云端识别器：每一拍都是一次**付费**调用（1.3 秒一拍 ≈ 46 次/分钟），不做预览。
+        // 本机模型不花钱、只占点 CPU，才是实时字幕该待的地方。
+        var provider = voiceProvider(voice.catalog)
+        if (provider && provider.location === 'cloud') {
+          live.disabled = true
+          live.reason = 'cloud'
+          return false
+        }
+        // 我们这段文字从**当前光标处**开始长；前面不是空白就补一个分隔空格
+        var value = String(askBox.value || '')
+        var caret = caretIndex()
+        live.separator = caret > 0 && !/\s$/.test(value.slice(0, caret)) ? ' ' : ''
+        live.start = -1
+        live.boundary = capture.tap.length()
+        live.phraseStart = live.boundary
+        live.startedAt = Date.now()
+        live.tickAt = 0
+        live.active = true
+        live.timer = setInterval(liveTick, 200)
+        return true
+      }
+
+      /** 送一段（16k 采样，[from,to)）去识别。 */
+      function liveSend(from, to) {
+        var live = voice.live
+        var capture = voice.capture
+        if (!capture || !capture.tap) return Promise.reject(new Error('没有采样水龙头'))
+        var samples = capture.tap.read(from, to)
+        if (samples.length < 1600) return Promise.reject(new Error('这段太短了'))
+        var controller = typeof AbortController === 'function' ? new AbortController() : null
+        live.controller = controller
+        return fetch(SPEECH_TRANSCRIBE, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ audioBase64: bytesToBase64(encodeWave(samples)), partial: true }),
+          signal: controller ? controller.signal : undefined,
+        })
+          .then(function (response) {
+            return response.json()
+          })
+          .then(function (data) {
+            if (!data || data.ok !== true) throw new Error(String((data && data.error) || '识别失败'))
+            return String(data.text || '').trim()
+          })
+      }
+
+      /** 一句话说完了（静音够久）：把它送去识别并定稿。 */
+      function liveCommit(boundary) {
+        var live = voice.live
+        var from = live.phraseStart
+        var to = Math.min(boundary, from + 16000 * VOICE_COMMIT_MAX_SECONDS)
+        if (to - from < 1600) return
+        live.inflight = true
+        live.passes.commit += 1
+        liveSend(from, to)
+          .then(function (text) {
+            if (!live.active) return
+            if (text) {
+              live.committed = liveJoin(live.committed, text)
+              live.preview = ''
+              liveWrite()
+            }
+            live.boundary = to
+            live.phraseStart = to
+          })
+          .catch(function () {
+            /* 这一句没转出来：不打断录音，等停止时整段再试一次 */
+          })
+          .then(function () {
+            live.inflight = false
+            live.controller = null
+          })
+      }
+
+      /**
+       * 半句预览：把"最后 10 秒还没定稿的那半句"送去识别，整段替换上一拍的预览。
+       * @returns 这一拍真的发出去了没有（没发就不该吃掉节流窗口 —— 否则录到 0.2 秒时那次空转
+       *          会把第一拍预览推到 1.5 秒之后，用户会觉得"怎么半天不出字"）。
+       */
+      function livePreview() {
+        var live = voice.live
+        var capture = voice.capture
+        if (!capture || !capture.tap) return false
+        var length = capture.tap.length()
+        var from = Math.max(live.phraseStart, length - 16000 * VOICE_PREVIEW_WINDOW)
+        if (length - from < 16000 * 0.5) return false
+        live.inflight = true
+        live.passes.preview += 1
+        liveSend(from, length)
+          .then(function (text) {
+            if (!live.active) return
+            if (text === live.preview) return
+            live.preview = text
+            liveWrite()
+          })
+          .catch(function (error) {
+            if (!live.active) return
+            // 预览连续失败就不再打扰用户（停止时那条路仍然会出字）
+            if (error && error.name === 'AbortError') return
+            live.previewFails = (live.previewFails || 0) + 1
+            if (live.previewFails >= 3) {
+              live.disabled = true
+              live.reason = 'preview-failed'
+              stopLive()
+            }
+          })
+          .then(function () {
+            live.inflight = false
+            live.controller = null
+          })
+        return true
+      }
+
+      /** 实时层的节拍：先看有没有"一句话说完了"，再看要不要刷半句预览。 */
+      function liveTick() {
+        var live = voice.live
+        if (!live.active || live.disabled || voice.phase !== 'recording') return
+        var capture = voice.capture
+        if (!capture || !capture.tap || !capture.tap.supported()) return
+        if (live.inflight) return
+        var now = Date.now()
+        var length = capture.tap.length()
+        var loudIndex = capture.tap.loudIndex()
+        var loudAt = capture.tap.loudAt()
+        // ① 停顿定稿：最近一次有声已经过去 600ms 以上，且这句够长
+        if (loudIndex >= 0 && now - loudAt >= VOICE_PAUSE_MS && now - loudAt < 5000) {
+          var boundary = Math.min(length, loudIndex + Math.round(16000 * 0.25))
+          if (boundary - live.phraseStart >= (16000 * VOICE_PAUSE_MIN_MS) / 1000) {
+            live.pendingReady = true
+            liveCommit(boundary)
+            return
+          }
+        }
+        // ② 半句预览：每 1.3 秒刷一次（只有真发出去才算用掉这一拍）
+        if (now - live.tickAt < VOICE_PREVIEW_EVERY) return
+        if (livePreview()) live.tickAt = now
+      }
+
+      /**
+       * ■ 停止后的收口：整段识别已经拿到 fullText，把它和已经插进去的那段对齐。
+       * 正常情况（整段以定稿开头）只补后半句；对不上就整块替换（以整段为准）。
+       */
+      function liveFinalize(fullText) {
+        var live = voice.live
+        var committed = live.committed
+        var text = String(fullText || '').trim()
+        stopLive()
+        if (!text) {
+          // 整段一个都没识别出来：已经定稿的部分留着（用户看得见），预览丢掉
+          live.preview = ''
+          liveWrite()
+          return live.committed
+        }
+        var merged = text
+        if (committed) {
+          var rest = liveTailAfterCommitted(committed, text)
+          if (rest === null) {
+            live.rewritten = true
+            merged = text
+          } else {
+            merged = liveJoin(committed, rest)
+          }
+        }
+        live.committed = merged
+        live.preview = ''
+        liveWrite()
+        return merged
+      }
+
+      /**
+       * 整段识别里"已定稿那部分"之后还剩什么。
+       * 归一化（去空白与标点）之后比前缀：对得上 → 返回剩余原文；对不上 → null。
+       */
+      function liveTailAfterCommitted(committed, full) {
+        var norm = function (text) {
+          var out = []
+          for (var i = 0; i < text.length; i += 1) {
+            var ch = text[i]
+            if (/[\s，。；：！？、,.!?;:'"（）()\[\]【】…—-]/.test(ch)) continue
+            out.push({ ch: ch, at: i })
+          }
+          return out
+        }
+        var want = norm(committed)
+        var got = norm(full)
+        if (!want.length || got.length < want.length) return null
+        for (var i = 0; i < want.length; i += 1) {
+          if (want[i].ch !== got[i].ch) return null
+        }
+        return full.slice(got[want.length - 1].at + 1).trim()
       }
 
       /** 开始一段录音（先问 host 要目录：能不能录、最长多久）。 */
@@ -6636,6 +7121,8 @@ window.__ModuleLoader__.load({
               setVoiceActivity('', {})
               paintVoice()
               startVoiceTicker()
+              // 实时字幕：说话时字就往输入框里长（拿不到采样水龙头就自动退回"停止后出字"）
+              startLive(capture)
               return true
             })
           })
@@ -6686,11 +7173,25 @@ window.__ModuleLoader__.load({
                 return null
               }
               var text = String(data.text || '').trim()
+              var liveHasText = voice.live.active && !!(voice.live.committed || voice.live.preview || voice.live.text)
               if (!text) {
+                if (liveHasText) {
+                  // 整段没转出来，但实时那几段已经落进输入框了：留着他看得见的那份
+                  voice.lastText = liveFinalize('')
+                  voice.capture = null
+                  voice.abort = null
+                  resetVoiceRow()
+                  return null
+                }
                 voiceFeedback(VOICE_ERRORS.empty, 'warn', 'retry')
                 return null
               }
-              insertTranscript(text)
+              if (liveHasText) {
+                // 实时字幕已经在输入框里写了字：用它给整段收口（定稿部分尽量不动）
+                voice.lastText = liveFinalize(text)
+              } else {
+                insertTranscript(text)
+              }
               // 插入成功 = **直接回 idle**：文字就摆在上面那行，不必再报一次
               //（主会话也是这样：成功不额外说话，录音行收起、🎤 回位）。
               voice.capture = null
@@ -6722,8 +7223,9 @@ window.__ModuleLoader__.load({
        * 取消当前这一轮（录音或识别）→ 回到 idle。✕ / Esc / 关面板 / 停用插件都走它。
        * 一定会松开麦克风、并且让晚到的回调全部作废（generation + 1）。
        */
-      function cancelVoice(noteText) {
+      function cancelVoice(options) {
         if (!voice) return
+        var opts = typeof options === 'string' ? { note: options } : options || {}
         var capture = voice.capture
         voice.generation += 1
         voice.capture = null
@@ -6737,11 +7239,15 @@ window.__ModuleLoader__.load({
         voice.abort = null
         if (voice.pollTimer) clearTimeout(voice.pollTimer)
         voice.pollTimer = 0
+        // 实时字幕：✕ 取消 = 把这次插进输入框的文字整块撤掉（"丢弃识别文字"）；
+        // 其它中断（失焦 / 收起小窗 / 这条消息发出去）**留着屏幕上的字**，只是不再更新。
+        if (opts.discard) liveDiscard()
+        else stopLive()
         if (capture) capture.dispose()
         resetVoiceRow()
         // 少数情况下要交代一句（例如"这条消息先发出去了"）：留在 feedback 里，2 秒后自己回 idle
-        if (noteText) {
-          voiceFeedback(noteText, '', null)
+        if (opts.note) {
+          voiceFeedback(opts.note, '', null)
           voice.idleTimer = setTimeout(function () {
             if (voice.phase !== 'feedback') return
             resetVoiceRow()
@@ -6818,8 +7324,9 @@ window.__ModuleLoader__.load({
       })
       var offVoiceCancel = listen(voiceCancel, 'click', function (event) {
         event.stopPropagation()
-        // feedback 阶段点 ✕ 只是"关掉这条提示"，其余阶段是取消录音/识别
-        cancelVoice()
+        // feedback 阶段点 ✕ 只是"关掉这条提示"，其余阶段是取消录音/识别。
+        // 录音中按 ✕ = 丢弃这次已经插进输入框的文字（主会话那个 ✕ 也是这个语义）。
+        cancelVoice({ discard: true })
       })
       var offVoiceStop = listen(voiceStop, 'click', function (event) {
         event.stopPropagation()
@@ -6955,6 +7462,26 @@ window.__ModuleLoader__.load({
             bars: waveBars.map(function (bar) {
               return Number(bar.node.getAttribute('y2')) - Number(bar.node.getAttribute('y1'))
             }),
+            /** 实时字幕：定稿 / 半句预览 / 拍数 / 有没有被整段识别改写过。 */
+            live: {
+              active: voice.live.active,
+              disabled: voice.live.disabled,
+              reason: voice.live.reason,
+              committed: voice.live.committed,
+              preview: voice.live.preview,
+              text: voice.live.text,
+              passes: { preview: voice.live.passes.preview, commit: voice.live.passes.commit },
+              rewritten: voice.live.rewritten,
+              boundary: voice.live.boundary,
+              phraseStart: voice.live.phraseStart,
+              tap: voice.capture && voice.capture.tap && voice.capture.tap.supported()
+                ? {
+                    length: voice.capture.tap.length(),
+                    loudIndex: voice.capture.tap.loudIndex(),
+                    loudAt: voice.capture.tap.loudAt(),
+                  }
+                : null,
+            },
             catalog: voice.catalog
               ? {
                   available: voice.catalog.available === true,
@@ -6970,6 +7497,12 @@ window.__ModuleLoader__.load({
         /** 自检用：麦克风按钮节点（无头环境里页面可能挂了两棵树，用这个拿真正带监听的那个）。 */
         voiceNode: function () {
           return micButton
+        },
+        /** 自检用：手动催一拍实时字幕（测试里不用干等 1.3s 的节流）。 */
+        voiceTick: function () {
+          voice.live.tickAt = 0
+          liveTick()
+          return true
         },
         /** 自检用：录音行的各部件（✕ / 波形 / 状态 / 动作位 / ■）。 */
         voiceNodes: function () {

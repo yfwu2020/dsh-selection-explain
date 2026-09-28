@@ -503,7 +503,27 @@ if (!recording) {
 }
 
 await sleep(1200)
-// 录音中留一张图：红色停止键 + 呼吸圈 + 走秒提示（README 的演示图就是它）
+// 实时字幕：**还在录**的时候输入框里就该有字了（半句预览，真识别）
+const previewArrived = await cdp.waitFor(
+  `(() => { const box = document.querySelector('.dsh-sel-askbox'); const v = window.__dshSelectionExplain.voice(); return !!box && box.value.trim().length > 0 && v.live.passes.preview >= 1 })()`,
+  6000,
+)
+const liveState = await cdp.eval(
+  `(() => { const box = document.querySelector('.dsh-sel-askbox'); const v = window.__dshSelectionExplain.voice(); return { value: box ? box.value : '', live: v.live } })()`,
+)
+assert('半句预览在录到 1-2 秒时就出字（不是等停止）', previewArrived, JSON.stringify(liveState).slice(0, 200))
+assert(
+  '录音中就已经有字了（半句预览：真 SenseVoice 边说边转）',
+  liveState.value.trim().length > 0 && liveState.live.passes.preview >= 1,
+  JSON.stringify(liveState).slice(0, 220),
+)
+assert(
+  '预览文字就是输入框里那段（没有被追加重影）',
+  liveState.value.trim() === String(liveState.live.preview || '').trim(),
+  JSON.stringify({ value: liveState.value, preview: liveState.live.preview }).slice(0, 200),
+)
+
+// 录音中留一张图：录音行（✕ / 波形 / ■）+ 输入框里跟着长出来的字（README 的演示图就是它）
 try {
   const file = await shotPanel(cdp, process.env.SMOKE_SHOT_RECORDING || join(tmpdir(), 'dsh-voice-smoke-recording.png'))
   if (file) console.log(`=== 截图（录音中）：${file} ===`)
@@ -552,15 +572,18 @@ const stopBox = await clickSelector(cdp, '.dsh-sel-stop')
 assert('用鼠标点到了录音行的 ■（停止并识别）', !!stopBox, stopBox ? `${Math.round(stopBox.w)}x${Math.round(stopBox.h)}` : '找不到停止键')
 await cdp.waitFor(`window.__dshSelectionExplain.voice().phase !== 'recording'`, 8000)
 
-const gotText = await cdp.waitFor(
-  `(() => { const box = document.querySelector('.dsh-sel-askbox'); return !!box && box.value.trim().length > 0 })()`,
+// 注意：输入框里**早就有字了**（实时预览），所以这里要等的是"整段识别收口完成"
+const finalized = await cdp.waitFor(
+  `(() => { const v = window.__dshSelectionExplain.voice(); return v.capture === false && v.phase === 'idle' })()`,
   40000,
 )
 const finalState = await cdp.eval(
   `(() => { const box = document.querySelector('.dsh-sel-askbox'); return { value: box ? box.value : '', voice: window.__dshSelectionExplain.voice() } })()`,
 )
-assert('识别出来的文字插进了追问输入框', gotText, JSON.stringify(finalState.value))
+assert('停止后整段识别收口（录音行收起、实时层停机）', finalized, JSON.stringify(finalState.voice).slice(0, 160))
+assert('识别出来的文字插进了追问输入框', finalState.value.trim().length > 0, JSON.stringify(finalState.value))
 assert('识别完成后录音行收起、🎤 回来（和主会话一致：成功不另报一句）', finalState.voice.capture === false && finalState.voice.phase === 'idle', JSON.stringify({ capture: finalState.voice.capture, phase: finalState.voice.phase }))
+assert('停止后实时层关掉（不再刷新那段文字）', finalState.voice.live.active === false, JSON.stringify(finalState.voice.live).slice(0, 120))
 assert('没有报错（activity 不是错误色、也不是失败文案）', finalState.voice.activityTone !== 'error' && !/失败|未识别/.test(finalState.voice.activity), `${finalState.voice.activityTone} ${finalState.voice.activity}`)
 
 // 浏览器真发过来的那段音频：格式必须和 host 的契约一致（这是桩测不出来的那一环）
