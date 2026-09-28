@@ -83,18 +83,16 @@ window.__ModuleLoader__.load({
     /** 只挂了引用、一个字都没写时，用它当提问（不替用户编复杂问题）。 */
     var QUOTE_ONLY_QUESTION = '就上面引用的文字，说说它在这里是什么意思。'
     /**
-     * 引用要**带上下文**：引用文字当时所在的那一组对话 ± 一组（一组 = 一条用户消息 + 它的回答）。
-     *   · 会话里的引用（主界面）→ 上下文由 host 从会话记录里取（干净文本、按轮取整），见 QUOTE_CONTEXT_API；
-     *   · 小窗里的引用 → 客户端从小窗自己的轮次里取（下面这几个常量管长度）。
-     * 客户端这一侧的兜底上下文（局部窗口）在点击引用那一刻采，发送前才去问 host 要会话版。
+     * 引用的上下文：**只带模型看不到的东西**。
+     *   · 小窗自己的正文（回答 / 两节 / 顶部原文条）→ **不带**：那几轮对话本来就会随 history
+     *     进模型，出处靠标签说清（「小窗第 2 轮回答」「小窗「翻译」节」）；
+     *   · 主界面（会话）→ 由 host 从会话记录里取"引用所在那一组对话 ± 一组"（干净文本、按轮取整），
+     *     见 QUOTE_CONTEXT_API；客户端先用局部窗口兜底，发送前才去问 host；
+     *   · 侧边栏网页 → 帧内桥采的局部窗口。
      */
     var QUOTE_CONTEXT_API = '/selection-explain/api/quote-context'
-    /** 小窗上下文：引用所在那一轮前后各取几轮（交替结构下 ≈ 上下各一组）。 */
-    var QUOTE_CTX_TURNS = 2
-    /** 小窗上下文：单条最多多少字（超了围绕引用截断）。 */
-    var QUOTE_CTX_TURN_CHARS = 900
-    /** 小窗上下文：整段最多多少字。 */
-    var QUOTE_CTX_MAX = 3000
+    /** 会话版上下文的等待上限（毫秒）：超了就用客户端那份，不让发送卡住。 */
+    var QUOTE_CONTEXT_TIMEOUT = 1500
     /** 会话版上下文的等待上限（毫秒）：超了就用客户端那份，不让发送卡住。 */
     var QUOTE_CONTEXT_TIMEOUT = 1500
     /** 面板 z-index 顶部。 */
@@ -2260,18 +2258,34 @@ window.__ModuleLoader__.load({
         return false
       }
 
-      /** 小窗正文里这段选区的来源标签：翻到哪个容器就报哪个（给引用卡片与提示词用）。 */
+      /**
+       * 「小窗第 N 轮回答 / 提问」。
+       *
+       * 小窗里的引用**不带上下文**（那几轮对话本来就会随历史进模型），所以出处全靠标签说清：
+       * 只写"小窗回答"太笼统 —— 第 1 轮和第 4 轮的回答是两回事。
+       */
+      function turnLabelOf(turn) {
+        if (!turn) return '小窗内容'
+        var index = state.turns.indexOf(turn)
+        var round = 0
+        for (var i = 0; i <= index && i < state.turns.length; i += 1) {
+          if (state.turns[i].role === 'user') round += 1
+        }
+        var role = turn.role === 'user' ? '提问' : '回答'
+        return round > 0 ? '小窗第 ' + round + ' 轮' + role : '小窗' + role
+      }
+
+      /** 小窗正文里这段选区的出处：回答（第 N 轮）/ 某一节 / 顶部选中文字条。 */
       function panelSourceLabel(node) {
         var current = node && node.nodeType === 3 ? node.parentNode : node
         for (var depth = 0; current && depth < 32; depth += 1) {
+          if (current.__turn) return turnLabelOf(current.__turn)
+          // 两节用**它们自己的标题**（标题是「翻译」/「解读」/「注释」，随选中内容变）：
+          // 写死"小窗解读"会在注释节里指错地方
+          if (current === translationSection.root) return '小窗「' + translationSection.title.textContent + '」节'
+          if (current === detailSection.root) return '小窗「' + detailSection.title.textContent + '」节'
           var cls = typeof current.className === 'string' ? current.className : ''
-          if (cls.indexOf('dsh-sel-quote') === 0) return '选中文字'
-          if (cls.indexOf('dsh-sel-chatlog') >= 0) return '小窗回答'
-          if (cls.indexOf('dsh-sel-sec') >= 0) {
-            var sec = current.getAttribute && current.getAttribute('data-sec')
-            if (sec === 'detail') return '小窗详解'
-            if (sec === 'translation') return '小窗解读'
-          }
+          if (cls.indexOf('dsh-sel-quote') === 0) return '小窗顶部的选中文字'
           if (current === body || current === panel || !current.parentNode) break
           current = current.parentNode
         }
@@ -2512,13 +2526,11 @@ window.__ModuleLoader__.load({
         })
         renderQuotes()
         refreshAskState()
-        // 输入框按阶段本来可能是藏着的（首轮还在跑）：引用一进来就得看得见，顺手聚焦
+        // 输入框按阶段本来可能是藏着的（首轮还在跑）：引用一进来就得看得见，顺手聚焦。
+        // 聚焦走**同一个** focusAskBox（preventScroll）：这里是用户主动点引用，
+        // 与"开窗自动聚焦"是两回事，不需要走 askFocusPending 那套"别抢人家打字"的判定。
         askRow.style.display = ''
-        try {
-          askBox.focus()
-        } catch (error) {
-          /* 桩环境没有焦点这回事 */
-        }
+        if (composerVisible()) focusAskBox()
         setStatus(
           '已加入引用（' +
             quoteLabelOf(state.quotes[state.quotes.length - 1]) +
@@ -2580,82 +2592,20 @@ window.__ModuleLoader__.load({
         })
       }
 
-      // ── 引用的上下文：引用文字当时所在的那一组对话 ± 一组 ──
+      // ── 引用的上下文：只有"模型看不到的东西"才需要带 ──
       //
-      // 两处实现是**故意的重复**（host 的 quoteContextOf 与这里的 markQuoteInText /
-      // clampAroundQuote 算法一致）：客户端 bundle 是手写 ModuleLoader 包，不 import host 半，
-      // 而且客户端要能在 host 不认（引用来自侧边栏网页 / 文档预览）时自己兜住。
-
-      /** 在文本里找到引用那段并套上【】（直接找不到就按"空白等价"再找一次）。 */
-      function markQuoteInText(text, marker) {
-        if (!text || !marker) return text
-        var at = text.indexOf(marker)
-        if (at >= 0) return text.slice(0, at) + '【' + marker + '】' + text.slice(at + marker.length)
-        var tokens = String(marker)
-          .split(/\s+/)
-          .filter(Boolean)
-          .map(function (token) {
-            return token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-          })
-        if (tokens.length === 0) return text
-        try {
-          var hit = new RegExp(tokens.join('\\s+')).exec(text)
-          if (hit && typeof hit.index === 'number') {
-            return text.slice(0, hit.index) + '【' + hit[0] + '】' + text.slice(hit.index + hit[0].length)
-          }
-        } catch (error) {
-          /* 极端输入：不标记，由 composeQuestion 另附原文 */
-        }
-        return text
-      }
-
-      /** 长文本围绕引用截断（引用本身必须留下；找不到引用就从头截）。 */
-      function clampAroundQuote(text, marker, max) {
-        if (text.length <= max) return text
-        var at = marker ? text.indexOf(marker) : -1
-        if (at < 0) return text.slice(0, max) + '…（已截断）'
-        var half = Math.max(0, Math.floor((max - marker.length) / 2))
-        var from = Math.max(0, at - half)
-        var to = Math.min(text.length, at + marker.length + half)
-        return (from > 0 ? '…' : '') + text.slice(from, to) + (to < text.length ? '…' : '')
-      }
+      //   · 小窗自己的正文（回答 / 两节 / 顶部原文条）：**不带上下文** —— 小窗这几轮对话
+      //     本来就会随 history 进模型，再贴一遍是重复；出处交给标签说清
+      //     （「小窗第 2 轮回答」「小窗「翻译」节」）。
+      //   · 主界面（会话）：带上"引用所在那一组对话 ± 一组"（host 从会话记录里取干净文本）。
+      //   · 侧边栏网页：带上帧内桥采的局部窗口。
+      // 后两条都是模型看不到的材料，所以必须带。
 
       /** 上下文里有没有引用原文（归一化后包含即可：【】是套在外面的，不影响包含关系）。 */
       function contextHasQuote(context, text) {
         var haystack = normalizeSpace(context)
         var needle = normalizeSpace(text)
         return needle.length > 0 && haystack.indexOf(needle) >= 0
-      }
-
-      /**
-       * 小窗里的引用 → 上下文 = 引用所在那一轮 ± QUOTE_CTX_TURNS 轮。
-       *
-       * 小窗的轮次就是它自己的对话（用户问 / 助手答），所以这里直接读 `state.turns`：
-       * 助手轮先折掉网页回答的 HTML（引用一整页 HTML 源码既长又没用），用户轮用它问的那句话。
-       * 选区不在任何一轮里（顶部选中文字条、翻译/详解卡片）→ 退回这次解读的局部上下文。
-       */
-      function panelQuoteContext(turnIndex, text) {
-        if (turnIndex < 0 || turnIndex >= state.turns.length) {
-          return String((state.payload && state.payload.context) || '')
-        }
-        var from = Math.max(0, turnIndex - QUOTE_CTX_TURNS)
-        var to = Math.min(state.turns.length - 1, turnIndex + QUOTE_CTX_TURNS)
-        var lines = []
-        var used = 0
-        for (var i = from; i <= to; i += 1) {
-          var turn = state.turns[i]
-          if (!turn || turn.hidden === true) continue
-          var role = turn.role === 'user' ? '用户' : '助手'
-          var body = turn.role === 'user' ? String(turn.text || '') : foldForHistory(sanitizeToolResidue(turn.text || ''))
-          body = body.replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
-          if (!body) continue
-          if (i === turnIndex) body = markQuoteInText(body, text)
-          body = clampAroundQuote(body, text, QUOTE_CTX_TURN_CHARS)
-          lines.push(role + '：' + body)
-          used += body.length
-          if (used >= QUOTE_CTX_MAX) break
-        }
-        return lines.join('\n')
       }
 
       /** 选区落在小窗的哪一轮上（往上找带 __turn 的气泡）；不在气泡里返回 -1。 */
@@ -2679,7 +2629,8 @@ window.__ModuleLoader__.load({
       function quoteContextFor(selection) {
         if (!selection) return { context: '', session: false }
         if (selection.source === 'panel') {
-          return { context: panelQuoteContext(selection.turnIndex, selection.text), session: false }
+          // 小窗正文：不带上文，只靠标签说清"出自哪里"（见 panelSourceLabel）
+          return { context: '', session: false }
         }
         if (selection.source === 'iframe') {
           // 侧边栏网页：帧内的桥已经把上下文采好了（±1500 字窗口，选中部分用【】标出）
@@ -3733,6 +3684,13 @@ window.__ModuleLoader__.load({
       function focusComposerOnce() {
         if (!askFocusPending || !panelOpen) return
         if (!composerVisible()) return
+        // 小窗里正有一段选中文字（用户正在划词、准备点「❝ 引用」）：**这一下聚焦会把选区清掉**。
+        // 让位给用户，并且不再补焦 —— 引用浮标是这个功能的主入口，不能因为抢焦点而让它消失。
+        //（实测：开窗后那一帧恰好落在"首轮刚出完"的自动聚焦上，划好的词会瞬间没了。）
+        if (hasPanelSelection()) {
+          askFocusPending = false
+          return
+        }
         var active = document.activeElement
         var inside = active && (active === panel || active === askBox || (panel.contains && panel.contains(active)))
         // 只有"人家正在别处打字"才值得让路。
@@ -3745,6 +3703,18 @@ window.__ModuleLoader__.load({
         }
         askFocusPending = false
         focusAskBox()
+      }
+
+      /** 小窗正文里这会儿有没有一段活选区（划词中/选好了还没点引用）。 */
+      function hasPanelSelection() {
+        try {
+          var selection = window.getSelection && window.getSelection()
+          if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return false
+          var range = selection.getRangeAt(0)
+          return insidePanelContent(range.startContainer) || insidePanelContent(range.endContainer)
+        } catch (error) {
+          return false
+        }
       }
 
       /** 正在打字的地方（input / textarea / 可编辑区）—— 只有这种焦点值得让路。 */
@@ -4811,8 +4781,8 @@ window.__ModuleLoader__.load({
             var source = existing.__turn
             if (!source) return
             var body = foldForHistory(sanitizeToolResidue(source.text))
-            // 整条引用同样带上下文：这一轮 ± 一轮（小窗里的"一组对话"）
-            addQuote(body, '小窗回答', { context: panelQuoteContext(state.turns.indexOf(source), body), session: false })
+            // 整条引用同样不带上下文：出处写进标签（「小窗第 N 轮回答」），对话本身在历史里
+            addQuote(body, turnLabelOf(source), { context: '', session: false })
           })
         }
       }
@@ -7510,9 +7480,9 @@ window.__ModuleLoader__.load({
         quote: function (text, label, extra) {
           return addQuote(text, label || '调试', extra || {})
         },
-        /** 自检用：某一段引用要用的上下文（等价于点引用那一刻采到的那份）。 */
-        quoteContext: function (source, turnIndex, text) {
-          return panelQuoteContext(source === 'panel' ? turnIndex : -1, text || '')
+        /** 自检用：某个节点上的选区会被标成什么出处（等价于点引用那一刻算出来的那个）。 */
+        quoteLabel: function (node) {
+          return node ? panelSourceLabel(node) : '（需要传节点）'
         },
         /** 自检用：引用 + 提问拼出来的那条消息原文（发给模型的就是它）。 */
         compose: function (quotes, question) {

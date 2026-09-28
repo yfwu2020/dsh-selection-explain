@@ -1159,6 +1159,17 @@ if (HOST_UP) {
     'src/index.ts',
   )
   assert('客户端给了新搜索工具中文标签', /\(name === 'advanced_search'\) return '联网搜索'/.test(readFileSync(resolve(HERE, '..', 'src', 'client', 'index.js'), 'utf8')), '')
+  {
+    // 源码契约（桩 DOM 里没有真实焦点，只能用源码钉住）：
+    // 开窗那一下的自动聚焦会把选区清掉 —— 小窗里正划着词（准备点引用）时必须让位，
+    // 否则就是"划好了词，一松手浮标没出现"（实测：开窗后首轮刚出完那一帧正好撞上）。
+    const clientSrc = readFileSync(resolve(HERE, '..', 'src', 'client', 'index.js'), 'utf8')
+    assert(
+      '开窗自动聚焦会让位给"小窗里正在划的词"',
+      /function hasPanelSelection\(\)/.test(clientSrc) && /if \(hasPanelSelection\(\)\) \{/.test(clientSrc),
+      'src/client/index.js',
+    )
+  }
   assert(
     '追问档位默认 high（翻译仍 low、详解仍 high）',
     /chatReasoningEffort: z\.string\(\)\.default\('high'\)/.test(hostSrc) &&
@@ -2927,30 +2938,33 @@ let bridgeOwnedBlob = ''
   for (let i = 0; i < 120 && hook.state().phase !== 'done'; i += 1) await sleep(20)
   assert('（前提）引用用例的首轮出完', hook.state().phase === 'done', hook.state().phase)
 
-  // ① 小窗里选中的正文
+  // ① 小窗里选中的正文（翻译节）
   // ⚠️ mouseup 的 target 必须是**面板里的节点**（真实浏览器就是这样上报的）：
   //    早先 mouseup 对面板内的目标直接 return，小窗里划词毫无反应 —— 用 document.body
   //    当 target 的写法测不出来（实测踩过：只有「引用整条」能用）。
-  const botBubble = Array.from(walk(chatLog)).find((n) => n.className.indexOf('dsh-sel-bubble-bot') >= 0)
-  const answerNode = Array.from(walk(botBubble || chatLog)).find((n) => n.tagName === 'P') || chatLog
-  selectText(answerNode, '引用用例的翻译段落')
-  documentStub.dispatch('mouseup', { target: answerNode })
+  const sectionP = Array.from(walk(panel)).find((n) => n.tagName === 'P')
+  selectText(sectionP, '引用用例的翻译段落')
+  documentStub.dispatch('mouseup', { target: sectionP })
   await sleep(30)
   const inPanel = hook.quoteState()
   assert('小窗里划词：浮出「❝ 引用」', inPanel.visible === true, JSON.stringify(inPanel))
-  assert('来源认成小窗里的回答（不是"页面内容"）', !!inPanel.selection && inPanel.selection.label === '小窗回答' && inPanel.selection.source === 'panel', JSON.stringify(inPanel.selection))
+  assert(
+    '来源写到"哪一节"（用该节自己的标题）',
+    !!inPanel.selection && inPanel.selection.label === '小窗「翻译」节' && inPanel.selection.source === 'panel',
+    JSON.stringify(inPanel.selection),
+  )
   assert('小窗开着时不弹「✦ 解读」（要解读直接在输入框里问）', button.style.display === 'none', String(button.style.display))
 
   quoteButton.dispatch('click', { preventDefault() {}, stopPropagation() {} })
   await sleep(10)
   let quotes = hook.quotes()
-  assert('点一下 → 引用区多了一张卡片', quotes.length === 1 && quotes[0].text === '引用用例的翻译段落' && quotes[0].label === '小窗回答', JSON.stringify(quotes))
-  assert('卡片画进输入框上方（来源 + 摘要）', quotesBox.getAttribute('data-show') === '1' && textOf(quotesBox).indexOf('小窗回答') >= 0 && textOf(quotesBox).indexOf('引用用例的翻译段落') >= 0, textOf(quotesBox))
+  assert('点一下 → 引用区多了一张卡片', quotes.length === 1 && quotes[0].text === '引用用例的翻译段落' && quotes[0].label === '小窗「翻译」节', JSON.stringify(quotes))
+  assert('卡片画进输入框上方（来源 + 摘要）', quotesBox.getAttribute('data-show') === '1' && textOf(quotesBox).indexOf('小窗「翻译」节') >= 0 && textOf(quotesBox).indexOf('引用用例的翻译段落') >= 0, textOf(quotesBox))
   assert('加完引用浮标自己收起来（"已经进去了"的信号）', quoteButton.style.display === 'none', String(quoteButton.style.display))
   assert('只挂引用、没写问题时发送键可用', askSend.disabled === false, 'disabled=' + askSend.disabled)
   assert(
-    '引用卡片自带上下文（这一段来自翻译卡片 → 用这次解读的局部上下文兜底）',
-    quotes[0].context === '引用用例的上下文片段' && quotes[0].session === false,
+    '小窗里的引用**不带上下文**（小窗这几轮对话本来就会随历史进模型）',
+    quotes[0].context === '' && quotes[0].session === false,
     JSON.stringify({ context: quotes[0].context, session: quotes[0].session }),
   )
   assert(
@@ -2961,8 +2975,8 @@ let bridgeOwnedBlob = ''
 
   // 划一大段（超过单段引用上限）也必须有反应：浮标照出，加进去时截断并说明
   {
-    selectText(answerNode, '长'.repeat(4200))
-    documentStub.dispatch('mouseup', { target: answerNode })
+    selectText(sectionP, '长'.repeat(4200))
+    documentStub.dispatch('mouseup', { target: sectionP })
     await sleep(30)
     assert('超长选区照样浮出引用浮标（"划长一点就没反应"是坑）', hook.quoteState().visible === true, JSON.stringify(hook.quoteState()))
     quoteButton.dispatch('click', { preventDefault() {}, stopPropagation() {} })
@@ -2980,7 +2994,7 @@ let bridgeOwnedBlob = ''
     // 把浮标状态也归零：不然下面那次"再点一次"的点击会把这段长文又加回来
     //（浮标虽然收起来了，但 state.quoteSelection 还留着上一次的选区）
     windowStub.getSelection = () => ({ isCollapsed: true, rangeCount: 0, toString: () => '' })
-    documentStub.dispatch('mouseup', { target: answerNode })
+    documentStub.dispatch('mouseup', { target: sectionP })
     await sleep(20)
   }
 
@@ -3111,7 +3125,7 @@ let bridgeOwnedBlob = ''
     carried ? String(carried.text).replace(/\n/g, '⏎').slice(0, 60) : JSON.stringify((secondPayload.history || []).map((t) => t.role)),
   )
 
-  // ④b 小窗里的引用也带上下文：引用所在那一轮 ± 一轮（用户消息 + 助手回复都在）
+  // ④b 小窗里的对话引用：**不带上下文**，但要说清出自哪一轮（对话本身会随历史进模型）
   for (let i = 0; i < 120 && hook.state().asking !== false; i += 1) await sleep(20)
   {
     const bubbles = Array.from(walk(chatLog)).filter((n) => n.className.indexOf('dsh-sel-bubble-bot') >= 0)
@@ -3126,25 +3140,22 @@ let bridgeOwnedBlob = ''
     await sleep(10)
     const panelQuote = hook.quotes().pop()
     assert(
-      '小窗里的引用上下文 = 这一轮 ± 一轮（用户消息 + 助手回复都在）',
-      !!panelQuote &&
-        panelQuote.session === false &&
-        panelQuote.context.indexOf('用户：那第三段呢？') >= 0 &&
-        panelQuote.context.indexOf('助手：') >= 0,
-      JSON.stringify(panelQuote && panelQuote.context).slice(0, 200),
+      '对话引用的出处 = 「小窗第 N 轮回答」',
+      !!panelQuote && /^小窗第 [0-9]+ 轮回答$/.test(panelQuote.label),
+      panelQuote && panelQuote.label,
     )
     assert(
-      '上下文里把被引用的那句用【】标出',
-      !!panelQuote && panelQuote.context.indexOf('【这是对追问的回答】') > 0,
-      JSON.stringify(panelQuote && panelQuote.context).slice(0, 160),
+      '对话引用不带上下文（小窗对话本来就在历史里，重复贴没意义）',
+      !!panelQuote && panelQuote.context === '' && panelQuote.session === false,
+      JSON.stringify(panelQuote && { context: panelQuote.context, session: panelQuote.session }),
     )
     const composed = hook.compose()
     assert(
-      '拼进消息时上下文与原文各就各位（原文已在上下文里 → 不重复贴一遍）',
-      composed.indexOf('【引用处上下文】（被引用的部分用【】标出）') > 0 &&
+      '拼进消息时只写出处、不贴【引用处上下文】',
+      composed.indexOf('【引用处上下文】') < 0 &&
         composed.indexOf('【引用原文】') < 0 &&
-        composed.indexOf('用户：那第三段呢？') > 0,
-      composed.replace(/\n/g, '⏎').slice(0, 200),
+        composed.indexOf('【引用 1】（来自小窗第') === 0,
+      composed.replace(/\n/g, '⏎').slice(0, 160),
     )
     // 这一段不发了，清掉，别影响后面的用例
     const lastChip = Array.from(walk(quotesBox)).filter((n) => n.className === 'dsh-sel-quotechip-x').pop()
@@ -3198,14 +3209,14 @@ let bridgeOwnedBlob = ''
   const lastBotTurn = hook.turns().filter((t) => t.role === 'assistant' && t.streaming !== true).pop()
   assert(
     '点一下 → 整条回答进了引用',
-    allQuotes.length === 1 && allQuotes[0].label === '小窗回答' && allQuotes[0].text.indexOf('这是对追问的回答') >= 0,
-    JSON.stringify(allQuotes.map((q) => q.text.slice(0, 24))),
+    allQuotes.length === 1 && /^小窗第 [0-9]+ 轮回答$/.test(allQuotes[0].label) && allQuotes[0].text.indexOf('这是对追问的回答') >= 0,
+    JSON.stringify(allQuotes.map((q) => q.label + ':' + q.text.slice(0, 16))),
   )
   assert('引用的是这一轮的原文（卡片上才是摘要）', allQuotes[0].text === lastBotTurn.text, `${allQuotes[0].text.length} vs ${String(lastBotTurn.text).length}`)
   assert(
-    '「引用整条」也带上下文（这一轮 ± 一轮）',
-    allQuotes[0].context.indexOf('用户：') > 0 && allQuotes[0].session === false,
-    JSON.stringify(allQuotes[0].context).slice(0, 120),
+    '「引用整条」也不带上下文（出处靠标签）',
+    allQuotes[0].context === '' && allQuotes[0].session === false,
+    JSON.stringify({ context: allQuotes[0].context, session: allQuotes[0].session }),
   )
 
   // ⑥b 等待/流式中的那条不给「引用整条」：内容是半截的，引用它没有意义（定稿后才出现）

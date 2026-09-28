@@ -42,11 +42,12 @@
   "scripts": {
     "build": "bash scripts/build.sh",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node scripts/test-filters.mjs && node scripts/test-prompt.mjs && node scripts/test-bridge.mjs && node scripts/smoke-bridge.mjs && node scripts/test-client.mjs && node scripts/test-transcript.mjs && node scripts/test-guard.mjs && node scripts/test-speech.mjs && node scripts/smoke-voice.mjs",
+    "test": "node scripts/test-filters.mjs && node scripts/test-prompt.mjs && node scripts/test-bridge.mjs && node scripts/smoke-bridge.mjs && node scripts/smoke-panel.mjs && node scripts/test-client.mjs && node scripts/test-transcript.mjs && node scripts/test-guard.mjs && node scripts/test-speech.mjs && node scripts/smoke-voice.mjs",
     "test:transcript": "node scripts/test-transcript.mjs",
     "test:guard": "node scripts/test-guard.mjs",
     "test:bridge": "node scripts/test-bridge.mjs",
     "test:smoke": "node scripts/smoke-bridge.mjs",
+    "test:panel": "node scripts/smoke-panel.mjs",
     "test:prompt": "node scripts/test-prompt.mjs",
     "test:speech": "node scripts/test-speech.mjs",
     "test:voice": "node scripts/smoke-voice.mjs"
