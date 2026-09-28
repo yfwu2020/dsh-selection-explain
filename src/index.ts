@@ -828,6 +828,22 @@ async function runTool(
   }
 }
 
+/**
+ * `createSystemMessage` 的**跨版本兼容调用**。
+ *
+ * 这个函数的签名在两个版本间不一样，而两份类型都得能编译通过：
+ *   · **0.1.5-rc.3**（npm 上按 peer 范围 `>=0.1.5-rc <2` 解析到的就是它，CI 的构建校验用的这份）：
+ *     `createSystemMessage(text, plugin)` —— 两个都必填，少传一个直接 TS2554（发布被卡过一次）；
+ *   · **0.1.7-rc.x**（本机/新运行时）：`createSystemMessage(text)` —— 第二参数是历史遗留，传了会被忽略。
+ *
+ * 所以这里把它当"接受可选第二参数"的函数来调：两个版本都编译得过，运行时也都正确
+ * （旧版正好拿到它想要的"组装这段提示词的插件名"，新版直接忽略）。
+ */
+const systemMessageOf = createSystemMessage as unknown as (
+  text: string,
+  plugin?: string,
+) => ReturnType<typeof createSystemMessage>
+
 /** 请求里带的会话 id（空串 = 客户端没取到）。 */
 function sessionIdOf(body: AnalyzeBody): string {
   return typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
@@ -2634,13 +2650,17 @@ export function apply(ctx: Context, rawConfig: Config): void {
           ...(sessionId ? { sessionId: sessionId as never } : {}),
           system: undefined,
           messages: [
-            // 只传正文：当前 dsh-llm 的 createSystemMessage(text) 只收一个参数，
-            // SystemMessage 也没有 name 字段（旧的第二参数是历史遗留，传了也会被忽略）。
-            createSystemMessage(
+            // 第二参数（组装这段提示词的插件名）：**新老版本签名不一样，两边都得能编译**——
+            //   · npm 上按 peer 范围 `>=0.1.5-rc <2` 解析到的是 0.1.5-rc.3：`(text, plugin)` 两个必填
+            //     （CI 就是拿这份类型做构建校验的，少传就 TS2554）；
+            //   · 本机 / 新版运行时（0.1.7-rc.x）：只剩 `(text)`，多传的参数会被忽略。
+            // 所以统一走 systemMessageOf 这个宽松别名（见文件下方的定义），两边都调得动。
+            systemMessageOf(
               wrapUp
                 ? `${systemPrompt}\n\n【收尾】工具轮次已用完：直接基于已经拿到的信息给出结论，不要再请求工具，也不要复述查询过程。` +
                     '正文里不要出现任何工具调用格式（包括 DeepSeek 的 DSML 写法，如 invoke/parameter 标记）——那些会被当作乱码展示给用户。'
                 : systemPrompt,
+              name,
             ),
             ...(round === 0 ? [baseMessage, ...openingMessages] : [baseMessage, ...openingMessages, ...toolMessages]),
           ],
@@ -2876,7 +2896,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
               ...(sessionId ? { sessionId: sessionId as never } : {}),
               system: undefined,
               messages: [
-                createSystemMessage(systemPrompt),
+                // 同上：多传的插件名在老版本运行时会被忽略，新版本类型上却是必填
+                systemMessageOf(systemPrompt, name),
                 createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: conclusionUser }] }),
               ],
               ...(config.temperature >= 0 ? { temperature: config.temperature } : {}),
