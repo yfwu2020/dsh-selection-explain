@@ -393,6 +393,35 @@ async function main() {
     }
   }
 
+  // ⑩ 浮标图标的**墨迹**要在画布里居中（用户报的："✦ 和 解读 好像没对齐，也没在按钮里居中"）
+  //    为什么量 getBBox 而不是截图：浮动按钮是 align-items:center 的 flex，居中的是**画布盒子**，
+  //    图形在画布里偏一点，图标就整体偏一点 —— 老星形路径 y 占 1.2~12.4（中心 6.8，不是 8），
+  //    于是比右边「解读」两个字高 1.1px（8x 截图量出来的）。文字墨迹没法用 DOM 量，
+  //    但"图标墨迹居中"这一条就足以拦住这类回归。
+  {
+    var icons = [
+      ['解读浮标 ✦ 图标', document.querySelector('.dsh-sel-btn:not(.dsh-sel-quotebtn) svg')],
+      ['引用浮标 ❝ 图标', quoteBtn.querySelector('svg')],
+    ]
+    for (var k = 0; k < icons.length; k += 1) {
+      var svg = icons[k][1]
+      // 浮标这会儿多半是隐藏的（display:none）—— 隐藏元素的 getBBox() 一律返回 0，
+      // 所以量之前先临时摆出来，量完还原（不改它此刻的真实状态）。
+      var btn = svg ? svg.closest('.dsh-sel-btn') : null
+      var prev = btn ? btn.style.display : ''
+      if (btn) btn.style.display = 'inline-flex'
+      var box = svg ? svg.getBBox() : null
+      if (btn) btn.style.display = prev
+      var cx = box ? box.x + box.width / 2 : 0
+      var cy = box ? box.y + box.height / 2 : 0
+      check(
+        icons[k][0] + '墨迹在 16×16 画布里居中',
+        !!box && Math.abs(cx - 8) <= 0.25 && Math.abs(cy - 8) <= 0.25,
+        box ? 'cx=' + cx.toFixed(2) + ' cy=' + cy.toFixed(2) : '未找到 svg',
+      )
+    }
+  }
+
   finish()
 }
 

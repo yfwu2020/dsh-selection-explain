@@ -218,7 +218,13 @@ window.__ModuleLoader__.load({
       '.dsh-sel-btn[data-pop="1"]{animation:dsh-sel-pop .24s cubic-bezier(.34,1.56,.64,1) both}',
       '.dsh-sel-btn:hover{filter:brightness(1.08)}',
       '.dsh-sel-btn:active{transform:scale(.97)}',
-      '.dsh-sel-btn svg{width:13px;height:13px;display:block}',
+      // 图标：13px 画布 + **左移 1px**。
+      // 为什么要有这个负外边距：画布是 16×16、图形墨迹只占中间 ~11px，左右各留 ~2px 空白，
+      // 而右边「解读 / 引用」两个字的墨迹几乎没有右边距（0.4~1.2px）—— 按盒子居中的话，
+      // 视觉上左边比右边宽 ~1.7px，整组看着偏右（实测墨迹中心偏 +0.88px）。
+      // 负外边距把"墨迹"而不是"画布"摆正；用 1px 而不是精确的 0.87px：两个浮标的文字
+      // 边距不同（「解读」0.4 / 「引用」1.2），取整后两枚浮标的偏差都在 0.5px 内。
+      '.dsh-sel-btn svg{width:13px;height:13px;display:block;margin-left:-1px}',
       // 全局一个主色：**青**（两节同色，和「详解」一致）。
       //   --sel-a1/a2      装饰：边条 / 呼吸点 / 淡底（不承载文字，不需要 AA）
       //   --sel-a*-text    文字：术语、标题、符号、链接（实测 AA 达标）
@@ -8148,13 +8154,22 @@ window.__ModuleLoader__.load({
       return svg
     }
 
+    /**
+     * 解读浮标上的四角星（✦）。
+     *
+     * 路径必须在 16×16 画布里**墨迹居中**（上下各留 2.4，墨迹中心 = 8）：
+     * 浮动按钮是 `align-items:center` 的 flex，居中的是**画布盒子**，
+     * 画布内偏一点，图标就整体偏一点。老路径 y 占 1.2~12.4（中心 6.8），
+     * 星形于是比右边「解读」两个字高了 1.1px（用户报的"✦ 和 解读 没对齐"）。
+     * 同理 x 占 2.4~13.6（中心 8，本来就对称）—— 横向那点偏差交给 CSS 的负外边距。
+     */
     function sparkleIcon() {
       var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
       svg.setAttribute('viewBox', '0 0 16 16')
       svg.setAttribute('fill', 'currentColor')
       svg.setAttribute('aria-hidden', 'true')
       var path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-      path.setAttribute('d', 'M8 1.2l1.5 4.1 4.1 1.5-4.1 1.5L8 12.4 6.5 8.3 2.4 6.8l4.1-1.5L8 1.2z')
+      path.setAttribute('d', 'M8 2.4l1.5 4.1 4.1 1.5-4.1 1.5L8 13.6 6.5 9.5 2.4 8l4.1-1.5L8 2.4z')
       svg.appendChild(path)
       return svg
     }
