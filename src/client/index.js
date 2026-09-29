@@ -582,6 +582,8 @@ window.__ModuleLoader__.load({
       // 悬浮状态胶囊：样式对齐右下角那枚费用胶囊（dsh-spend），摆在它上方
       // 逐项对齐 dsh-spend 的 .dsu-pill：同样的 padding / 字号 / 行高 / 边框 / 圆角 / 阴影，
       // 连小三角都用同一个字符 ▴ ▾（以前用 ▲ ▼，比它大一圈、也不一样淡）
+      // max-width 280 是"跟随费用胶囊"那条路的封顶（和 .dsu-pill 同值，并排时才能同宽）；
+      // **没有**费用胶囊可跟随时，placePill() 会用内联样式收到 PILL_FALLBACK_MAX（200）。
       '.dsh-sel-pill{position:fixed;right:20px;bottom:64px;z-index:' + String(Z_BTN) + ';display:flex;align-items:center;gap:8px;',
       'box-sizing:border-box;padding:6px 14px;border-radius:999px;cursor:pointer;user-select:none;max-width:280px;white-space:nowrap;',
       'background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#24292f);',
@@ -2205,6 +2207,18 @@ window.__ModuleLoader__.load({
       var PILL_POLL_MIN = 2000
       var PILL_POLL_MAX = 60000
       var pillPollDelay = PILL_POLL_MIN
+      /**
+       * **兜底**最大宽度：只有"量不到费用胶囊"时才生效（见 placePill）。
+       *
+       * 有费用胶囊时宽度写死成它的实测宽度 —— 两者共用 CSS 里那条 `max-width:280px`，
+       * 所以并排时同宽同位置；而单独一枚浮在右下角时 280 显得"横着一条"（旁边什么都没有，
+       * 分量感全在这条胶囊上），收到 200。取值依据（真浏览器 8x 截图 + 量墨迹）：
+       *   · 短内容「划词解读 · 就绪」自然宽度 146.6px → 不受影响；
+       *   · 英文选中「the migratio… · 完成 · 3 轮」214px → 会截一点；
+       *   · 最坏组合「12 字中文 + · 追问中 12.3s」名字那格还剩 ~54px ≈ 3 个字。
+       * 状态格 `flex:0 0 auto` 永不缩 —— 宽度不够时只牺牲选中文字（省略号收尾）。
+       */
+      var PILL_FALLBACK_MAX = 200
       var pillPlacerId = 0
       /** 上一次量到的费用胶囊容器 / 正在观察它的 ResizeObserver（浏览器没有这个 API 时为 null）。 */
       var pillHost = null
@@ -3373,6 +3387,12 @@ window.__ModuleLoader__.load({
         var wantedBottom = bottom + 'px'
         // 宽度**写死**成费用胶囊的宽度：文字长短不再让它伸缩（长文字自己省略号收尾）
         var wantedWidth = width > 0 ? width + 'px' : ''
+        // 上限分两种情况（用户定的规则）：
+        //   · 量到了费用胶囊（width > 0）→ 清掉内联上限，回到 CSS 那条 280 —— 和它并排时同宽；
+        //   · 量不到（没装 dsh-spend / 它的胶囊此刻宽高为 0）→ 收到 PILL_FALLBACK_MAX。
+        // 注意判据是**本次量到的宽度**而不是"有没有找到容器"：容器在但胶囊被折叠/隐藏时
+        // 同样跟不了，那种情况也该走兜底。
+        var wantedMaxWidth = width > 0 ? '' : PILL_FALLBACK_MAX + 'px'
         if (pill.style.right !== wantedRight) {
           pill.style.right = wantedRight
           changed = true
@@ -3383,6 +3403,10 @@ window.__ModuleLoader__.load({
         }
         if (pill.style.width !== wantedWidth) {
           pill.style.width = wantedWidth
+          changed = true
+        }
+        if (pill.style.maxWidth !== wantedMaxWidth) {
+          pill.style.maxWidth = wantedMaxWidth
           changed = true
         }
         return changed

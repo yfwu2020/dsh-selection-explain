@@ -422,6 +422,55 @@ async function main() {
     }
   }
 
+  // ⑪ 胶囊宽度：**有**费用胶囊就跟随它，**没有**就收到 PILL_FALLBACK_MAX = 200px（用户定的规则）
+  //    这条只有真浏览器能量：要真布局（getBoundingClientRect）、真 CSS（max-width 生效），
+  //    还要能挂一个假的 dsh-spend 挂载点。
+  {
+    var pillNode = hook.pill()
+    var pillName = pillNode.querySelector('.dsh-sel-pillname')
+    var pillMeta = pillNode.querySelector('.dsh-sel-pillmeta')
+    var savedName = pillName.textContent
+    var savedMeta = pillMeta.textContent
+    // 最坏内容（选中文字 12 字 + 最长状态）：自然宽度 301px，最容易被上限拦到
+    pillName.textContent = '迁移作业耗时超出了原计划…'
+    pillMeta.textContent = '· 追问中 12.3s'
+
+    // ① 没有费用胶囊 → 兜底上限 200
+    hook.place()
+    check('没有费用胶囊：上限收到 200px', pillNode.style.maxWidth === '200px', pillNode.style.maxWidth || '(空 = 回落 CSS 280)')
+    check('没有费用胶囊：不写死宽度（内容自适应）', pillNode.style.width === '', pillNode.style.width || '(空)')
+    var cappedWidth = Math.round(pillNode.getBoundingClientRect().width)
+    check('没有费用胶囊：最坏内容也真的被拦在 200px', cappedWidth === 200, cappedWidth + 'px')
+    check('没有费用胶囊：拦到上限后选中文字走省略号（不撑破）', pillName.scrollWidth > pillName.clientWidth, pillName.clientWidth + 'px 可见 / ' + pillName.scrollWidth + 'px 全长')
+
+    // ② 挂一个假的费用胶囊（宽 240）→ 跟随它的实测宽度，并清掉兜底上限
+    var fakeSpend = document.createElement('div')
+    fakeSpend.id = 'dsh-spend-widget'
+    fakeSpend.innerHTML = '<div class="dsu-widget" style="position:fixed;right:20px;bottom:20px">'
+      + '<div class="dsu-pill" style="box-sizing:border-box;width:240px;height:32px"></div></div>'
+    document.body.appendChild(fakeSpend)
+    hook.place()
+    check('有费用胶囊：宽度写死成它的实测宽度', pillNode.style.width === '240px', pillNode.style.width || '(空)')
+    check('有费用胶囊：清掉兜底上限（回到 CSS 280，和它同宽）', pillNode.style.maxWidth === '', pillNode.style.maxWidth || '(空)')
+    var followedWidth = Math.round(pillNode.getBoundingClientRect().width)
+    check('有费用胶囊：最坏内容跟着它到 240px（上限确实放开了）', followedWidth === 240, followedWidth + 'px')
+
+    // ③ 费用胶囊消失 → 立刻回到兜底
+    fakeSpend.remove()
+    hook.place()
+    check(
+      '费用胶囊消失后又回到 200px 兜底',
+      pillNode.style.maxWidth === '200px' && pillNode.style.width === '',
+      pillNode.style.maxWidth + ' / ' + (pillNode.style.width || '宽=空'),
+    )
+    check('回到兜底后宽度也收回来了', Math.round(pillNode.getBoundingClientRect().width) === 200, Math.round(pillNode.getBoundingClientRect().width) + 'px')
+
+    // 还原内容（后面的断言不受影响）
+    pillName.textContent = savedName
+    pillMeta.textContent = savedMeta
+    hook.place()
+  }
+
   finish()
 }
 
