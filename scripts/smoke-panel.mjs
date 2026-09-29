@@ -765,6 +765,40 @@ async function main() {
     var iconCanvas = pillBall.querySelector('.dsh-sel-pillicon')
     var iconStyle = getComputedStyle(iconCanvas)
     check('展开后回到圆点态：d 与客户端那条常量**逐字相同**', dotD === dotWant, dotD === dotWant ? '32 顶点一致' : dotD.slice(0, 14) + '… ≠ ' + dotWant.slice(0, 14))
+    // 这条是补覆盖：上面用 pillStarTo(0) 同步画到终点，验的是"终点长什么样"，
+    // 但"展开这条动画**自己**会不会走到终点"没验过 —— 用户报的"展开后没恢复成圆点"正是这里。
+    hook.pillStarAnimate(1)
+    await sleep(60)
+    hook.pillStarAnimate(0)
+    var settled = false
+    for (var settleTick = 0; settleTick < 24 && !settled; settleTick += 1) {
+      await sleep(24)
+      if (hook.pillStarProgress() === 0) settled = true
+    }
+    check('展开动画自己会走到圆点（不是停在星芒上）', settled, 'progress=' + hook.pillStarProgress())
+
+    // 用户报的"展开后没恢复成圆点"，根因是**打断**：来回打断时每一段都跑满 280ms，
+    // 于是图形永远追不上目标（实测序列 10101010、进度卡在 0.158）。
+    // 这里用高频交替打断复现它，然后断言"停手之后能很快落到目标上"。
+    // （比"等悬停那一下走完"稳：冒烟跑在虚拟时钟下，10 秒静置会瞬间到期、球态随时可能翻。）
+    hook.pillStarAnimate(0)
+    for (var ham = 0; ham < 8; ham += 1) {
+      hook.pillStarAnimate(1)
+      await sleep(16)
+      hook.pillStarAnimate(0)
+      await sleep(16)
+    }
+    var settleTicks = -1
+    for (var st = 0; st < 40 && settleTicks < 0; st += 1) {
+      await sleep(24)
+      if (hook.pillStarProgress() === 0) settleTicks = st + 1
+    }
+    check(
+      '来回打断之后图形仍会落到目标上，且很快（不再卡在半路）',
+      settleTicks > 0 && settleTicks <= 6,
+      '停手后第 ' + settleTicks + ' 拍到位（每拍 24ms）· progress=' + hook.pillStarProgress() + ' · 起跑=' + hook.pillStarStarts(),
+    )
+    pillBall.dispatchEvent(new MouseEvent('mouseleave', { view: window }))
     check('圆点态墨迹 8×8（和以前那枚 8px 圆点一致）', Math.abs(dotBox.width - 8) < 0.1 && Math.abs(dotBox.height - 8) < 0.1, dotBox.width.toFixed(2) + '×' + dotBox.height.toFixed(2))
     check('展开态画布布局占位 = 8px（两侧 -12px 负边距）', iconStyle.marginLeft === '-12px' && iconStyle.marginRight === '-12px', iconStyle.marginLeft + '/' + iconStyle.marginRight)
     check('展开态画布本身仍是 32px（1 单位 = 1px，几何数字照抄设计稿）', iconStyle.width === '32px' && iconStyle.height === '32px', iconStyle.width + '×' + iconStyle.height)
@@ -779,7 +813,7 @@ async function main() {
     check('鼠标停在小球上时不收球', hook.pillIdle() === false && hook.pillState().ball === false, String(hook.pillState().ball))
     pillBall.dispatchEvent(new MouseEvent('mouseleave', { view: window }))
 
-    // 自由摆放时收球/展开都按**中心**（球不该跳到原胶囊的左边缘，展开也不该把中心挪走）
+    // 自由摆放时收球/展开都以**右边缘**为锚（往左收成球、往右展开回原样，右边缘一个像素都不动）
     // 这条只有真浏览器能验：要真布局量矩形、真过渡（这里已冻住 → 量到的是终值）。
     {
       var homeRect = hook.pillState().rect
@@ -801,15 +835,16 @@ async function main() {
       fireOn('mouseup', midX2 + 4, midY2 + 2, true)
       var wideFree = hook.pillState()
       check('自由摆放（拖到中间）', wideFree.dock === 'free' && wideFree.rect.width > 100, wideFree.dock + ' ' + wideFree.rect.width)
-      var centerBefore = wideFree.rect.left + wideFree.rect.width / 2
+      var rightBefore = wideFree.rect.right
       hook.pillIdle()
       var ballFree = hook.pillState()
-      var centerBall = ballFree.rect.left + ballFree.rect.width / 2
-      check('自由摆放时收球：球停在原胶囊中心（±2px）', ballFree.ball === true && Math.abs(centerBall - centerBefore) <= 2, '中心 ' + centerBefore.toFixed(1) + ' → ' + centerBall.toFixed(1))
+      check('自由摆放时收球：右边缘不动（±1px，往左收成球）', ballFree.ball === true && Math.abs(ballFree.rect.right - rightBefore) <= 1, '右边缘 ' + rightBefore.toFixed(1) + ' → ' + ballFree.rect.right.toFixed(1))
+      var geoRightBefore = window.innerWidth - rightBefore
+      var geoRightBall = window.innerWidth - ballFree.rect.right
+      check('自由摆放时收球：球确实贴到了右边缘（球右边 = 原胶囊右边，球宽 32）', Math.abs(geoRightBall - geoRightBefore) <= 1 && ballFree.rect.width === ballFree.ballSize, '几何右边 ' + geoRightBefore.toFixed(1) + ' → ' + geoRightBall.toFixed(1) + '，球宽 ' + ballFree.rect.width)
       pillBall.dispatchEvent(new MouseEvent('mouseenter', { view: window }))
       var wideAgain = hook.pillState()
-      var centerAfter = wideAgain.rect.left + wideAgain.rect.width / 2
-      check('自由摆放时展开：中心也不动（±2px）', wideAgain.ball === false && Math.abs(centerAfter - centerBefore) <= 2, '中心 ' + centerBefore.toFixed(1) + ' → ' + centerAfter.toFixed(1))
+      check('自由摆放时展开：右边缘也不动（±1px）', wideAgain.ball === false && Math.abs(wideAgain.rect.right - rightBefore) <= 1, '右边缘 ' + rightBefore.toFixed(1) + ' → ' + wideAgain.rect.right.toFixed(1))
       pillBall.dispatchEvent(new MouseEvent('mouseleave', { view: window }))
       // 拖回右下角，后面的断言接着用锚定态
       fireOn('mousedown', Math.round(pillBall.getBoundingClientRect().left) + 20, Math.round(pillBall.getBoundingClientRect().top) + 10, false)

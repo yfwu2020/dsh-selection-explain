@@ -2344,13 +2344,15 @@ window.__ModuleLoader__.load({
        *
        *   · pillDock：'anchor' = 贴费用胶囊（量不到就贴右下角，由 placePill 管）；
        *               'free'   = 用户拖到别处了 —— 位置归用户，轮询不许再动它。
-       *   · pillFreeCenter：自由摆放时记的是**中心**（收球/展开都围着同一点，视觉上不跳）。
+       *   · pillFreeRight：自由摆放时记的是**右边缘**（收球/展开都以右侧为锚点：
+       *     胶囊往左收成球、再往右展开回原样，右边缘一个像素都不动 —— 用户要的就是这个）。
+       *     记中心是不行的：收球时右边缘会往左跑，球看起来"飘"了一下。
        *   · pillFreeWide：自由摆放时"展开态"的宽度（展开时按中心摆回去要用它；轮询顺手刷新）。
        *   · pillAnchorWidth：本次量到的费用胶囊宽度（0 = 没量到）—— 决定"跟随"还是"兜底"，
        *     也是"能不能收球"的前提（用户定的：只有没有费用胶囊时才收成小球）。
        */
       var pillDock = 'anchor'
-      var pillFreeCenter = null
+      var pillFreeRight = null
       var pillFreeWide = 0
       var pillBall = false
       var pillHover = false
@@ -3536,27 +3538,31 @@ window.__ModuleLoader__.load({
       }
 
       /** 自由摆放（用户拖到别处）时按**中心**摆 —— 收球/展开都围着同一点，视觉上不跳。 */
+      /** 自由摆放：**右边缘**钉在 pillFreeRight.right 上，宽度变化时往左长/往左收。 */
       function applyFreePill(width) {
-        if (!pillFreeCenter) return
+        if (!pillFreeRight) return
         var w = width || pill.offsetWidth || 0
         var h = pill.offsetHeight || 0
-        pill.style.left = Math.round(pillFreeCenter.x - w / 2) + 'px'
-        pill.style.top = Math.round(pillFreeCenter.y - h / 2) + 'px'
+        pill.style.left = Math.round(pillFreeRight.right - w) + 'px'
+        pill.style.top = Math.round(pillFreeRight.y - h / 2) + 'px'
         pill.style.right = 'auto'
         pill.style.bottom = 'auto'
       }
 
-      /** 自由摆放时也必须还在视口里（用户拖出去过 / 窗口变小了）。位置没变就一个像素都不写。 */
+      /**
+       * 自由摆放时也必须还在视口里（用户拖出去过 / 窗口变小了）。
+       * 右边缘为锚：先把右边缘夹进视口，再保证左边缘不出界（展开变宽时右边缘可能被推右一点）。
+       * 位置没变就一个像素都不写。
+       */
       function clampFreePill() {
-        if (!pillFreeCenter) return false
+        if (!pillFreeRight) return false
         var w = pill.offsetWidth || 0
         var h = pill.offsetHeight || 0
-        var left = clamp(pillFreeCenter.x - w / 2, 4, Math.max(4, window.innerWidth - w - 4))
-        var top = clamp(pillFreeCenter.y - h / 2, 4, Math.max(4, window.innerHeight - h - 4))
-        var x = left + w / 2
+        var right = clamp(pillFreeRight.right, w + 4, Math.max(w + 4, window.innerWidth - 4))
+        var top = clamp(pillFreeRight.y - h / 2, 4, Math.max(4, window.innerHeight - h - 4))
         var y = top + h / 2
-        if (Math.abs(x - pillFreeCenter.x) < 0.5 && Math.abs(y - pillFreeCenter.y) < 0.5) return false
-        pillFreeCenter = { x: x, y: y }
+        if (Math.abs(right - pillFreeRight.right) < 0.5 && Math.abs(y - pillFreeRight.y) < 0.5) return false
+        pillFreeRight = { right: right, y: y }
         applyFreePill(w)
         return true
       }
@@ -3760,6 +3766,8 @@ window.__ModuleLoader__.load({
       var pillStarP = 0
       var pillStarTargetP = 0
       var pillStarTimer = 0
+      var pillStarStarts = 0
+      var pillStarLog = ''
 
       /** 按 p 画一帧（路径 + 微转）。 */
       function paintPillStar(p) {
@@ -3781,16 +3789,24 @@ window.__ModuleLoader__.load({
        * 16ms ≈ 60fps，和 rAF 同档；后台标签里被节流也只是直接跳到终值，无副作用。
        */
       function animatePillStar(to) {
+        // ① 同目标的重复调用 = 空操作。**不要**重置已经跑了一半的动画 ——
+        //    否则"反复收到同一条指令"会让它永远停在半路（实测踩过：序列 10101010、进度卡在 0.158）。
+        if (to === pillStarTargetP && (pillStarTimer || pillStarP === to)) return
         if (pillStarTimer) {
           clearTimeout(pillStarTimer)
           pillStarTimer = 0
         }
         pillStarTargetP = to
+        pillStarStarts += 1
+        pillStarLog = (pillStarLog + (to ? '1' : '0')).slice(-40)
         var from = pillStarP
         if (from === to) {
           paintPillStar(to)
           return
         }
+        // ② 打断后接着走：时长按**剩余距离**等比缩短 → 速度不变，而且一定会走到终点。
+        //    否则"收球途中被展开"这种来回打断会让每一段都跑满 280ms，永远追不上目标。
+        var span = Math.max(60, PILL_MORPH_MS * Math.abs(to - from))
         var done = 0
         var last = Date.now()
         function step() {
@@ -3802,7 +3818,7 @@ window.__ModuleLoader__.load({
           if (elapsed <= 0) elapsed = 16
           last = now
           done += elapsed
-          var x = done / PILL_MORPH_MS
+          var x = done / span
           if (x >= 1) {
             pillStarTimer = 0
             paintPillStar(to)
@@ -3899,7 +3915,7 @@ window.__ModuleLoader__.load({
           var top = clamp(moveEvent.clientY - drag.offsetY, 4, Math.max(4, window.innerHeight - h - 4))
           // 真的拖了 → 从"贴角/跟随"切成自由摆放：位置归用户，轮询不再动它
           pillDock = 'free'
-          pillFreeCenter = { x: left + w / 2, y: top + h / 2 }
+          pillFreeRight = { right: left + w, y: top + h / 2 }
           pillFreeWide = w
           applyFreePill(w)
         }
@@ -3936,7 +3952,7 @@ window.__ModuleLoader__.load({
         // 写成 left/top 让过渡跑完，窗口结束（PILL_SNAP_MS）再交还给 right/bottom 那套稳态定位。
         var snappedTo = pillAnchorRect()
         pillDock = 'anchor'
-        pillFreeCenter = null
+        pillFreeRight = null
         pillFreeWide = 0
         pillSnapUntil = Date.now() + PILL_SNAP_MS
         pill.style.left = Math.round(snappedTo.left) + 'px'
@@ -8076,6 +8092,13 @@ window.__ModuleLoader__.load({
         pillStarTarget: function () {
           return pillStarTargetP
         },
+        /** 形变动画被起跑了几次 + 目标序列（诊断用：一直重新起跑就永远到不了终点）。 */
+        pillStarStarts: function () {
+          return pillStarStarts
+        },
+        pillStarLog: function () {
+          return pillStarLog
+        },
         /** 直接跑一次形变动画（与胶囊状态解耦）：测试用它确定性地验"计时器在推进"。 */
         pillStarAnimate: function (to) {
           animatePillStar(to ? 1 : 0)
@@ -8381,7 +8404,7 @@ window.__ModuleLoader__.load({
             dragging: !!pillDrag,
             ready: pill.getAttribute('data-ready') === '1',
             anchorWidth: pillAnchorWidth,
-            freeCenter: pillFreeCenter ? { x: Math.round(pillFreeCenter.x), y: Math.round(pillFreeCenter.y) } : null,
+            freeRight: pillFreeRight ? { right: Math.round(pillFreeRight.right), y: Math.round(pillFreeRight.y) } : null,
             rect: {
               left: Math.round(rect.left),
               top: Math.round(rect.top),
