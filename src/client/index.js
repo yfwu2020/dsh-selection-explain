@@ -27,6 +27,8 @@ window.__ModuleLoader__.load({
     var API = '/selection-explain/api/analyze'
     var PING = '/selection-explain/api/ping'
     var PROMOTE = '/selection-explain/api/promote'
+    /** 胶囊拖到别处后的位置（记在 host 上：拖到别处→存，吸附回右下角→清，挂载→读回来）。 */
+    var PILL_POS = '/selection-explain/api/pill'
     var HISTORY = '/selection-explain/api/history'
     /** 模型清单（带每个模型支持的推理等级）。 */
     var MODELS = '/selection-explain/api/models'
@@ -3538,6 +3540,50 @@ window.__ModuleLoader__.load({
         return { right: right, bottom: bottom, width: width }
       }
 
+      /* ── 位置记忆（host 存储）：拖到别处就存，吸附回右下角就清，挂载时读回来 ── */
+
+      function savePillPos() {
+        if (!pillFreeRight) return
+        fetch(PILL_POS, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ right: Math.round(pillFreeRight.right), y: Math.round(pillFreeRight.y) }),
+        }).catch(function () {})
+      }
+
+      function clearPillPos() {
+        fetch(PILL_POS, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ clear: true }),
+        }).catch(function () {})
+      }
+
+      var pillPosAsked = false
+      /** 用户自己拖过位置（拖过就不再用 host 上的存档覆盖） */
+      var pillUserPlaced = false
+
+      /** 挂载时读回上次拖到的位置：有就切成自由摆放、按右边缘摆回去（host 不可达时静默忽略）。 */
+      function loadPillPos() {
+        if (pillPosAsked) return
+        pillPosAsked = true
+        fetch(PILL_POS)
+          .then(function (res) {
+            return res.json()
+          })
+          .then(function (data) {
+            var pos = data && data.position
+            if (!pos || typeof pos.right !== 'number' || typeof pos.y !== 'number') return
+            if (pillUserPlaced) return // 用户已经自己拖过了，别用存档覆盖他
+            pillDock = 'free'
+            pillFreeRight = { right: pos.right, y: pos.y }
+            applyFreePill()
+            clampFreePill()
+            placePill()
+          })
+          .catch(function () {})
+      }
+
       /** 自由摆放：用 CSS right 钉住右边缘，宽度过渡的每一帧都往左长/往左收。 */
       function applyFreePill() {
         if (!pillFreeRight) return
@@ -3946,7 +3992,9 @@ window.__ModuleLoader__.load({
           Math.abs(rect.left - target.left) <= PILL_SNAP_RADIUS && Math.abs(rect.top - target.top) <= PILL_SNAP_RADIUS
         if (!near) {
           pillDock = 'free'
+          pillUserPlaced = true
           clampFreePill()
+          savePillPos() // 位置归用户：记住它（存 host 上）
           pill.removeAttribute('data-drag')
           return false
         }
@@ -3956,6 +4004,7 @@ window.__ModuleLoader__.load({
         var snappedTo = pillAnchorRect()
         pillDock = 'anchor'
         pillFreeRight = null
+        clearPillPos() // 吸附回右下角 = 默认位置，不用记了
         pillSnapUntil = Date.now() + PILL_SNAP_MS
         // 拖动时位置由 right 控制；吸附滑行由 left 控制。先在禁用过渡时
         // 把当前几何位置交给 left，再启用过渡写目标位置，避免 auto 属性瞬跳。
@@ -6721,6 +6770,7 @@ window.__ModuleLoader__.load({
       })
 
       // 费用胶囊的位置/尺寸会变（展开、缩放、数字变长、插件迟到挂载）→ 自适应频率地贴上去
+      loadPillPos() // 先问一句上次拖到哪儿（异步，回来再摆）
       placePill()
       ensureResizeWatch()
       schedulePillPlacer()
@@ -8089,6 +8139,13 @@ window.__ModuleLoader__.load({
 
       // —— 调试钩子（自动化验证用） ——
       window.__dshSelectionExplain = {
+        /** 重新读一次 host 上的胶囊位置（测试用；正常路径只在挂载时读一次）。 */
+        loadPillPos: function () {
+          pillPosAsked = false
+          pillUserPlaced = false // 测试要确定性地验"读回来"这条路径
+          loadPillPos()
+          return true
+        },
         /** 球心图形在进度 p 处的 path（p 可略越界）—— 测试按它核对整条形变轨迹。 */
         pillStarAt: function (p) {
           return pillStarPathAt(p)

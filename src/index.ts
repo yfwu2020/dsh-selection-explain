@@ -1381,6 +1381,94 @@ export function apply(ctx: Context, rawConfig: Config): void {
   const historyFile = (): string =>
     join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain', 'history.json')
 
+  /**
+   * 悬浮胶囊"拖到别处"后的位置（用户要求记住，存 host 上 —— 不用 localStorage）。
+   * 只记自由摆放的**右边缘 + 垂直中心**：收球/展开都以右边缘为锚（client 半的 applyFreePill 用 CSS right 钉住）。
+   * 吸附回右下角（anchor）时会清掉 —— 那是默认位置，不需要记。
+   */
+  const pillPosFile = (): string =>
+    join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain', 'pill.json')
+
+  let pillPos: { right: number; y: number } | null = null
+  let pillPosLoaded = false
+  let pillPosTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** 位置校验：只接受有限数值，并夹到一个"任何屏幕都放得下"的量级。 */
+  function normalizePillPos(input: unknown): { right: number; y: number } | null {
+    const value = input as { right?: unknown; y?: unknown } | null | undefined
+    const right = typeof value?.right === 'number' && Number.isFinite(value.right) ? value.right : NaN
+    const y = typeof value?.y === 'number' && Number.isFinite(value.y) ? value.y : NaN
+    if (!Number.isFinite(right) || !Number.isFinite(y)) return null
+    const clamp = (n: number): number => Math.round(Math.min(40000, Math.max(-40000, n)))
+    return { right: clamp(right), y: clamp(y) }
+  }
+
+  async function loadPillPos(): Promise<void> {
+    if (pillPosLoaded) return
+    pillPosLoaded = true
+    try {
+      const parsed = JSON.parse(await readFile(pillPosFile(), 'utf8')) as { position?: unknown }
+      pillPos = normalizePillPos(parsed?.position)
+    } catch {
+      pillPos = null // 没存过 / 坏了都当作"没记过"
+    }
+  }
+
+  function schedulePillPosWrite(): void {
+    if (pillPosTimer) clearTimeout(pillPosTimer)
+    pillPosTimer = setTimeout(() => {
+      pillPosTimer = null
+      void (async () => {
+        try {
+          await mkdir(join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain'), { recursive: true })
+          await writeFile(pillPosFile(), JSON.stringify({ version: 1, position: pillPos }, null, 0), 'utf8')
+        } catch (error) {
+          ctx.logger?.warn?.(`[${name}] 写入胶囊位置失败：${String((error as Error)?.message ?? error)}`)
+        }
+      })()
+    }, 300)
+    pillPosTimer.unref?.()
+  }
+
+  /**
+   * 胶囊位置：GET 读回来（挂载时恢复）、POST 存（{right,y}）或清（{clear:true}，吸附回右下角时调）。
+   */
+  const handlePillPos = (req: IncomingMessage, res: ServerResponse): void => {
+    void (async () => {
+      await loadPillPos()
+      if (req.method === 'GET') {
+        sendJson(res, 200, { ok: true, position: pillPos })
+        return
+      }
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { ok: false, error: '只支持 GET / POST' })
+        return
+      }
+      const raw = await readBody(req, 4_000)
+      let body: { position?: unknown; clear?: unknown } = {}
+      try {
+        body = raw ? (JSON.parse(raw) as { position?: unknown; clear?: unknown }) : {}
+      } catch {
+        sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' })
+        return
+      }
+      if (body.clear === true) {
+        pillPos = null
+        schedulePillPosWrite()
+        sendJson(res, 200, { ok: true, position: null })
+        return
+      }
+      const next = normalizePillPos(body.position ?? body)
+      if (!next) {
+        sendJson(res, 400, { ok: false, error: 'position 需要 { right, y } 两个有限数值' })
+        return
+      }
+      pillPos = next
+      schedulePillPosWrite()
+      sendJson(res, 200, { ok: true, position: pillPos })
+    })()
+  }
+
   const clampText = (value: unknown, max: number): string => (typeof value === 'string' ? value.slice(0, max) : '')
 
   async function loadHistory(): Promise<void> {
@@ -3003,6 +3091,10 @@ export function apply(ctx: Context, rawConfig: Config): void {
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/history`, handler: handleHistory }),
     `${name}: history route`,
+  )
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/pill`, handler: handlePillPos }),
+    `${name}: pill position route`,
   )
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/models`, handler: handleModels }),

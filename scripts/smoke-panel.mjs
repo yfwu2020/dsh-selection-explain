@@ -91,6 +91,7 @@ function sse(events) {
   var body = events.map(function (e) { return 'data: ' + JSON.stringify(e) + '\\n\\n' }).join('')
   return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
 }
+var pillPosStore = null // 内存版 host 存储（/api/pill）
 window.fetch = function (input, init) {
   var url = String(input)
   var body = {}
@@ -103,6 +104,19 @@ window.fetch = function (input, init) {
   }
   if (url.indexOf('/selection-explain/api/history') >= 0) {
     return Promise.resolve(new Response(JSON.stringify({ ok: true, entry: null, entries: [] }), { headers: { 'content-type': 'application/json' } }))
+  }
+  if (url.indexOf('/selection-explain/api/pill') >= 0) {
+    var isGet = !init || !init.method || String(init.method).toUpperCase() === 'GET'
+    if (isGet) return Promise.resolve(new Response(JSON.stringify({ ok: true, position: pillPosStore }), { headers: { 'content-type': 'application/json' } }))
+    if (body.clear === true) {
+      pillPosStore = null
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, position: null }), { headers: { 'content-type': 'application/json' } }))
+    }
+    if (typeof body.right === 'number' && typeof body.y === 'number') {
+      pillPosStore = { right: body.right, y: body.y }
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, position: pillPosStore }), { headers: { 'content-type': 'application/json' } }))
+    }
+    return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'position 需要 { right, y }' }), { status: 400, headers: { 'content-type': 'application/json' } }))
   }
   if (url.indexOf('/selection-explain/api/models') >= 0) {
     return Promise.resolve(new Response(JSON.stringify({ ok: true, current: null, stages: null, models: [] }), { headers: { 'content-type': 'application/json' } }))
@@ -885,6 +899,27 @@ async function main() {
       pillBall.dispatchEvent(new MouseEvent('mouseenter', { view: window }))
       var wideAgain = hook.pillState()
       check('自由摆放时展开：右边缘也不动（±1px）', wideAgain.ball === false && Math.abs(wideAgain.rect.right - rightBefore) <= 1, '右边缘 ' + rightBefore.toFixed(1) + ' → ' + wideAgain.rect.right.toFixed(1))
+
+      await sleep(30) // 存档是异步 POST
+      check(
+        '拖到别处后把位置存到了 host 上（右边缘 + 垂直中心）',
+        pillPosStore && Math.abs(pillPosStore.right - (window.innerWidth - wideFree.rect.right)) <= 2,
+        JSON.stringify(pillPosStore) + ' vs 几何右边 ' + (window.innerWidth - wideFree.rect.right).toFixed(1),
+      )
+      // 读回来：预置一个位置，调钩子，胶囊应当切成自由摆放并摆到那儿（右边缘为锚）
+      pillPosStore = { right: 300, y: 220 }
+      hook.loadPillPos()
+      await sleep(60)
+      var restored = hook.pillState()
+      check(
+        '重挂载读回 host 上的位置：切成自由摆放并摆回去（右边缘 = 存档）',
+        restored.dock === 'free' && Math.abs(window.innerWidth - restored.rect.right - 300) <= 2,
+        'dock=' + restored.dock + ' 几何右边 ' + (window.innerWidth - restored.rect.right).toFixed(1) + '（存档 300）',
+      )
+      // 再拖回中间，接着跑下面的"收球右边缘不动"
+      pillPosStore = null
+      hook.loadPillPos()
+      await sleep(0)
       pillBall.dispatchEvent(new MouseEvent('mouseleave', { view: window }))
       // 拖回右下角，后面的断言接着用锚定态
       var frozenStyle = document.getElementById('freeze-motion')
@@ -896,6 +931,8 @@ async function main() {
       check('自由摆放从 CSS right 切回吸附时仍有滑行动画', snapAnimated, String(snapAnimated))
       document.head.appendChild(frozenStyle)
       check('拖回右下角后又吸附（回到 anchor）', hook.pillState().dock === 'anchor', JSON.stringify(hook.pillState()))
+      await sleep(30)
+      check('吸附回右下角后清掉 host 上的存档（那是默认位置，不用记）', pillPosStore === null, JSON.stringify(pillPosStore))
       check('锚定位置和最初一致', Math.abs(hook.pillState().rect.left - homeRect.left) <= 2, hook.pillState().rect.left + ' vs ' + homeRect.left)
       void anchored
     }
