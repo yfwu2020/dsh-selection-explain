@@ -502,7 +502,7 @@ npm 侧只需配一次：包设置 → **Trusted Publisher** → GitHub Actions�
 src/index.ts            host 半：SSE 路由 / 模型调用 / 会话背景 / 历史落盘 / 过滤器
 src/prompts.ts          提示词与写作规则（纯字符串常量，无逻辑）
 src/client/index.js     client 半：划词浮标 + 面板 + 渲染器（手写 ModuleLoader bundle，无打包器）
-scripts/                build.sh + 5 个测试 + dump-prompt + 演示图生成
+scripts/                build.sh + 9 个离线测试 + 3 个浏览器冒烟 + dump-prompt + 演示图生成
 skills/web-design/      网页模式注入的设计规范（运行时读取）
 assets/                 README 的演示图（由 scripts/build-demo-pages.mjs 生成）
 cordis.patch.yml        官方装配用的 bundle patch
