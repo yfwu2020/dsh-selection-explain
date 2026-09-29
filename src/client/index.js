@@ -138,7 +138,8 @@ window.__ModuleLoader__.load({
      *
      * 按钮里那颗星是 16 画布上的八边形：外半径 5.6、内半径 2.1213（内外比 .3788）、四条边是直线
      * （path `M8 2.4l1.5 4.1 4.1 1.5-4.1 1.5L8 13.6 6.5 9.5 2.4 8l4.1-1.5L8 2.4z`）。
-     * 球里按 8.4/5.6 = 1.5 倍放大 → 墨迹 16.8px（球 32px，四周留白 7.6px）。
+     * 球里的尺寸：外半径 6.0 → 墨迹 12.0px —— 和胶囊里文字（字号 12px）同高（用户要求）。
+     * （原来按 1.5 倍放大到 16.8px，在 32px 球里显得比文字壮太多。）
      *
      * 形变方式：把"圆点"和"星"都看成 **32 边形**逐顶点插值 ——
      *   · PILL_STAR_DOT_D：32 个顶点同半径 4 → 8px 圆点（8px 下与正圆无差，最大偏差 0.02px）
@@ -178,7 +179,7 @@ window.__ModuleLoader__.load({
     var PILL_STAR_TWIST = 8
 
     var PILL_STAR_DOT_D = 'M4 0L3.92 0.78L3.7 1.53L3.33 2.22L2.83 2.83L2.22 3.33L1.53 3.7L0.78 3.92L0 4L-0.78 3.92L-1.53 3.7L-2.22 3.33L-2.83 2.83L-3.33 2.22L-3.7 1.53L-3.92 0.78L-4 0L-3.92 -0.78L-3.7 -1.53L-3.33 -2.22L-2.83 -2.83L-2.22 -3.33L-1.53 -3.7L-0.78 -3.92L0 -4L0.78 -3.92L1.53 -3.7L2.22 -3.33L2.83 -2.83L3.33 -2.22L3.7 -1.53L3.92 -0.78Z'
-    var PILL_STAR_D = 'M8.4 0L5.44 1.08L3.94 1.63L2.97 1.99L2.25 2.25L1.99 2.97L1.63 3.94L1.08 5.44L0 8.4L-1.08 5.44L-1.63 3.94L-1.99 2.97L-2.25 2.25L-2.97 1.99L-3.94 1.63L-5.44 1.08L-8.4 0L-5.44 -1.08L-3.94 -1.63L-2.97 -1.99L-2.25 -2.25L-1.99 -2.97L-1.63 -3.94L-1.08 -5.44L0 -8.4L1.08 -5.44L1.63 -3.94L1.99 -2.97L2.25 -2.25L2.97 -1.99L3.94 -1.63L5.44 -1.08Z'
+    var PILL_STAR_D = 'M6 0L3.89 0.77L2.81 1.17L2.12 1.42L1.61 1.61L1.42 2.12L1.17 2.81L0.77 3.89L0 6L-0.77 3.89L-1.17 2.81L-1.42 2.12L-1.61 1.61L-2.12 1.42L-2.81 1.17L-3.89 0.77L-6 0L-3.89 -0.77L-2.81 -1.17L-2.12 -1.42L-1.61 -1.61L-1.42 -2.12L-1.17 -2.81L-0.77 -3.89L0 -6L0.77 -3.89L1.17 -2.81L1.42 -2.12L1.61 -1.61L2.12 -1.42L2.81 -1.17L3.89 -0.77Z'
 
     /** 吸附滑行的时长（毫秒）：比过渡时长多一点，走完就把定位交还给 right/bottom。 */
     var PILL_SNAP_MS = 360
@@ -3585,7 +3586,8 @@ window.__ModuleLoader__.load({
        *
        * 三种处境：
        *   · anchor（默认）：贴费用胶囊；量不到就贴右下角 20/20，宽度收到 PILL_FALLBACK_MAX；
-       *   · free：用户把它拖到别处了 —— 位置归用户，这里只保证"别掉出视口"；
+       *   · free：用户把它拖到别处了 —— 位置归用户（**右边缘**为锚，见 applyFreePill），
+       *     这里只保证"别掉出视口"；
        *   · ball：静置太久收成小球 —— 上限收到 PILL_BALL_SIZE（见 collapsePill）。
        * 宽度和上限三种处境都一样算（拖动不该顺手改宽度），只有位置分家。
        */
@@ -3616,7 +3618,7 @@ window.__ModuleLoader__.load({
         // 再长回来，看着就是先抽一下（真时间轴采样到的 0:10）。
         write('minWidth', pillBall ? PILL_BALL_SIZE + 'px' : '0px')
         if (pillDock === 'free') {
-          // 位置归用户：只保证还在视口里（顺手记下"展开态多宽"，展开时按中心摆回去要用）
+          // 位置归用户：只保证还在视口里（顺手记下"展开态多宽"，展开时要按它算右边缘）
           if (!pillBall) pillFreeWide = pill.offsetWidth || pillFreeWide
           clampFreePill()
           return changed
@@ -3694,7 +3696,7 @@ window.__ModuleLoader__.load({
 
       /** 星的多边形顶点（8 个：尖谷交替，与「✦ 解读」那颗星同一条几何）。 */
       function pillStarPolygon() {
-        var tip = 8.4
+        var tip = 6.0 // 墨迹 12.0px：与胶囊里 12px 的文字同高
         var valley = tip * 0.3788
         var pts = []
         for (var k = 0; k < 4; k += 1) {
@@ -3740,10 +3742,17 @@ window.__ModuleLoader__.load({
         var out = []
         for (var i = 0; i < PILL_STAR_SAMPLES; i += 1) {
           var ang = i * 360 / PILL_STAR_SAMPLES
-          var w = Math.pow((1 + Math.cos(4 * ang * Math.PI / 180)) / 2, 1.5)
-          // 过冲只加在"尖"上（按 w 加权），于是尖先冲出去一点、谷按部就班收 —— 呼吸感来自这里
-          var prog = w * pTip + (1 - w) * pBody + PILL_STAR_POP * w * popEnv
-          var r = 4 + (pillStarBoundaryRadius(pillStarPoly, ang) - 4) * prog
+          var rStar = pillStarBoundaryRadius(pillStarPoly, ang)
+          // 顶点按"要往外长还是要往里收"分流：
+          //   目标半径 ≥ 4（尖和紧邻的顶点）跟"尖"的进度 pTip；< 4（往内收的顶点）跟"身"的进度 pBody。
+          // 为什么不能按"离尖的角度权重 w"混合（试过）：22.5° 那个顶点目标半径已 < 4（要往里收），却因为
+          //   w 不小而跟着尖的进度**提前**内收 → 比谷还深，边上出现一道波浪（缩小尺寸后 22.5° 比 33.75°
+          //   还深 0.11px，被冒烟抓到）。分流之后单调性可证：
+          //   外扩顶点 r = 4 + (rStar-4)·pTip ≥ 4 ≥ 4 + (rStar-4)·pBody = 内收顶点。
+          var prog = rStar >= 4 ? pTip : pBody
+          // 过冲只加在"尖"上（外扩顶点）：尖先冲出去一点、谷按部就班收 —— 呼吸感来自这里
+          if (rStar >= 4) prog += PILL_STAR_POP * popEnv
+          var r = 4 + (rStar - 4) * prog
           var rad = ang * Math.PI / 180
           var x = Math.round(r * Math.cos(rad) * 100) / 100
           var y = Math.round(r * Math.sin(rad) * 100) / 100

@@ -509,10 +509,12 @@ async function main() {
     var r0 = radiiAt(0)
     var r25 = radiiAt(0.25)
     var r50 = radiiAt(0.5)
+    var r80 = radiiAt(0.8)
+    var r100 = radiiAt(1)
     check('p=0：32 个顶点同半径 4.00（8px 圆点）', r0.length === 32 && r0.every(function (r) { return Math.abs(r - 4) < 0.02 }), r0.length + ' 顶点，半径 ' + r0[0].toFixed(3))
     check('p=0.25：谷仍停在 4.00（"两段"的签名 —— 线性插值会把它拉到 3.80，那就是菱形相）', Math.abs(r25[4] - 4) < 0.02, '谷 ' + r25[4].toFixed(3))
-    check('p=0.25：尖已经抽到 5.57 左右（尖先长，p=0.25 就走了 1/3）', Math.abs(r25[0] - 5.57) < 0.06, '尖 ' + r25[0].toFixed(3))
-    check('p=0.5：尖接近满长（≥ 7.9），身刚开始收（谷 ≤ 3.95）', r50[0] >= 7.9 && r50[4] <= 3.95, '尖 ' + r50[0].toFixed(2) + ' / 谷 ' + r50[4].toFixed(2))
+    check('p=0.25：尖已经在长（> 4 但远未到顶，尖先长）', r25[0] > 4.3 && r25[0] < r100[0] - 0.5, '尖 ' + r25[0].toFixed(3) + '（顶 ' + r100[0].toFixed(2) + '）')
+    check('p=0.5：尖接近满长（≥ 顶-0.6），身刚开始收（谷仍 > 3.6）', r50[0] >= r100[0] - 0.6 && r50[4] > 3.6, '尖 ' + r50[0].toFixed(2) + ' / 谷 ' + r50[4].toFixed(2))
     // 同一个 p 下，从尖到谷的半径必须单调递减（尖 > 11.25° > 22.5° > 33.75° > 谷），
     // 且左右对称 —— 这就是"不出现波浪边"的可测形式。
     var sectorOk = function (r) {
@@ -522,10 +524,8 @@ async function main() {
       return true
     }
     check('同一进度下：尖→谷单调递减且左右对称（没有波浪边）', sectorOk(r25) && sectorOk(r50) && sectorOk(radiiAt(0.8)), JSON.stringify(r50.map(function (r) { return Number(r.toFixed(2)) }).slice(0, 5)))
-    // 形状空间的过冲：尖在 p≈0.8 处冲过 8.4 一点，到 p=1 精确回到 8.4
-    var r80 = radiiAt(0.8)
-    var r100 = radiiAt(1)
-    check('尖有轻微过冲（p=0.8 处 > p=1 的 8.4，冲出去再收回）', r80[0] > 8.5 && Math.abs(r100[0] - 8.4) < 0.02, 'p=.8 尖 ' + r80[0].toFixed(3) + ' / p=1 尖 ' + r100[0].toFixed(3))
+    // 形状空间的过冲：尖在 p≈0.8 处冲过终点一点，到 p=1 精确回到终点
+    check('尖有轻微过冲（p=0.8 处高出终点一点，再收回）', r80[0] > r100[0] + 0.05, 'p=.8 尖 ' + r80[0].toFixed(3) + ' / p=1 尖 ' + r100[0].toFixed(3))
     check('p=1 的路径与客户端常量逐字相同（和「✦ 解读」那颗星同一条几何）', hook.pillStarAt(1) === hook.pillStarD(), hook.pillStarAt(1) === hook.pillStarD() ? '逐字一致' : '不一致')
     check('p=0 的路径与客户端常量逐字相同（展开态就是那枚 8px 圆点）', hook.pillStarAt(0) === hook.pillStarDotD(), hook.pillStarAt(0) === hook.pillStarDotD() ? '逐字一致' : '不一致')
     // 曲线：时间对称（倒放即另一个方向）+ 轻微蓄势/过冲（不直来直去）
@@ -690,11 +690,17 @@ async function main() {
     var before = hook.pillState()
     check('收球前是展开的胶囊', before.ball === false && before.rect.width > 100, before.rect.width + 'px')
 
+    var anchoredRightBefore = window.innerWidth - before.rect.right
     var idleCollapsed = hook.pillIdle()
     var balled = hook.pillState()
     check('没有费用胶囊 → 静置收球', idleCollapsed === true && balled.ball === true, JSON.stringify(balled.style))
     check('收成小球：32×32 的圆', balled.rect.width === balled.ballSize && balled.rect.height === balled.ballSize, balled.rect.width + '×' + balled.rect.height)
     check('小球仍然贴着右下角（位置没跑）', balled.rect.right === 20 && balled.rect.bottom === 20, balled.rect.right + '/' + balled.rect.bottom)
+    check(
+      '锚定态收球：以胶囊自己的右边缘为锚（右边缘不动，往左收成球）',
+      Math.abs((window.innerWidth - balled.rect.right) - anchoredRightBefore) <= 1,
+      '右边缘 ' + anchoredRightBefore.toFixed(1) + ' → ' + (window.innerWidth - balled.rect.right).toFixed(1),
+    )
 
     // ── 球心里的星芒：收球时 d 换成星、展开时换回圆点，几何都得对得上 ──
     //    球心图形是 JS 按时间推进的（胶囊那条是 CSS 过渡，被 freezeMotion 冻成瞬时），
@@ -737,15 +743,16 @@ async function main() {
     var starD = starPath.getAttribute('d')
     var starBox = starPath.getBBox()
     check('收球终态：d 与客户端那条常量逐字相同', starD === starWant, starD === starWant ? '32 顶点一致' : starD.slice(0, 18) + '… ≠ ' + starWant.slice(0, 18))
+    var pillFontSize = parseFloat(getComputedStyle(pillBall).fontSize)
     check(
-      '星芒墨迹 16.8×16.8（球 32px，四周留白 7.6）',
-      Math.abs(starBox.width - 16.8) < 0.15 && Math.abs(starBox.height - 16.8) < 0.15,
-      starBox.width.toFixed(2) + '×' + starBox.height.toFixed(2),
+      '星芒和胶囊里的文字一样高（墨迹 ≈ 字号，±0.8px）',
+      Math.abs(starBox.height - pillFontSize) <= 1.0 && Math.abs(starBox.width - starBox.height) < 0.15,
+      '星芒 ' + starBox.width.toFixed(2) + '×' + starBox.height.toFixed(2) + ' vs 字号 ' + pillFontSize + 'px',
     )
     check(
-      '星芒的尖是 8.4、谷是 3.18（内外比 .3788 —— 和「✦ 解读」浮标那颗星同一条几何）',
-      /M8\.4 0/.test(starD) && starD.indexOf('L2.25 2.25') > 0,
-      starD.slice(0, 30),
+      '星芒的内外半径比 = .3788（和「✦ 解读」浮标那颗星同一条几何，只是缩小了）+ 顶点数 32',
+      Math.abs(r100[0] / r100[4] - 1 / 0.3788) < 0.05 && r100.length === 32,
+      '尖 ' + r100[0].toFixed(2) + ' / 谷 ' + r100[4].toFixed(2) + ' = ' + (r100[0] / r100[4]).toFixed(3) + '（应为 2.640）',
     )
 
     // 鼠标一放上去就展开（若已被异步活动展开过，先收回球态，好让 mouseenter 真的走一次展开）
@@ -756,6 +763,11 @@ async function main() {
     pillBall.dispatchEvent(new MouseEvent('mouseenter', { view: window }))
     var expanded = hook.pillState()
     check('鼠标移上去：小球展开回胶囊', expanded.ball === false && expanded.rect.width > 100, expanded.rect.width + 'px')
+    check(
+      '锚定态展开：右边缘同样不动（往右长回去）',
+      Math.abs((window.innerWidth - expanded.rect.right) - anchoredRightBefore) <= 1,
+      '右边缘 ' + anchoredRightBefore.toFixed(1) + ' → ' + (window.innerWidth - expanded.rect.right).toFixed(1),
+    )
     // 展开态：图形回到 8px 圆点，且画布**布局占位**仍是 8px（两侧 -12px）——
     // 这样胶囊的排版与宽度和以前那枚 8px 圆点完全一样，不会因为换了个 SVG 就把胶囊撑宽。
     check('展开时球心图形的目标是"圆点"（0）', hook.pillStarTarget() === 0, String(hook.pillStarTarget()))

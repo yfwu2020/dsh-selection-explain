@@ -12,7 +12,7 @@
  *
  * 用法：node scripts/gen-star-path.mjs
  */
-var TIP = 8.4
+var TIP = 6.0   // 墨迹 12.0px = 胶囊里文字的字号（用户要求：和文字一样高）
 var VALLEY = TIP * 0.3788
 var SAMPLES = 32
 
