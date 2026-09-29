@@ -102,6 +102,30 @@ window.__ModuleLoader__.load({
     var FONT =
       '-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif'
 
+    // —— 悬浮状态胶囊的几何/手感参数（CSS 与 placePill 都要用，所以放这一层） ——
+    /**
+     * **兜底**最大宽度：只有"量不到费用胶囊"时才生效（见 placePill）。
+     *
+     * 有费用胶囊时宽度写死成它的实测宽度 —— 两者共用 CSS 里那条 `max-width:280px`，
+     * 所以并排时同宽同位置；而单独一枚浮在右下角时 280 显得"横着一条"（旁边什么都没有，
+     * 分量感全在这条胶囊上），收到 200。取值依据（真浏览器 8x 截图 + 量墨迹）：
+     *   · 短内容「划词解读 · 就绪」自然宽度 146.6px → 不受影响；
+     *   · 英文选中「the migratio… · 完成 · 3 轮」214px → 会截一点；
+     *   · 最坏组合「12 字中文 + · 追问中 12.3s」名字那格还剩 ~54px ≈ 3 个字。
+     * 状态格 `flex:0 0 auto` 永不缩 —— 宽度不够时只牺牲选中文字（省略号收尾）。
+     */
+    var PILL_FALLBACK_MAX = 200
+    /** 收成小球后的直径（px）。收球 = 把 max-width 收到它（能过渡，所以收/放都是动画）。 */
+    var PILL_BALL_SIZE = 32
+    /** 静置多久收成小球（毫秒）——"长时间没有点击或者小窗活动"的那个"长时间"。 */
+    var PILL_BALL_IDLE_MS = 10000
+    /** 松手时离"贴角位置"多近就吸附回去（px，按左上角比）。 */
+    var PILL_SNAP_RADIUS = 96
+    /** 位移超过多少像素才算"拖"而不是"点"（px，曼哈顿距离）。 */
+    var PILL_DRAG_SLOP = 4
+    /** 吸附滑行的时长（毫秒）：比过渡的 .32s 多一点点，走完就把定位交还给 right/bottom。 */
+    var PILL_SNAP_MS = 340
+
     // ────────────────────────────── 小工具 ──────────────────────────────
 
     function el(tag, cls, text) {
@@ -584,11 +608,33 @@ window.__ModuleLoader__.load({
       // 连小三角都用同一个字符 ▴ ▾（以前用 ▲ ▼，比它大一圈、也不一样淡）
       // max-width 280 是"跟随费用胶囊"那条路的封顶（和 .dsu-pill 同值，并排时才能同宽）；
       // **没有**费用胶囊可跟随时，placePill() 会用内联样式收到 PILL_FALLBACK_MAX（200）。
+      // 过渡（收球 / 拖动吸附 / 跟随位置变化）挂在 [data-ready="1"] 上：插件挂载那一下是先贴好
+      // 曲线用 easeOutQuint（.22,1,.36,1）：**不带过冲**。一开始试的是带回弹的 .34,1.2,.64,1，
+      // 真时间轴采样宽度发现它 60ms 就走完 ~85%（收球看着像啪一下塌掉，剩下时间只是在慢慢对齐）；
+      // easeOutQuint 前段快、后段长，才是"收进去 / 放出来"的自然手感。
+      // 位置再开过渡的，否则会从 CSS 默认的 bottom:64 一路滑到实测位置。
       '.dsh-sel-pill{position:fixed;right:20px;bottom:64px;z-index:' + String(Z_BTN) + ';display:flex;align-items:center;gap:8px;',
       'box-sizing:border-box;padding:6px 14px;border-radius:999px;cursor:pointer;user-select:none;max-width:280px;white-space:nowrap;',
       'background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#24292f);',
       'border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.22));box-shadow:0 4px 16px rgba(0,0,0,.12);',
-      'font-family:inherit;font-size:12px;line-height:18px;font-weight:400;transition:box-shadow .15s ease}',
+      'font-family:inherit;font-size:12px;line-height:18px;font-weight:400}',
+      '.dsh-sel-pill[data-ready="1"]{transition:box-shadow .15s ease,width .32s cubic-bezier(.22,1,.36,1),',
+      'max-width .32s cubic-bezier(.22,1,.36,1),padding .32s cubic-bezier(.22,1,.36,1),gap .32s cubic-bezier(.22,1,.36,1),',
+      'left .32s cubic-bezier(.22,1,.36,1),top .32s cubic-bezier(.22,1,.36,1),',
+      'right .32s cubic-bezier(.22,1,.36,1),bottom .32s cubic-bezier(.22,1,.36,1)}',
+      // 鼠标正按着拖：位置每帧都在变，有过渡就"黏手"
+      '.dsh-sel-pill[data-drag="1"]{transition:none;cursor:grabbing}',
+      // 收成小球：**宽度不写死**（内联 max-width 收到 PILL_BALL_SIZE 就够了 —— max-width 能过渡，
+      // 所以"胶囊→球"和"球→胶囊"是同一条平滑曲线，不用预先量宽度，也不会跳变）；
+      // 这里只管形状：变成 32×32 的圆、padding/gap 归零、圆点居中。
+      '.dsh-sel-pill[data-ball="1"]{min-width:' + String(PILL_BALL_SIZE) + 'px;height:' + String(PILL_BALL_SIZE) + 'px;padding:0;gap:0;justify-content:center}',
+      // 三段文字（名字 / 状态 / 箭头）收起来：max-width 过渡 + 淡出，而不是 display:none（那个没法过渡）。
+      // ⚠️ 基础态必须给一个**数值** max-width（320px，比任何内容都宽 = 等于不限制）：
+      //    否则它是从 none 过渡到 0，而 none 不可插值 —— 文字会瞬间塌掉。
+      //    实测（真时间轴逐帧采样宽度）：漏了这句时整枚胶囊 60ms 就缩完了，看着像啪一下拍扁，
+      //    而不是收进去。
+      '.dsh-sel-pill .dsh-sel-pillname,.dsh-sel-pill .dsh-sel-pillmeta,.dsh-sel-pill .dsh-sel-pillcaret{max-width:320px;transition:opacity .18s ease,max-width .32s cubic-bezier(.22,1,.36,1)}',
+      '.dsh-sel-pill[data-ball="1"] .dsh-sel-pillname,.dsh-sel-pill[data-ball="1"] .dsh-sel-pillmeta,.dsh-sel-pill[data-ball="1"] .dsh-sel-pillcaret{max-width:0;opacity:0;overflow:hidden;pointer-events:none}',
       '.dsh-sel-pill:hover{box-shadow:0 6px 22px rgba(0,0,0,.18)}',
       '.dsh-sel-pill[data-open="1"]{border-color:color-mix(in srgb,var(--sel-a1,#0d9488) 55%,transparent)}',
       '.dsh-sel-pilldot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-label-tertiary,#8c959f)}',
@@ -2208,17 +2254,31 @@ window.__ModuleLoader__.load({
       var PILL_POLL_MAX = 60000
       var pillPollDelay = PILL_POLL_MIN
       /**
-       * **兜底**最大宽度：只有"量不到费用胶囊"时才生效（见 placePill）。
+       * 胶囊的拖动 / 吸附 / 收球状态（几何参数 PILL_* 在文件上方，CSS 也要用）。
        *
-       * 有费用胶囊时宽度写死成它的实测宽度 —— 两者共用 CSS 里那条 `max-width:280px`，
-       * 所以并排时同宽同位置；而单独一枚浮在右下角时 280 显得"横着一条"（旁边什么都没有，
-       * 分量感全在这条胶囊上），收到 200。取值依据（真浏览器 8x 截图 + 量墨迹）：
-       *   · 短内容「划词解读 · 就绪」自然宽度 146.6px → 不受影响；
-       *   · 英文选中「the migratio… · 完成 · 3 轮」214px → 会截一点；
-       *   · 最坏组合「12 字中文 + · 追问中 12.3s」名字那格还剩 ~54px ≈ 3 个字。
-       * 状态格 `flex:0 0 auto` 永不缩 —— 宽度不够时只牺牲选中文字（省略号收尾）。
+       *   · pillDock：'anchor' = 贴费用胶囊（量不到就贴右下角，由 placePill 管）；
+       *               'free'   = 用户拖到别处了 —— 位置归用户，轮询不许再动它。
+       *   · pillFreeCenter：自由摆放时记的是**中心**（收球/展开都围着同一点，视觉上不跳）。
+       *   · pillFreeWide：自由摆放时"展开态"的宽度（展开时按中心摆回去要用它；轮询顺手刷新）。
+       *   · pillAnchorWidth：本次量到的费用胶囊宽度（0 = 没量到）—— 决定"跟随"还是"兜底"，
+       *     也是"能不能收球"的前提（用户定的：只有没有费用胶囊时才收成小球）。
        */
-      var PILL_FALLBACK_MAX = 200
+      var pillDock = 'anchor'
+      var pillFreeCenter = null
+      var pillFreeWide = 0
+      var pillBall = false
+      var pillHover = false
+      var pillDrag = null
+      /** 刚拖完的那一下 click 要吞掉（拖动不该顺手开关小窗）。 */
+      var pillDragMoved = false
+      /** 静置计时器 id（0 = 没有）。用裸 setTimeout：它每帧都可能被重置，塞进 timers 数组会一直长。 */
+      var pillIdleId = 0
+      /**
+       * 吸附滑行窗口的截止时刻（见 settlePillDrop / placePill）：
+       * 这段时间内位置按 left/top 维持（能过渡），之后再交还给 right/bottom 的稳态定位。
+       */
+      var pillSnapUntil = 0
+      var pillAnchorWidth = 0
       var pillPlacerId = 0
       /** 上一次量到的费用胶囊容器 / 正在观察它的 ResizeObserver（浏览器没有这个 API 时为 null）。 */
       var pillHost = null
@@ -3323,7 +3383,10 @@ window.__ModuleLoader__.load({
           snippet ? '最近一次划词：' + snippet : '还没有划过词',
           status.text,
           panelOpen ? '点击收起小窗' : '点击回到这个小窗',
+          '可拖动（拖到右下角附近会吸附回去）',
         ].join('｜')
+        // 画一次就算一次活动：状态在变（翻译中/生成中/完成）时不该被收成小球，也顺便重置静置计时
+        notePillActivity()
       }
 
       /**
@@ -3349,10 +3412,12 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 把胶囊摆到右下角"费用胶囊"上方。
+       * 量一次"贴哪儿、多宽"。
        * 那个插件不一定装着、也不一定什么时候出现，所以每次都用实测位置，取不到才用兜底偏移。
+       * 返回 { right, bottom, width }：right/bottom 是视口右/下边距；width 是那枚胶囊的实测宽度
+       * （0 = 没量到 —— 调用方据此决定"跟随它"还是"走兜底"）。
        */
-      function placePill() {
+      function measurePillAnchor() {
         // 兜底位置：**贴页面底部**（和费用胶囊自己的 right:20/bottom:20 同高）。
         // 以前兜底是 64，等于永远给"下面那枚胶囊"留位置——没装那个插件时就悬在半空（实测被吐槽）。
         var right = 20
@@ -3381,35 +3446,249 @@ window.__ModuleLoader__.load({
         } catch (error) {
           /* noop：量不到就留在兜底位置 */
         }
+        return { right: right, bottom: bottom, width: width }
+      }
+
+      /** 自由摆放（用户拖到别处）时按**中心**摆 —— 收球/展开都围着同一点，视觉上不跳。 */
+      function applyFreePill(width) {
+        if (!pillFreeCenter) return
+        var w = width || pill.offsetWidth || 0
+        var h = pill.offsetHeight || 0
+        pill.style.left = Math.round(pillFreeCenter.x - w / 2) + 'px'
+        pill.style.top = Math.round(pillFreeCenter.y - h / 2) + 'px'
+        pill.style.right = 'auto'
+        pill.style.bottom = 'auto'
+      }
+
+      /** 自由摆放时也必须还在视口里（用户拖出去过 / 窗口变小了）。位置没变就一个像素都不写。 */
+      function clampFreePill() {
+        if (!pillFreeCenter) return false
+        var w = pill.offsetWidth || 0
+        var h = pill.offsetHeight || 0
+        var left = clamp(pillFreeCenter.x - w / 2, 4, Math.max(4, window.innerWidth - w - 4))
+        var top = clamp(pillFreeCenter.y - h / 2, 4, Math.max(4, window.innerHeight - h - 4))
+        var x = left + w / 2
+        var y = top + h / 2
+        if (Math.abs(x - pillFreeCenter.x) < 0.5 && Math.abs(y - pillFreeCenter.y) < 0.5) return false
+        pillFreeCenter = { x: x, y: y }
+        applyFreePill(w)
+        return true
+      }
+
+      /** 贴角/跟随时那枚胶囊会落在哪（视口坐标）—— 松手时拿它判"要不要吸附回去"。 */
+      function pillAnchorRect() {
+        var anchor = measurePillAnchor()
+        var w = anchor.width > 0 ? anchor.width : pill.offsetWidth || 0
+        var h = pill.offsetHeight || 0
+        return {
+          left: window.innerWidth - anchor.right - w,
+          top: window.innerHeight - anchor.bottom - h,
+          width: w,
+          height: h,
+        }
+      }
+
+      /**
+       * 把胶囊摆到右下角"费用胶囊"上方。
+       *
+       * 三种处境：
+       *   · anchor（默认）：贴费用胶囊；量不到就贴右下角 20/20，宽度收到 PILL_FALLBACK_MAX；
+       *   · free：用户把它拖到别处了 —— 位置归用户，这里只保证"别掉出视口"；
+       *   · ball：静置太久收成小球 —— 上限收到 PILL_BALL_SIZE（见 collapsePill）。
+       * 宽度和上限三种处境都一样算（拖动不该顺手改宽度），只有位置分家。
+       */
+      function placePill() {
+        var anchor = measurePillAnchor()
+        pillAnchorWidth = anchor.width
+        // 费用胶囊**出现**了：小球没有存在的意义（收球的前提就是"没有可跟随的胶囊"）→ 立刻展开
+        if (pillAnchorWidth > 0 && pillBall) expandPill()
         // 只在真的变了才写 style（每帧无脑赋值会让浏览器反复标脏样式）
         var changed = false
-        var wantedRight = right + 'px'
-        var wantedBottom = bottom + 'px'
+        function write(prop, value) {
+          if (pill.style[prop] !== value) {
+            pill.style[prop] = value
+            changed = true
+          }
+        }
         // 宽度**写死**成费用胶囊的宽度：文字长短不再让它伸缩（长文字自己省略号收尾）
-        var wantedWidth = width > 0 ? width + 'px' : ''
-        // 上限分两种情况（用户定的规则）：
-        //   · 量到了费用胶囊（width > 0）→ 清掉内联上限，回到 CSS 那条 280 —— 和它并排时同宽；
+        write('width', anchor.width > 0 ? anchor.width + 'px' : '')
+        // 上限分三种情况（前两条是用户定的规则）：
+        //   · 收成小球 → 球的尺寸（max-width 参与过渡，收/放才是动画而不是跳变）；
+        //   · 量到了费用胶囊 → 清掉内联上限，回到 CSS 那条 280 —— 和它并排时同宽；
         //   · 量不到（没装 dsh-spend / 它的胶囊此刻宽高为 0）→ 收到 PILL_FALLBACK_MAX。
-        // 注意判据是**本次量到的宽度**而不是"有没有找到容器"：容器在但胶囊被折叠/隐藏时
-        // 同样跟不了，那种情况也该走兜底。
-        var wantedMaxWidth = width > 0 ? '' : PILL_FALLBACK_MAX + 'px'
-        if (pill.style.right !== wantedRight) {
-          pill.style.right = wantedRight
-          changed = true
+        // 判据是**本次量到的宽度**而不是"有没有找到容器"：容器在但胶囊被折叠/隐藏时同样跟不了，
+        // 那种情况也该走兜底。
+        write('maxWidth', pillBall ? PILL_BALL_SIZE + 'px' : anchor.width > 0 ? '' : PILL_FALLBACK_MAX + 'px')
+        if (pillDock === 'free') {
+          // 位置归用户：只保证还在视口里（顺手记下"展开态多宽"，展开时按中心摆回去要用）
+          if (!pillBall) pillFreeWide = pill.offsetWidth || pillFreeWide
+          clampFreePill()
+          return changed
         }
-        if (pill.style.bottom !== wantedBottom) {
-          pill.style.bottom = wantedBottom
-          changed = true
+        if (Date.now() < pillSnapUntil) {
+          // 吸附那一下的"滑回去"窗口（见 settlePillDrop）：这期间位置仍按 left/top 维持 ——
+          // left/top 与 right/bottom 之间**不可插值**（left:124px → auto 会直接瞬移），
+          // 所以滑行必须靠 left/top 走完，之后再交还给 right/bottom 那套稳态定位。
+          var snapWidth = anchor.width > 0 ? anchor.width : pill.offsetWidth || 0
+          write('left', Math.round(window.innerWidth - anchor.right - snapWidth) + 'px')
+          write('top', Math.round(window.innerHeight - anchor.bottom - (pill.offsetHeight || 0)) + 'px')
+          write('right', 'auto')
+          write('bottom', 'auto')
+          return changed
         }
-        if (pill.style.width !== wantedWidth) {
-          pill.style.width = wantedWidth
-          changed = true
-        }
-        if (pill.style.maxWidth !== wantedMaxWidth) {
-          pill.style.maxWidth = wantedMaxWidth
-          changed = true
-        }
+        // 稳态：right/bottom 定位（宽度一变，右边缘仍和费用胶囊对齐）
+        write('left', '')
+        write('top', '')
+        write('right', anchor.right + 'px')
+        write('bottom', anchor.bottom + 'px')
         return changed
+      }
+
+      /**
+       * 静置收球。
+       *
+       * 规则（用户定的）：**只有量不到费用胶囊时**才收球 —— 有费用胶囊时它是要跟人家并排的，
+       * 收成球反而突兀。下面几种情况一律不收：小窗开着、正在翻译/追问、鼠标停在上面、正在拖。
+       * 动画靠 max-width 过渡（收球 = 把上限收到 PILL_BALL_SIZE），所以收/放是同一条平滑曲线，
+       * 不需要预先量宽度，也不会有跳变。
+       */
+      function pillCanBall() {
+        return (
+          pillAnchorWidth === 0 &&
+          !pillBall &&
+          !panelOpen &&
+          !pillHover &&
+          !pillDrag &&
+          pillStatus().tone !== 'busy'
+        )
+      }
+
+      function collapsePill() {
+        if (pillBall) return false
+        var rect = pill.getBoundingClientRect()
+        // 记住"展开态多宽"：展开时按中心摆回去要用它（自由摆放才有意义）
+        if (!pillBall) pillFreeWide = Math.max(rect.width, PILL_BALL_SIZE)
+        pillBall = true
+        pill.setAttribute('data-ball', '1')
+        placePill() // 上限 → 球的尺寸（过渡动画交给 CSS 的 max-width）
+        // 自由摆放时宽度往右收会"跑偏"：按中心摆回去（left 与 max-width 同一条过渡，中心不动）
+        if (pillDock === 'free') applyFreePill(PILL_BALL_SIZE)
+        return true
+      }
+
+      function expandPill() {
+        if (!pillBall) return false
+        pillBall = false
+        pill.removeAttribute('data-ball')
+        placePill() // 上限交回 200 / 费用胶囊那条
+        if (pillDock === 'free') applyFreePill(pillFreeWide || 0)
+        return true
+      }
+
+      /**
+       * 静置计时：任何"活动"都把它重新拨满（见 notePillActivity）。
+       * 用裸 setTimeout 而不是 later()：这个计时器每帧都可能被重置，塞进 timers 数组会一直长。
+       */
+      function schedulePillIdle() {
+        if (pillIdleId) clearTimeout(pillIdleId)
+        pillIdleId = setTimeout(function () {
+          pillIdleId = 0
+          if (pillCanBall()) collapsePill()
+        }, PILL_BALL_IDLE_MS)
+      }
+
+      /** 有活动（点/划过/小窗在动/状态在变）→ 收着球就展开，并把静置计时重新拨满。 */
+      function notePillActivity() {
+        if (pillBall) expandPill()
+        schedulePillIdle()
+      }
+
+      /**
+       * 开始拖胶囊（鼠标；和面板拖动同一套写法）。
+       *
+       * 三个要点：
+       *   · 位移超过 PILL_DRAG_SLOP 才算"拖"，否则仍按点击处理（点一下要能开关小窗）；
+       *   · 一开拖就切到 free —— 贴角的轮询从此不许再动它（否则拖到一半会被拽回去）；
+       *   · 拖动期间关掉过渡（data-drag），松手再打开：吸附那一下才有动画，拖的时候不黏手。
+       */
+      function beginPillDrag(event) {
+        if (event.button !== undefined && event.button !== 0) return
+        if (pillBall) expandPill() // 球也能直接拖：先展开（hover 那条路通常已经展开了）
+        var rect = pill.getBoundingClientRect()
+        var drag = {
+          offsetX: event.clientX - rect.left,
+          offsetY: event.clientY - rect.top,
+          startX: event.clientX,
+          startY: event.clientY,
+          moved: false,
+        }
+        pillDrag = drag
+        pillDragMoved = false
+        pillSnapUntil = 0
+        var move = function (moveEvent) {
+          if (pillDrag !== drag) return
+          if (!drag.moved) {
+            var travelled = Math.abs(moveEvent.clientX - drag.startX) + Math.abs(moveEvent.clientY - drag.startY)
+            if (travelled < PILL_DRAG_SLOP) return
+            drag.moved = true
+            pillDragMoved = true
+            pill.setAttribute('data-drag', '1')
+          }
+          var w = pill.offsetWidth
+          var h = pill.offsetHeight
+          var left = clamp(moveEvent.clientX - drag.offsetX, 4, Math.max(4, window.innerWidth - w - 4))
+          var top = clamp(moveEvent.clientY - drag.offsetY, 4, Math.max(4, window.innerHeight - h - 4))
+          // 真的拖了 → 从"贴角/跟随"切成自由摆放：位置归用户，轮询不再动它
+          pillDock = 'free'
+          pillFreeCenter = { x: left + w / 2, y: top + h / 2 }
+          pillFreeWide = w
+          applyFreePill(w)
+        }
+        var up = function () {
+          window.removeEventListener('mousemove', move, true)
+          window.removeEventListener('mouseup', up, true)
+          if (pillDrag !== drag) return
+          pillDrag = null
+          pill.removeAttribute('data-drag')
+          if (!drag.moved) return // 没动 = 点击：交给 click 处理（不在这里 reopen）
+          settlePillDrop()
+          notePillActivity()
+        }
+        window.addEventListener('mousemove', move, true)
+        window.addEventListener('mouseup', up, true)
+      }
+
+      /**
+       * 松手：拖到贴角位置附近就吸附回去 —— 有费用胶囊就吸附到"跟随它的位置"，
+       * 没有就吸附到右下角 20/20；离得远就留在原地（位置归用户）。
+       */
+      function settlePillDrop() {
+        var rect = pill.getBoundingClientRect()
+        var target = pillAnchorRect()
+        var near =
+          Math.abs(rect.left - target.left) <= PILL_SNAP_RADIUS && Math.abs(rect.top - target.top) <= PILL_SNAP_RADIUS
+        if (!near) {
+          pillDock = 'free'
+          clampFreePill()
+          return false
+        }
+        // 吸附：要"滑回去"而不是瞬移。
+        // left/top 与 right/bottom 之间不可插值（left:124px → auto 会直接跳），所以先把目标位置
+        // 写成 left/top 让过渡跑完，窗口结束（PILL_SNAP_MS）再交还给 right/bottom 那套稳态定位。
+        var snappedTo = pillAnchorRect()
+        pillDock = 'anchor'
+        pillFreeCenter = null
+        pillFreeWide = 0
+        pillSnapUntil = Date.now() + PILL_SNAP_MS
+        pill.style.left = Math.round(snappedTo.left) + 'px'
+        pill.style.top = Math.round(snappedTo.top) + 'px'
+        pill.style.right = 'auto'
+        pill.style.bottom = 'auto'
+        later(function () {
+          pillSnapUntil = 0
+          if (pillDock === 'anchor') placePill()
+        }, PILL_SNAP_MS)
+        return true
       }
 
       /**
@@ -6100,18 +6379,36 @@ window.__ModuleLoader__.load({
         // 拖拽/划词的手势不该被胶囊接走
         event.preventDefault()
         event.stopPropagation()
+        beginPillDrag(event)
       })
 
       var offPillClick = listen(pill, 'click', function (event) {
         event.preventDefault()
         event.stopPropagation()
+        // 刚拖完的那一下不算点击（否则拖到别处会顺手把抽屉开开关关）
+        if (pillDragMoved) {
+          pillDragMoved = false
+          return
+        }
         reopenLast()
+        notePillActivity()
+      })
+
+      // 鼠标停在上面就不收球（要"点得到"，不是"藏起来"）；离开时重新开始静置计时
+      var offPillEnter = listen(pill, 'mouseenter', function () {
+        pillHover = true
+        notePillActivity()
+      })
+      var offPillLeave = listen(pill, 'mouseleave', function () {
+        pillHover = false
+        notePillActivity()
       })
 
       var offPillKey = listen(pill, 'keydown', function (event) {
         if (event.key !== 'Enter' && event.key !== ' ') return
         event.preventDefault()
         reopenLast()
+        notePillActivity()
       })
 
       /**
@@ -6145,6 +6442,15 @@ window.__ModuleLoader__.load({
       ensureResizeWatch()
       schedulePillPlacer()
       paintPill()
+      // 过渡要等"第一帧已经贴好位置"之后再打开：否则挂载那一下会从 CSS 默认的 bottom:64
+      // 一路滑到实测位置（右下角看着像自己飞过去）
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(function () {
+          pill.setAttribute('data-ready', '1')
+        })
+      } else {
+        pill.setAttribute('data-ready', '1')
+      }
 
       var offResize = listen(window, 'resize', function () {
         hideButton()
@@ -7763,6 +8069,54 @@ window.__ModuleLoader__.load({
         place: function () {
           return placePill()
         },
+        /**
+         * 自检用：胶囊的停靠 / 拖动 / 收球状态。
+         * 拖动、吸附、收球那几条断言都读它（真浏览器里跑，量的是真布局）。
+         */
+        pillState: function () {
+          var rect = pill.getBoundingClientRect()
+          return {
+            dock: pillDock,
+            ball: pillBall,
+            hover: pillHover,
+            dragging: !!pillDrag,
+            ready: pill.getAttribute('data-ready') === '1',
+            anchorWidth: pillAnchorWidth,
+            freeCenter: pillFreeCenter ? { x: Math.round(pillFreeCenter.x), y: Math.round(pillFreeCenter.y) } : null,
+            rect: {
+              left: Math.round(rect.left),
+              top: Math.round(rect.top),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+              right: Math.round(window.innerWidth - rect.right),
+              bottom: Math.round(window.innerHeight - rect.bottom),
+            },
+            style: {
+              left: pill.style.left,
+              top: pill.style.top,
+              right: pill.style.right,
+              bottom: pill.style.bottom,
+              width: pill.style.width,
+              maxWidth: pill.style.maxWidth,
+            },
+            ballSize: PILL_BALL_SIZE,
+            idleMs: PILL_BALL_IDLE_MS,
+            snapRadius: PILL_SNAP_RADIUS,
+          }
+        },
+        /**
+         * 自检用：立刻跑一次"静置该不该收球"（测试里等不起 PILL_BALL_IDLE_MS 那 10 秒）。
+         * 返回 true = 这次真的收成球了。
+         */
+        pillIdle: function () {
+          if (pillIdleId) {
+            clearTimeout(pillIdleId)
+            pillIdleId = 0
+          }
+          if (!pillCanBall()) return false
+          collapsePill()
+          return true
+        },
         /** 自检用：当前的自适应间隔（毫秒）。 */
         pollDelay: function () {
           return pillPollDelay
@@ -7889,6 +8243,8 @@ window.__ModuleLoader__.load({
           offDrag()
           offPillDown()
           offPillClick()
+          offPillEnter()
+          offPillLeave()
           offPillKey()
           offPreviewHeight()
           offBridgeMessage()
@@ -7936,6 +8292,8 @@ window.__ModuleLoader__.load({
           state.quotes = []
           if (state.request) state.request.abort()
           for (var i = 0; i < timers.length; i++) clearTimeout(timers[i])
+          // 静置计时器是裸 setTimeout（不进 timers 数组，见 schedulePillIdle），单独清
+          if (pillIdleId) clearTimeout(pillIdleId)
           cache.clear()
           if (layer.parentNode) layer.parentNode.removeChild(layer)
           if (button.parentNode) button.parentNode.removeChild(button)

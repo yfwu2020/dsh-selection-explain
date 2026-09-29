@@ -172,6 +172,21 @@ function realClick(node) {
   node.dispatchEvent(new MouseEvent("mouseup", opts))
   node.dispatchEvent(new MouseEvent("click", opts))
 }
+/**
+ * 量几何之前先把过渡/动画冻住。
+ *
+ * 为什么必须冻：这个冒烟脚本跑在 --virtual-time-budget 下，定时器是虚拟时间（秒级飞快），
+ * 但 **CSS 过渡的动画时钟不跟着走** —— 胶囊的宽度/位置过渡（.32s）会在"中间某一帧"被量到，
+ * 于是"等了 420ms 还是量到起点值"。冻住之后量到的是终值，断言才是确定的；
+ * "到底有没有动画"另外用 getComputedStyle 断言（transition-property 里有没有 max-width）。
+ */
+function freezeMotion() {
+  if (document.getElementById('freeze-motion')) return
+  var style = document.createElement('style')
+  style.id = 'freeze-motion'
+  style.textContent = '*{transition:none!important;animation:none!important}'
+  document.head.appendChild(style)
+}
 /** 浮标是不是**最上层**（z-index 低于面板时 elementFromPoint 会返回面板）。 */
 function onTop(node) {
   var rect = node.getBoundingClientRect()
@@ -431,6 +446,11 @@ async function main() {
     var pillMeta = pillNode.querySelector('.dsh-sel-pillmeta')
     var savedName = pillName.textContent
     var savedMeta = pillMeta.textContent
+    // 先确认"动画是声明过的"（冻住之后就量不出来了）：收球/吸附靠 max-width / padding / gap / 位置的过渡
+    var pillTrans = getComputedStyle(pillNode).transitionProperty
+    check('胶囊声明了过渡（收球/吸附是动画，不是跳变）', /max-width/.test(pillTrans) && /padding/.test(pillTrans) && /left/.test(pillTrans), pillTrans)
+    check('过渡只在"第一帧已经贴好位置"之后才打开（data-ready）', hook.pillState().ready === true, String(hook.pillState().ready))
+    freezeMotion()
     // 最坏内容（选中文字 12 字 + 最长状态）：自然宽度 301px，最容易被上限拦到
     pillName.textContent = '迁移作业耗时超出了原计划…'
     pillMeta.textContent = '· 追问中 12.3s'
@@ -452,6 +472,8 @@ async function main() {
     hook.place()
     check('有费用胶囊：宽度写死成它的实测宽度', pillNode.style.width === '240px', pillNode.style.width || '(空)')
     check('有费用胶囊：清掉兜底上限（回到 CSS 280，和它同宽）', pillNode.style.maxWidth === '', pillNode.style.maxWidth || '(空)')
+    // ⚠️ 宽度现在有过渡（.32s）：改完立刻量会量到**起点**，得等它走完
+    await sleep(420)
     var followedWidth = Math.round(pillNode.getBoundingClientRect().width)
     check('有费用胶囊：最坏内容跟着它到 240px（上限确实放开了）', followedWidth === 240, followedWidth + 'px')
 
@@ -463,12 +485,219 @@ async function main() {
       pillNode.style.maxWidth === '200px' && pillNode.style.width === '',
       pillNode.style.maxWidth + ' / ' + (pillNode.style.width || '宽=空'),
     )
+    await sleep(420)
     check('回到兜底后宽度也收回来了', Math.round(pillNode.getBoundingClientRect().width) === 200, Math.round(pillNode.getBoundingClientRect().width) + 'px')
 
     // 还原内容（后面的断言不受影响）
     pillName.textContent = savedName
     pillMeta.textContent = savedMeta
     hook.place()
+  }
+
+  // ⑫ 胶囊可以拖：拖到别处就留在那儿；拖回右下角附近自动吸附回去；拖完那一下不算点击。
+  //    全用真鼠标事件（mousedown 打在胶囊上，mousemove/mouseup 打在 window —— 和面板拖动同一套）。
+  //    过渡已在 ⑪ 冻住（见 freezeMotion），所以每一步都能**同步**断言，不用等动画。
+  {
+    var pillEl = hook.pill()
+    var panelOpen = function () {
+      return hook.quoteState().panelOpen === true
+    }
+    function fire(type, x, y, onWindow) {
+      var event = new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 })
+      if (onWindow) window.dispatchEvent(event)
+      else pillEl.dispatchEvent(event)
+    }
+    function dragTo(x, y) {
+      var rect = pillEl.getBoundingClientRect()
+      fire('mousedown', Math.round(rect.left) + 20, Math.round(rect.top) + 10, false)
+      fire('mousemove', x, y, true)
+      fire('mousemove', x + 4, y + 2, true) // 第二下：确保"位移超过阈值"这条判定走完
+      fire('mouseup', x + 4, y + 2, true)
+    }
+    /** 拖到右下角那一带（吸附区）—— 用视口右下角算，和"贴角位置"差得不多，必落在吸附半径里。 */
+    function dragToCorner() {
+      dragTo(Math.round(window.innerWidth - 30), Math.round(window.innerHeight - 30))
+    }
+
+    hook.place()
+    var home = hook.pillState()
+    check('起始：贴着右下角（dock=anchor，right/bottom=20）', home.dock === 'anchor' && home.rect.right === 20 && home.rect.bottom === 20, home.dock + ' ' + home.rect.right + '/' + home.rect.bottom)
+
+    // ① 拖到屏幕中间 → 留在那儿（自由摆放）
+    var midX = Math.round(window.innerWidth / 2)
+    var midY = Math.round(window.innerHeight / 2)
+    dragTo(midX, midY)
+    var free = hook.pillState()
+    check('拖到屏幕中间：位置跟着走了（dock=free）', free.dock === 'free', free.dock)
+    check('拖到屏幕中间：落在松手的地方（±40px）', Math.abs(free.rect.left + 20 - midX) < 40 && Math.abs(free.rect.top + 10 - midY) < 40, free.rect.left + ',' + free.rect.top)
+
+    // 自由摆放时，贴角轮询不许把它拽回去
+    hook.place()
+    var stillFree = hook.pillState()
+    check('自由摆放时轮询不把它拽回去', stillFree.dock === 'free' && Math.abs(stillFree.rect.left - free.rect.left) <= 2, stillFree.dock + ' ' + stillFree.rect.left)
+
+    // ② 拖回右下角附近 → 自动吸附回贴角位置（没有费用胶囊就是 20/20）
+    dragToCorner()
+    var snapped = hook.pillState()
+    check('拖回右下角附近：自动吸附（dock=anchor）', snapped.dock === 'anchor', snapped.dock)
+    check('吸附回右下角 20/20', snapped.rect.right === 20 && snapped.rect.bottom === 20, snapped.rect.right + '/' + snapped.rect.bottom)
+
+    // ③ 拖完浏览器会补一个 click —— 不能被当成"点了一下"（否则会顺手开关小窗）
+    if (panelOpen()) hook.close()
+    dragTo(midX, midY)
+    fire('click', midX, midY, false) // 模拟浏览器在拖完之后补的那一下
+    check('拖完那一下不算点击（小窗没被打开）', panelOpen() === false, String(panelOpen()))
+    check('拖完那一下也不算"点开"（胶囊还在自由摆放位）', hook.pillState().dock === 'free', hook.pillState().dock)
+
+    // ④ 有费用胶囊时：拖到右下角附近 → 吸附到"跟随它的位置"（在那枚胶囊上方、同宽）
+    var fakeSpend2 = document.createElement('div')
+    fakeSpend2.id = 'dsh-spend-widget'
+    fakeSpend2.innerHTML = '<div class="dsu-widget" style="position:fixed;right:20px;bottom:20px">'
+      + '<div class="dsu-pill" style="box-sizing:border-box;width:240px;height:32px"></div></div>'
+    document.body.appendChild(fakeSpend2)
+    hook.place()
+    dragToCorner()
+    var withSpend = hook.pillState()
+    check('有费用胶囊时拖到右下角：吸附到跟随它的位置', withSpend.dock === 'anchor' && withSpend.rect.right === 20, withSpend.dock + ' right=' + withSpend.rect.right)
+    check('吸附后宽度是跟随它的 240px', withSpend.rect.width === 240, withSpend.rect.width + 'px')
+    check('吸附位置在费用胶囊**上方**（不压住它）', withSpend.rect.bottom >= 42, 'bottom=' + withSpend.rect.bottom)
+
+    // 再拖走 → 留在那儿；再拖回 → 又吸附回去
+    dragTo(midX, midY)
+    check('有费用胶囊时也能拖走（dock=free）', hook.pillState().dock === 'free', hook.pillState().dock)
+    dragToCorner()
+    var backHome = hook.pillState()
+    check('再拖回右下角：又吸附回去', backHome.dock === 'anchor' && backHome.rect.right === 20, backHome.dock + ' right=' + backHome.rect.right)
+    fakeSpend2.remove()
+    hook.place()
+
+    // ⑤ 没动的那一下仍然是"点击"（拖动不能把点击吃掉）
+    if (panelOpen()) hook.close()
+    var clickRect = pillEl.getBoundingClientRect()
+    fire('mousedown', Math.round(clickRect.left) + 20, Math.round(clickRect.top) + 10, false)
+    fire('mouseup', Math.round(clickRect.left) + 20, Math.round(clickRect.top) + 10, true)
+    fire('click', Math.round(clickRect.left) + 20, Math.round(clickRect.top) + 10, false)
+    await sleep(160)
+    check('没位移的那一下照旧是点击（小窗打开了）', panelOpen() === true, String(panelOpen()))
+    hook.close()
+    // 关小窗会让面板尺寸变 0 → 面板那个 ResizeObserver 会补一次 placePanel→paintPill（= 一次"活动"）。
+    // 生产上无所谓（只是把静置计时重新拨满），测试里得先把这拍异步排掉，否则会和下面的收球抢时序。
+    await sleep(200)
+  }
+
+  // ⑬ 静置收球：**没有费用胶囊**时收成小球；有费用胶囊 / 小窗开着 / 鼠标停着都不收。
+  //    过渡已冻住，所以"收成 32×32"是同步可断言的；"到底有没有过渡"在 ⑪ 用 computed style 断言过。
+  {
+    var pillBall = hook.pill()
+    var panelIsOpen = function () {
+      return hook.quoteState().panelOpen === true
+    }
+    if (panelIsOpen()) hook.close()
+    await sleep(200)
+    var before = hook.pillState()
+    check('收球前是展开的胶囊', before.ball === false && before.rect.width > 100, before.rect.width + 'px')
+
+    var idleCollapsed = hook.pillIdle()
+    var balled = hook.pillState()
+    check('没有费用胶囊 → 静置收球', idleCollapsed === true && balled.ball === true, JSON.stringify(balled.style))
+    check('收成小球：32×32 的圆', balled.rect.width === balled.ballSize && balled.rect.height === balled.ballSize, balled.rect.width + '×' + balled.rect.height)
+    check('小球仍然贴着右下角（位置没跑）', balled.rect.right === 20 && balled.rect.bottom === 20, balled.rect.right + '/' + balled.rect.bottom)
+
+    // 鼠标一放上去就展开
+    pillBall.dispatchEvent(new MouseEvent('mouseenter', { view: window }))
+    var expanded = hook.pillState()
+    check('鼠标移上去：小球展开回胶囊', expanded.ball === false && expanded.rect.width > 100, expanded.rect.width + 'px')
+    check('展开后还是贴右下角', expanded.rect.right === 20 && expanded.rect.bottom === 20, expanded.rect.right + '/' + expanded.rect.bottom)
+
+    // 鼠标离开 → 又能收
+    pillBall.dispatchEvent(new MouseEvent('mouseleave', { view: window }))
+    check('鼠标离开后静置又能收球', hook.pillIdle() === true && hook.pillState().ball === true, String(hook.pillState().ball))
+
+    // 鼠标停在上面时不许收（"点得到"优先于"藏起来"）
+    pillBall.dispatchEvent(new MouseEvent('mouseenter', { view: window }))
+    check('鼠标停在小球上时不收球', hook.pillIdle() === false && hook.pillState().ball === false, String(hook.pillState().ball))
+    pillBall.dispatchEvent(new MouseEvent('mouseleave', { view: window }))
+
+    // 自由摆放时收球/展开都按**中心**（球不该跳到原胶囊的左边缘，展开也不该把中心挪走）
+    // 这条只有真浏览器能验：要真布局量矩形、真过渡（这里已冻住 → 量到的是终值）。
+    {
+      var homeRect = hook.pillState().rect
+      hook.pillIdle() // 先收起来（锚定态）
+      var anchored = hook.pillState()
+      var midX2 = Math.round(window.innerWidth / 2)
+      var midY2 = Math.round(window.innerHeight / 2)
+      pillBall.dispatchEvent(new MouseEvent('mouseenter', { view: window })) // 展开再拖（拖的是展开态）
+      pillBall.dispatchEvent(new MouseEvent('mouseleave', { view: window }))
+      var r0 = pillBall.getBoundingClientRect()
+      var fireOn = function (type, x, y, onWindow) {
+        var event = new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 })
+        if (onWindow) window.dispatchEvent(event)
+        else pillBall.dispatchEvent(event)
+      }
+      fireOn('mousedown', Math.round(r0.left) + 20, Math.round(r0.top) + 10, false)
+      fireOn('mousemove', midX2, midY2, true)
+      fireOn('mousemove', midX2 + 4, midY2 + 2, true)
+      fireOn('mouseup', midX2 + 4, midY2 + 2, true)
+      var wideFree = hook.pillState()
+      check('自由摆放（拖到中间）', wideFree.dock === 'free' && wideFree.rect.width > 100, wideFree.dock + ' ' + wideFree.rect.width)
+      var centerBefore = wideFree.rect.left + wideFree.rect.width / 2
+      hook.pillIdle()
+      var ballFree = hook.pillState()
+      var centerBall = ballFree.rect.left + ballFree.rect.width / 2
+      check('自由摆放时收球：球停在原胶囊中心（±2px）', ballFree.ball === true && Math.abs(centerBall - centerBefore) <= 2, '中心 ' + centerBefore.toFixed(1) + ' → ' + centerBall.toFixed(1))
+      pillBall.dispatchEvent(new MouseEvent('mouseenter', { view: window }))
+      var wideAgain = hook.pillState()
+      var centerAfter = wideAgain.rect.left + wideAgain.rect.width / 2
+      check('自由摆放时展开：中心也不动（±2px）', wideAgain.ball === false && Math.abs(centerAfter - centerBefore) <= 2, '中心 ' + centerBefore.toFixed(1) + ' → ' + centerAfter.toFixed(1))
+      pillBall.dispatchEvent(new MouseEvent('mouseleave', { view: window }))
+      // 拖回右下角，后面的断言接着用锚定态
+      fireOn('mousedown', Math.round(pillBall.getBoundingClientRect().left) + 20, Math.round(pillBall.getBoundingClientRect().top) + 10, false)
+      fireOn('mousemove', Math.round(window.innerWidth - 30), Math.round(window.innerHeight - 30), true)
+      fireOn('mouseup', Math.round(window.innerWidth - 30), Math.round(window.innerHeight - 30), true)
+      check('拖回右下角后又吸附（回到 anchor）', hook.pillState().dock === 'anchor', hook.pillState().dock)
+      check('锚定位置和最初一致', Math.abs(hook.pillState().rect.left - homeRect.left) <= 2, hook.pillState().rect.left + ' vs ' + homeRect.left)
+      void anchored
+    }
+
+    // 有费用胶囊时不收球（收球的前提是"没有可跟随的胶囊"）
+    var fakeSpend3 = document.createElement('div')
+    fakeSpend3.id = 'dsh-spend-widget'
+    fakeSpend3.innerHTML = '<div class="dsu-widget" style="position:fixed;right:20px;bottom:20px">'
+      + '<div class="dsu-pill" style="box-sizing:border-box;width:240px;height:32px"></div></div>'
+    document.body.appendChild(fakeSpend3)
+    hook.place()
+    check('有费用胶囊时静置也不收球', hook.pillIdle() === false, String(hook.pillState().ball))
+    check('有费用胶囊时保持展开', hook.pillState().ball === false, String(hook.pillState().ball))
+
+    // 收着球时费用胶囊出现 → 立刻展开（球没有存在的意义了）
+    fakeSpend3.remove()
+    hook.place()
+    check('静置收球后费用胶囊出现 → 立刻展开', hook.pillIdle() === true && hook.pillState().ball === true, String(hook.pillState().ball))
+    document.body.appendChild(fakeSpend3)
+    hook.place()
+    check('费用胶囊一出现，小球立刻展开', hook.pillState().ball === false && hook.pillState().rect.width === 240, hook.pillState().ball + ' ' + hook.pillState().rect.width)
+    fakeSpend3.remove()
+    hook.place()
+
+    // 小窗开着时不收球（"小窗活动"也是活动）
+    hook.open('收球冒烟：小窗开着', '上下文', '冒烟')
+    await sleep(200)
+    check('小窗开着时不收球', hook.pillIdle() === false, String(hook.pillState().ball))
+    hook.close()
+    await sleep(200)
+    check('小窗关掉后又能收球', hook.pillIdle() === true && hook.pillState().ball === true, String(hook.pillState().ball))
+
+    // 收着球也能点开（小球仍然是个按钮）
+    var ballRect = pillBall.getBoundingClientRect()
+    var bx = Math.round(ballRect.left) + 16
+    var by = Math.round(ballRect.top) + 16
+    pillBall.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, clientX: bx, clientY: by, button: 0 }))
+    window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, clientX: bx, clientY: by, button: 0 }))
+    pillBall.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, clientX: bx, clientY: by }))
+    await sleep(200)
+    check('小球状态点一下照样打开小窗', panelIsOpen() === true, String(panelIsOpen()))
+    hook.close()
+    await sleep(120)
   }
 
   finish()
