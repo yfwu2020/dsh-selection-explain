@@ -123,8 +123,18 @@ window.__ModuleLoader__.load({
     var PILL_SNAP_RADIUS = 96
     /** 位移超过多少像素才算"拖"而不是"点"（px，曼哈顿距离）。 */
     var PILL_DRAG_SLOP = 4
-    /** 吸附滑行的时长（毫秒）：比过渡的 .32s 多一点点，走完就把定位交还给 right/bottom。 */
-    var PILL_SNAP_MS = 340
+    /**
+     * 收球 / 展开那条过渡（时长 + 曲线），CSS 里多处引用。
+     *
+     * 曲线选 `cubic-bezier(.5,0,.5,1)` 是因为它**时间对称**：控制点关于中心对称，
+     * 于是 p(t) = 1 - p(1-t) —— 把收球的动画倒过来放，恰好就是展开的动画。
+     * 用户报的收放不对称就是这么来的：之前用 easeOutQuint，前后半程不镜像，
+     * 收是「快起慢收」、放也是「快起慢收」，两个方向看着像两件事。
+     * 时长给 .34s：所有会变的属性共用它（任何一条不一致，中间帧的宽度就由另一条曲线决定，对称性就破了）。
+     */
+    var PILL_MORPH = '.28s cubic-bezier(.4,0,.6,1)'
+    /** 吸附滑行的时长（毫秒）：比过渡时长多一点，走完就把定位交还给 right/bottom。 */
+    var PILL_SNAP_MS = 360
 
     // ────────────────────────────── 小工具 ──────────────────────────────
 
@@ -609,35 +619,43 @@ window.__ModuleLoader__.load({
       // max-width 280 是"跟随费用胶囊"那条路的封顶（和 .dsu-pill 同值，并排时才能同宽）；
       // **没有**费用胶囊可跟随时，placePill() 会用内联样式收到 PILL_FALLBACK_MAX（200）。
       // 过渡（收球 / 拖动吸附 / 跟随位置变化）挂在 [data-ready="1"] 上：插件挂载那一下是先贴好
-      // 曲线用 easeOutQuint（.22,1,.36,1）：**不带过冲**。一开始试的是带回弹的 .34,1.2,.64,1，
-      // 真时间轴采样宽度发现它 60ms 就走完 ~85%（收球看着像啪一下塌掉，剩下时间只是在慢慢对齐）；
-      // easeOutQuint 前段快、后段长，才是"收进去 / 放出来"的自然手感。
       // 位置再开过渡的，否则会从 CSS 默认的 bottom:64 一路滑到实测位置。
+      //
+      // 收球 / 展开**共用这一条**（时长 + 曲线），而且曲线是**时间对称**的：
+      //   cubic-bezier(.5,0,.5,1) 的控制点关于中心对称 → p(t) = 1 - p(1-t)，
+      //   也就是"把收球的动画倒过来放"恰好等于展开（用户要的对称性）。
+      // 之前用 easeOutQuint(.22,1,.36,1)：前后半程不镜像，收快放慢，两个方向看着是两回事。
+      // 所有会变的属性都必须挂同一条（时长/曲线一致），否则中间某一帧的宽度由**另一条曲线**决定，
+      // 对称性就破了 —— 这也是下面 min-width / padding / gap / 文字 max-width 都要一起过渡的原因。
       '.dsh-sel-pill{position:fixed;right:20px;bottom:64px;z-index:' + String(Z_BTN) + ';display:flex;align-items:center;gap:8px;',
-      'box-sizing:border-box;padding:6px 14px;border-radius:999px;cursor:pointer;user-select:none;max-width:280px;white-space:nowrap;',
+      // height 钉死 32：收球时 padding 要归零，若高度由 padding 撑，展开那一下会先被压扁再长回来
+      // （实测的"不流畅"之一）。min-width 给数值 0，好让"球→胶囊"能从 32 平滑过渡回 0。
+      'box-sizing:border-box;height:' + String(PILL_BALL_SIZE) + 'px;min-width:0;padding:6px 14px;border-radius:999px;cursor:pointer;user-select:none;max-width:280px;white-space:nowrap;',
       'background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#24292f);',
       'border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.22));box-shadow:0 4px 16px rgba(0,0,0,.12);',
       'font-family:inherit;font-size:12px;line-height:18px;font-weight:400}',
-      '.dsh-sel-pill[data-ready="1"]{transition:box-shadow .15s ease,width .32s cubic-bezier(.22,1,.36,1),',
-      'max-width .32s cubic-bezier(.22,1,.36,1),padding .32s cubic-bezier(.22,1,.36,1),gap .32s cubic-bezier(.22,1,.36,1),',
-      'left .32s cubic-bezier(.22,1,.36,1),top .32s cubic-bezier(.22,1,.36,1),',
-      'right .32s cubic-bezier(.22,1,.36,1),bottom .32s cubic-bezier(.22,1,.36,1)}',
+      '.dsh-sel-pill[data-ready="1"]{transition:box-shadow .15s ease,width ' + PILL_MORPH + ',',
+      'max-width ' + PILL_MORPH + ',min-width ' + PILL_MORPH + ',padding ' + PILL_MORPH + ',gap ' + PILL_MORPH + ',',
+      'left ' + PILL_MORPH + ',top ' + PILL_MORPH + ',right ' + PILL_MORPH + ',bottom ' + PILL_MORPH + '}',
       // 鼠标正按着拖：位置每帧都在变，有过渡就"黏手"
       '.dsh-sel-pill[data-drag="1"]{transition:none;cursor:grabbing}',
-      // 收成小球：**宽度不写死**（内联 max-width 收到 PILL_BALL_SIZE 就够了 —— max-width 能过渡，
-      // 所以"胶囊→球"和"球→胶囊"是同一条平滑曲线，不用预先量宽度，也不会跳变）；
-      // 这里只管形状：变成 32×32 的圆、padding/gap 归零、圆点居中。
-      '.dsh-sel-pill[data-ball="1"]{min-width:' + String(PILL_BALL_SIZE) + 'px;height:' + String(PILL_BALL_SIZE) + 'px;padding:0;gap:0;justify-content:center}',
+      // 收成小球：只改**能过渡的属性** —— 宽度由内联 max-width/min-width 收到 32（见 placePill），
+      // 这里把 padding/gap 归零。刻意不用 justify-content:center 让圆点居中：那是离散属性、
+      // 一翻就跳（圆点会瞬移），改用圆点自己的 margin-left（可过渡）把它挪到圆的中心。
+      '.dsh-sel-pill[data-ball="1"]{padding:0;gap:0}',
       // 三段文字（名字 / 状态 / 箭头）收起来：max-width 过渡 + 淡出，而不是 display:none（那个没法过渡）。
       // ⚠️ 基础态必须给一个**数值** max-width（320px，比任何内容都宽 = 等于不限制）：
       //    否则它是从 none 过渡到 0，而 none 不可插值 —— 文字会瞬间塌掉。
       //    实测（真时间轴逐帧采样宽度）：漏了这句时整枚胶囊 60ms 就缩完了，看着像啪一下拍扁，
       //    而不是收进去。
-      '.dsh-sel-pill .dsh-sel-pillname,.dsh-sel-pill .dsh-sel-pillmeta,.dsh-sel-pill .dsh-sel-pillcaret{max-width:320px;transition:opacity .18s ease,max-width .32s cubic-bezier(.22,1,.36,1)}',
-      '.dsh-sel-pill[data-ball="1"] .dsh-sel-pillname,.dsh-sel-pill[data-ball="1"] .dsh-sel-pillmeta,.dsh-sel-pill[data-ball="1"] .dsh-sel-pillcaret{max-width:0;opacity:0;overflow:hidden;pointer-events:none}',
+      // overflow:hidden 常驻（不收球时也留着）：它是离散属性，若只在球态给，展开第一帧文字会先溢出来。
+      '.dsh-sel-pill .dsh-sel-pillname,.dsh-sel-pill .dsh-sel-pillmeta,.dsh-sel-pill .dsh-sel-pillcaret{max-width:320px;overflow:hidden;transition:opacity ' + PILL_MORPH + ',max-width ' + PILL_MORPH + '}',
+      '.dsh-sel-pill[data-ball="1"] .dsh-sel-pillname,.dsh-sel-pill[data-ball="1"] .dsh-sel-pillmeta,.dsh-sel-pill[data-ball="1"] .dsh-sel-pillcaret{max-width:0;opacity:0;pointer-events:none}',
       '.dsh-sel-pill:hover{box-shadow:0 6px 22px rgba(0,0,0,.18)}',
       '.dsh-sel-pill[data-open="1"]{border-color:color-mix(in srgb,var(--sel-a1,#0d9488) 55%,transparent)}',
-      '.dsh-sel-pilldot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-label-tertiary,#8c959f)}',
+      '.dsh-sel-pilldot{flex:none;width:8px;height:8px;margin-left:0;border-radius:50%;background:var(--dsw-alias-label-tertiary,#8c959f);transition:margin-left ' + PILL_MORPH + '}',
+      // 球态：圆点在 32px 的圆里居中 —— (32 - 2 边框 - 8 圆点)/2 = 11px
+      '.dsh-sel-pill[data-ball="1"] .dsh-sel-pilldot{margin-left:11px}',
       '.dsh-sel-pill[data-tone=busy] .dsh-sel-pilldot{background:var(--sel-a1,#0d9488);animation:dsh-sel-pillpulse 1.5s ease-in-out infinite}',
       '.dsh-sel-pill[data-tone=done] .dsh-sel-pilldot{background:var(--sel-a1,#0d9488)}',
       '.dsh-sel-pill[data-tone=error] .dsh-sel-pilldot{background:var(--dsw-alias-state-error-primary,#e5484d)}',
@@ -3519,6 +3537,10 @@ window.__ModuleLoader__.load({
         // 判据是**本次量到的宽度**而不是"有没有找到容器"：容器在但胶囊被折叠/隐藏时同样跟不了，
         // 那种情况也该走兜底。
         write('maxWidth', pillBall ? PILL_BALL_SIZE + 'px' : anchor.width > 0 ? '' : PILL_FALLBACK_MAX + 'px')
+        // min-width 也一起过渡：球是 32×32 的圆，展开时要**平滑回到 0**。
+        // 之前它挂在 [data-ball="1"] 上，一摘属性就瞬间失效 → 展开第一帧宽度塌到内容宽（10px）
+        // 再长回来，看着就是先抽一下（真时间轴采样到的 0:10）。
+        write('minWidth', pillBall ? PILL_BALL_SIZE + 'px' : '0px')
         if (pillDock === 'free') {
           // 位置归用户：只保证还在视口里（顺手记下"展开态多宽"，展开时按中心摆回去要用）
           if (!pillBall) pillFreeWide = pill.offsetWidth || pillFreeWide

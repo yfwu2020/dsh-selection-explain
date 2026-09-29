@@ -187,6 +187,20 @@ function freezeMotion() {
   style.textContent = '*{transition:none!important;animation:none!important}'
   document.head.appendChild(style)
 }
+/** 按**顶层**逗号切分 CSS 列表值：cubic-bezier(0.4, 0, 0.6, 1) 里面也有逗号，直接 split 会切碎。 */
+function splitCssList(value) {
+  var out = []
+  var depth = 0
+  var current = ''
+  for (var i = 0; i < String(value).length; i += 1) {
+    var ch = String(value)[i]
+    if (ch === '(') depth += 1
+    if (ch === ')') depth -= 1
+    if (ch === ',' && depth === 0) { out.push(current.trim()); current = '' } else { current += ch }
+  }
+  if (current.trim()) out.push(current.trim())
+  return out
+}
 /** 浮标是不是**最上层**（z-index 低于面板时 elementFromPoint 会返回面板）。 */
 function onTop(node) {
   var rect = node.getBoundingClientRect()
@@ -450,6 +464,31 @@ async function main() {
     var pillTrans = getComputedStyle(pillNode).transitionProperty
     check('胶囊声明了过渡（收球/吸附是动画，不是跳变）', /max-width/.test(pillTrans) && /padding/.test(pillTrans) && /left/.test(pillTrans), pillTrans)
     check('过渡只在"第一帧已经贴好位置"之后才打开（data-ready）', hook.pillState().ready === true, String(hook.pillState().ready))
+
+    // 收 / 放**严格互逆**的结构前提：所有会变的属性共用同一条时长 + 同一条曲线，
+    // 而且那条曲线必须时间对称（x1+x2=1 且 y1+y2=1 → 把动画倒过来放就是另一个方向）。
+    // 之前用 easeOutQuint(.22,1,.36,1)：.22+.36≠1，两个方向前后半程不镜像 —— 用户报的"不对称"就是它。
+    var durList = splitCssList(getComputedStyle(pillNode).transitionDuration)
+    var easeList = splitCssList(getComputedStyle(pillNode).transitionTimingFunction)
+    var morphDur = durList.slice(1) // 第 0 条是 box-shadow 的 .15s，不属于形变
+    var morphEase = easeList.slice(1)
+    check('收/放所有属性共用一条时长', morphDur.length > 0 && morphDur.every(function (x) { return x === morphDur[0] }), durList.join(' | '))
+    check('收/放所有属性共用一条曲线', morphEase.length > 0 && morphEase.every(function (x) { return x === morphEase[0] }), easeList.join(' | '))
+    // 不用正则：这段代码在模板字符串里，\( 这种转义会被吃掉（踩过）
+    var easeText = morphEase[0] || ''
+    var easeAt = easeText.indexOf('cubic-bezier(')
+    var easeArgs = easeAt >= 0
+      ? easeText.slice(easeAt + 'cubic-bezier('.length, -1).split(',').map(function (x) { return Number(x.trim()) })
+      : []
+    check(
+      '曲线时间对称（x1+x2=1 且 y1+y2=1 → 倒放即另一个方向）',
+      easeArgs.length === 4 && Math.abs(easeArgs[0] + easeArgs[2] - 1) < 1e-6 && Math.abs(easeArgs[1] + easeArgs[3] - 1) < 1e-6,
+      easeText + ' → ' + JSON.stringify(easeArgs),
+    )
+    var nameDur = splitCssList(getComputedStyle(pillName).transitionDuration)[0]
+    var dotDur = getComputedStyle(pillNode.querySelector('.dsh-sel-pilldot')).transitionDuration.trim()
+    check('文字那格的时长和胶囊一致（不一致 → 中间帧宽度由另一条曲线决定）', nameDur === morphDur[0], nameDur + ' vs ' + morphDur[0])
+    check('圆点的时长也一致', dotDur === morphDur[0], dotDur + ' vs ' + morphDur[0])
     freezeMotion()
     // 最坏内容（选中文字 12 字 + 最长状态）：自然宽度 301px，最容易被上限拦到
     pillName.textContent = '迁移作业耗时超出了原计划…'
