@@ -150,6 +150,33 @@ window.__ModuleLoader__.load({
      *    读起来像"方块"，和圆点/星芒都不是一路。必须取样到 32 个顶点（星那条边上的取样点精确落在线段上）。
      * 顶点由 `node scripts/gen-star-path.mjs` 生成，可重跑核对。
      */
+    /**
+     * 收放时长（毫秒）—— 必须与 PILL_MORPH 里的 .28s 一致：CSS 管胶囊、JS 管球心图形，
+     * 两者同拍才是"同一件事"。见 animatePillStar。
+     */
+    var PILL_MORPH_MS = 280
+    /** 形变采样点数（圆与星都按 32 边形逐顶点插值）。 */
+    var PILL_STAR_SAMPLES = 32
+    /** 尖/身两段的交界：尖先抽出来（0→.62），身再收成星（.38→1），重叠 .24 段保证无速度断点。 */
+    var PILL_STAR_TIP_END = 0.62
+    var PILL_STAR_BODY_START = 0.38
+    /**
+     * 球心图形那条曲线（时间对称：.45+.55=1、0+1=1 → 倒放即另一个方向）。
+     * 比胶囊那条 (.4,0,.6,1) 略收一点，于是两层不是同一个节拍：胶囊滑、图形落定得干脆些。
+     * ⚠️ 试过给曲线加"过冲"（y 越出 [0,1]）——**不行**：时间对称的 cubic-bezier 只要 y1+y2=1，
+     *    曲线就必是"上-下-上"的波浪（实测 (.4,1.12,.6,-.12) 在 0.25 处已经 0.40、0.75 处才 0.60），
+     *    看着是一顿一顿的。过冲要放在**形状空间**里（PILL_STAR_POP），时间轴上始终是干净的 S。
+     */
+    var PILL_STAR_EASE = [0.45, 0, 0.55, 1]
+    /**
+     * 形状空间的过冲：尖长到位后再"冲出去一点点"再收回（0.075 = 尖最多到 8.73，落定回 8.4）。
+     * 包络在 p=.55 起、p=.8 附近到顶、p=1 归零 —— 两端为 0 所以不影响端点。
+     * 它是 p 的函数，所以收/放仍然严格互为倒放。
+     */
+    var PILL_STAR_POP = 0.075
+    /** 微转（度）：圆点态 -8°、星芒态 0°；过冲时会略过 0 再落定。圆点旋转不变，所以起手看不出来。 */
+    var PILL_STAR_TWIST = 8
+
     var PILL_STAR_DOT_D = 'M4 0L3.92 0.78L3.7 1.53L3.33 2.22L2.83 2.83L2.22 3.33L1.53 3.7L0.78 3.92L0 4L-0.78 3.92L-1.53 3.7L-2.22 3.33L-2.83 2.83L-3.33 2.22L-3.7 1.53L-3.92 0.78L-4 0L-3.92 -0.78L-3.7 -1.53L-3.33 -2.22L-2.83 -2.83L-2.22 -3.33L-1.53 -3.7L-0.78 -3.92L0 -4L0.78 -3.92L1.53 -3.7L2.22 -3.33L2.83 -2.83L3.33 -2.22L3.7 -1.53L3.92 -0.78Z'
     var PILL_STAR_D = 'M8.4 0L5.44 1.08L3.94 1.63L2.97 1.99L2.25 2.25L1.99 2.97L1.63 3.94L1.08 5.44L0 8.4L-1.08 5.44L-1.63 3.94L-1.99 2.97L-2.25 2.25L-2.97 1.99L-3.94 1.63L-5.44 1.08L-8.4 0L-5.44 -1.08L-3.94 -1.63L-2.97 -1.99L-2.25 -2.25L-1.99 -2.97L-1.63 -3.94L-1.08 -5.44L0 -8.4L1.08 -5.44L1.63 -3.94L1.99 -2.97L2.25 -2.25L2.97 -1.99L3.94 -1.63L5.44 -1.08Z'
 
@@ -678,8 +705,9 @@ window.__ModuleLoader__.load({
       // 而画布本身是 32px，于是 viewBox 的 1 单位 = 1px，设计稿上的数字可以照抄。
       '.dsh-sel-pillicon{flex:none;width:32px;height:32px;margin:0 -12px;display:block;overflow:visible;transition:margin ' + PILL_MORPH + '}',
       '.dsh-sel-pillstar{fill:var(--dsw-alias-label-tertiary,#8c959f)}',
-      // d 的过渡只在 data-ready 之后挂：首帧（还没就位）不该播动画
-      '.dsh-sel-pill[data-ready="1"] .dsh-sel-pillstar{transition:d ' + PILL_MORPH + '}',
+      // 图形本身不做 CSS 过渡：两条静态 path 之间 CSS 只能线性插值（中途会出现正菱形），
+      // 所以路径由 animatePillStar 按 p 现算（见那里的注释）。
+      '.dsh-sel-pillstar{transform-origin:50% 50%}',
       // 球态：画布在 32px 的圆里居中 —— 内宽 32-2(边框)=30，两侧各 -1px 负边距正好摆正（中心 16）
       '.dsh-sel-pill[data-ball="1"] .dsh-sel-pillicon{margin:0 -1px}',
       // 状态色照旧，只是从圆点的 background 挪到星的 fill；
@@ -3625,13 +3653,170 @@ window.__ModuleLoader__.load({
         )
       }
 
+      /* ── 球心图形的形变：一个纯函数 f(p) + 一条时间对称曲线 ──────────────────
+         ⚠️ 这里**不能**用 CSS 的 `transition:d`：两条静态 path 之间 CSS 只能**线性**插值，
+            于是中途会经过一个正菱形（谷跟着尖一起动）——正是设计阶段否掉的那版。
+            必须在 JS 里按 p 现算路径，才能让"尖先抽出来、身再收进去"这个非线性轨迹成立。
+         另：f(p) 只依赖 p，p 又由时间对称曲线给出，所以收/放天然互为倒放（镜像）。 */
+
+      /** 时间对称曲线的 y(x)：和 CSS 的 cubic-bezier 同一套解法（二分 24 次足够）。 */
+      function pillStarEase(x) {
+        var c = PILL_STAR_EASE
+        var cx = 3 * c[0]
+        var bx = 3 * (c[2] - c[0]) - cx
+        var ax = 1 - cx - bx
+        var cy = 3 * c[1]
+        var by = 3 * (c[3] - c[1]) - cy
+        var ay = 1 - cy - by
+        var lo = 0
+        var hi = 1
+        var t = x
+        for (var i = 0; i < 24; i += 1) {
+          t = (lo + hi) / 2
+          if (((ax * t + bx) * t + cx) * t < x) lo = t
+          else hi = t
+        }
+        t = (lo + hi) / 2
+        return ((ay * t + by) * t + cy) * t
+      }
+
+      /** smoothstep：两端速度都为 0 —— 段与段交界处不会有速度断点（那正是"生硬"的来源）。 */
+      function pillStarSmooth(x) {
+        var c = x < 0 ? 0 : x > 1 ? 1 : x
+        return c * c * (3 - 2 * c)
+      }
+
+      /** 星的多边形顶点（8 个：尖谷交替，与「✦ 解读」那颗星同一条几何）。 */
+      function pillStarPolygon() {
+        var tip = 8.4
+        var valley = tip * 0.3788
+        var pts = []
+        for (var k = 0; k < 4; k += 1) {
+          pts.push([tip * Math.cos(k * Math.PI / 2), tip * Math.sin(k * Math.PI / 2)])
+          pts.push([valley * Math.cos((k * 90 + 45) * Math.PI / 180), valley * Math.sin((k * 90 + 45) * Math.PI / 180)])
+        }
+        return pts
+      }
+
+      /** 从原点沿 angDeg 打射线，和多边形求交 → 该角度的边界半径。 */
+      function pillStarBoundaryRadius(poly, angDeg) {
+        var a = angDeg * Math.PI / 180
+        var dx = Math.cos(a)
+        var dy = Math.sin(a)
+        var best = Infinity
+        for (var i = 0; i < poly.length; i += 1) {
+          var p0 = poly[i]
+          var p1 = poly[(i + 1) % poly.length]
+          var ex = p1[0] - p0[0]
+          var ey = p1[1] - p0[1]
+          var den = dx * ey - dy * ex
+          if (Math.abs(den) < 1e-9) continue
+          var t = (p0[0] * ey - p0[1] * ex) / den
+          var u = (p0[0] * dy - p0[1] * dx) / den
+          if (t > 0 && u >= -1e-6 && u <= 1 + 1e-6 && t < best) best = t
+        }
+        return best === Infinity ? 4 : best
+      }
+
+      var pillStarPoly = pillStarPolygon()
+
       /**
-       * 球心里的图形切到"圆点"（展开）或"星芒"（收球）。
-       * 只改 d 属性，几何过渡交给 CSS 的 d 过渡（时长/曲线与胶囊那条完全一致）——
-       * 实测：胶囊 --p 走到 0.191 时星进度也是 0.191，两者是同一件事，不是两段动画拼起来。
+       * p=0 → 32 个顶点同半径 4（8px 圆点，与正圆最大偏差 0.02px）；
+       * p=1 → 32 个顶点正好落在按钮那颗星的边界上（尖与谷仍是精确顶点）。
+       * 尖走 p/.62 的 smoothstep、身走 (p-.38)/.62 的 smoothstep —— 两条都两端速度为 0，
+       * 于是整个 280ms 里图形一直在动、且没有速度断点（实测：旧版尖在 160ms 速度从 4.98 直接掉到 0）。
+       * p 允许略微越界（过冲曲线会给到 -0.03…1.06），半径按同一式子外推 —— 于是"冲出去一点再收回"。
        */
+      function pillStarPathAt(p) {
+        var pTip = pillStarSmooth(p / PILL_STAR_TIP_END)
+        var pBody = pillStarSmooth((p - PILL_STAR_BODY_START) / (1 - PILL_STAR_BODY_START))
+        var popEnv = pillStarPopEnvelope(p)
+        var out = []
+        for (var i = 0; i < PILL_STAR_SAMPLES; i += 1) {
+          var ang = i * 360 / PILL_STAR_SAMPLES
+          var w = Math.pow((1 + Math.cos(4 * ang * Math.PI / 180)) / 2, 1.5)
+          // 过冲只加在"尖"上（按 w 加权），于是尖先冲出去一点、谷按部就班收 —— 呼吸感来自这里
+          var prog = w * pTip + (1 - w) * pBody + PILL_STAR_POP * w * popEnv
+          var r = 4 + (pillStarBoundaryRadius(pillStarPoly, ang) - 4) * prog
+          var rad = ang * Math.PI / 180
+          var x = Math.round(r * Math.cos(rad) * 100) / 100
+          var y = Math.round(r * Math.sin(rad) * 100) / 100
+          out.push((i ? 'L' : 'M') + x + ' ' + y)
+        }
+        return out.join('') + 'Z'
+      }
+
+      /** 过冲的包络：p≤.55 为 0，p≈.8 到顶，p=1 归零（两端为 0 → 不破坏端点）。 */
+      function pillStarPopEnvelope(p) {
+        if (p <= 0.55 || p >= 1) return 0
+        return Math.sin(Math.PI * (p - 0.55) / 0.45)
+      }
+
+      /** 微转：圆点态 -8° → 星芒态 0°。 */
+      function pillStarTwistAt(p) {
+        return PILL_STAR_TWIST * (1 - p)
+      }
+
+      var pillStarP = 0
+      var pillStarTargetP = 0
+      var pillStarTimer = 0
+
+      /** 按 p 画一帧（路径 + 微转）。 */
+      function paintPillStar(p) {
+        pillStarP = p
+        pillStar.setAttribute('d', pillStarPathAt(p))
+        pillStar.style.transform = 'rotate(' + (Math.round(pillStarTwistAt(p) * 100) / 100) + 'deg)'
+      }
+
+      /**
+       * 从当前 p 走到 to（1=收球成星，0=展开回圆点）。
+       * 时长与胶囊那条 CSS 过渡一致（PILL_MORPH_MS / PILL_MORPH），两者同拍；
+       * 被打断（比如收球途中鼠标移上去）就从当前 p 接着走，不会跳。
+       *
+       * 为什么用 setTimeout 而不是 requestAnimationFrame：
+       *   · 进度是**按时间算的**（Date.now()），不是按帧累加的 —— 所以节奏用什么驱动不影响保真度；
+       *   · 冒烟脚本跑在 --virtual-time-budget 下，那个环境**不派发 rAF**（定时器照走），
+       *     用 rAF 的话整段动画在测试里根本观察不到（也就会漏掉"中途形状不对"这类 bug）；
+       *   · 用 Date.now() 而不是 performance.now()：虚拟时钟下后者是冻住的。
+       * 16ms ≈ 60fps，和 rAF 同档；后台标签里被节流也只是直接跳到终值，无副作用。
+       */
+      function animatePillStar(to) {
+        if (pillStarTimer) {
+          clearTimeout(pillStarTimer)
+          pillStarTimer = 0
+        }
+        pillStarTargetP = to
+        var from = pillStarP
+        if (from === to) {
+          paintPillStar(to)
+          return
+        }
+        var done = 0
+        var last = Date.now()
+        function step() {
+          var now = Date.now()
+          var elapsed = now - last
+          // 时钟被冻住时（--virtual-time-budget 那种虚拟时钟：定时器照走、Date.now() 不动）
+          // 按"一拍 16ms"推进 —— 否则动画永远停在第一帧，测试也就看不到中途形状
+          //（而"中途形状不对"正是上一版漏掉的那个 bug）。真实环境里 elapsed 就是真实间隔。
+          if (elapsed <= 0) elapsed = 16
+          last = now
+          done += elapsed
+          var x = done / PILL_MORPH_MS
+          if (x >= 1) {
+            pillStarTimer = 0
+            paintPillStar(to)
+            return
+          }
+          paintPillStar(from + (to - from) * pillStarEase(x))
+          pillStarTimer = setTimeout(step, 16)
+        }
+        step()
+      }
+
+      /** 球心里的图形切到"圆点"（展开）或"星芒"（收球）。 */
       function setPillStar(ball) {
-        pillStar.setAttribute('d', ball ? PILL_STAR_D : PILL_STAR_DOT_D)
+        animatePillStar(ball ? 1 : 0)
       }
 
       function collapsePill() {
@@ -3664,6 +3849,7 @@ window.__ModuleLoader__.load({
        */
       function schedulePillIdle() {
         if (pillIdleId) clearTimeout(pillIdleId)
+        if (pillStarTimer) clearTimeout(pillStarTimer)
         pillIdleId = setTimeout(function () {
           pillIdleId = 0
           if (pillCanBall()) collapsePill()
@@ -7879,6 +8065,39 @@ window.__ModuleLoader__.load({
 
       // —— 调试钩子（自动化验证用） ——
       window.__dshSelectionExplain = {
+        /** 球心图形在进度 p 处的 path（p 可略越界）—— 测试按它核对整条形变轨迹。 */
+        pillStarAt: function (p) {
+          return pillStarPathAt(p)
+        },
+        /** 当前进度与目标（测试核对收/放确实把图形推向了正确的一端）。 */
+        pillStarProgress: function () {
+          return pillStarP
+        },
+        pillStarTarget: function () {
+          return pillStarTargetP
+        },
+        /** 直接跑一次形变动画（与胶囊状态解耦）：测试用它确定性地验"计时器在推进"。 */
+        pillStarAnimate: function (to) {
+          animatePillStar(to ? 1 : 0)
+          return true
+        },
+        /** 同步画到某个进度（几何断言/截图用，绕开计时器与异步活动）。 */
+        pillStarTo: function (p) {
+          if (pillStarTimer) {
+            clearTimeout(pillStarTimer)
+            pillStarTimer = 0
+          }
+          pillStarTargetP = p
+          paintPillStar(p)
+          return true
+        },
+        pillStarEaseAt: function (x) {
+          return pillStarEase(x)
+        },
+        /** JS 那条时长（毫秒）—— 测试核对它与 CSS 那条 .28s 是否同拍。 */
+        pillMorphMs: function () {
+          return PILL_MORPH_MS
+        },
         /** 球心里那两条 path（圆点态 / 星芒态）—— 自检与截图模式用它，避免在测试里抄一遍几何。 */
         pillStarD: function () {
           return PILL_STAR_D
@@ -8374,6 +8593,7 @@ window.__ModuleLoader__.load({
           for (var i = 0; i < timers.length; i++) clearTimeout(timers[i])
           // 静置计时器是裸 setTimeout（不进 timers 数组，见 schedulePillIdle），单独清
           if (pillIdleId) clearTimeout(pillIdleId)
+        if (pillStarTimer) clearTimeout(pillStarTimer)
           cache.clear()
           if (layer.parentNode) layer.parentNode.removeChild(layer)
           if (button.parentNode) button.parentNode.removeChild(button)

@@ -488,15 +488,56 @@ async function main() {
     var nameDur = splitCssList(getComputedStyle(pillName).transitionDuration)[0]
     var starEl = pillNode.querySelector('.dsh-sel-pillstar')
     var starTrans = getComputedStyle(starEl)
-    var starDur = splitCssList(starTrans.transitionDuration)[0]
-    var starProp = starTrans.transitionProperty.trim()
-    var starEase = starTrans.transitionTimingFunction.trim()
     check('文字那格的时长和胶囊一致（不一致 → 中间帧宽度由另一条曲线决定）', nameDur === morphDur[0], nameDur + ' vs ' + morphDur[0])
-    // 星芒是**同一枚球心里的图形**：它的 d 过渡必须和胶囊那条形变同一条时长与曲线，
-    // 否则"圆点长成星芒"和"胶囊收成球"会各走各的，看起来就是两段动画拼起来。
-    check('星芒走的是 d 过渡（不是淡入淡出那种换形）', starProp === 'd', starProp)
-    check('星芒的时长和胶囊一致', starDur === morphDur[0], starDur + ' vs ' + morphDur[0])
-    check('星芒的曲线和胶囊一致（同一条时间对称曲线 → 收放互逆）', starEase === morphEase[0], starEase + ' vs ' + morphEase[0])
+
+    // ── 球心图形的形变轨迹（这一组是重点：光看两端点会漏掉中间帧的形状） ──
+    // 曾经踩过的坑：用 CSS 的 transition:d 在两条静态 path 之间插值 —— CSS 只能线性插值，
+    // 于是中途会经过一个正菱形（谷跟着尖一起动），读起来像方块；而且尖在 160ms 就停住、
+    // 胶囊还要走到 280ms，"配合"就散了。所以现在路径由 JS 按 p 现算（两段 smoothstep）。
+    check('球心图形不走 CSS 的 d 过渡（线性插值会经过正菱形）', starTrans.transitionProperty.trim() !== 'd', starTrans.transitionProperty.trim() || '(无过渡)')
+    var radiiAt = function (p) {
+      // 不写正则：模板字符串里反斜杠会被吃掉。按 M/L 切段再取两个数。
+      var parts = String(hook.pillStarAt(p)).split('L')
+      parts[0] = parts[0].charAt(0) === 'M' ? parts[0].slice(1) : parts[0]
+      return parts.map(function (seg) {
+        var z = seg.indexOf('Z')
+        if (z >= 0) seg = seg.slice(0, z)
+        var xy = seg.split(' ')
+        return Math.sqrt(parseFloat(xy[0]) * parseFloat(xy[0]) + parseFloat(xy[1]) * parseFloat(xy[1]))
+      })
+    }
+    var r0 = radiiAt(0)
+    var r25 = radiiAt(0.25)
+    var r50 = radiiAt(0.5)
+    check('p=0：32 个顶点同半径 4.00（8px 圆点）', r0.length === 32 && r0.every(function (r) { return Math.abs(r - 4) < 0.02 }), r0.length + ' 顶点，半径 ' + r0[0].toFixed(3))
+    check('p=0.25：谷仍停在 4.00（"两段"的签名 —— 线性插值会把它拉到 3.80，那就是菱形相）', Math.abs(r25[4] - 4) < 0.02, '谷 ' + r25[4].toFixed(3))
+    check('p=0.25：尖已经抽到 5.57 左右（尖先长，p=0.25 就走了 1/3）', Math.abs(r25[0] - 5.57) < 0.06, '尖 ' + r25[0].toFixed(3))
+    check('p=0.5：尖接近满长（≥ 7.9），身刚开始收（谷 ≤ 3.95）', r50[0] >= 7.9 && r50[4] <= 3.95, '尖 ' + r50[0].toFixed(2) + ' / 谷 ' + r50[4].toFixed(2))
+    // 同一个 p 下，从尖到谷的半径必须单调递减（尖 > 11.25° > 22.5° > 33.75° > 谷），
+    // 且左右对称 —— 这就是"不出现波浪边"的可测形式。
+    var sectorOk = function (r) {
+      var k
+      for (k = 0; k < 4; k += 1) if (r[k] < r[k + 1] - 0.02) return false
+      for (k = 1; k < 16; k += 1) if (Math.abs(r[k] - r[32 - k]) > 0.02) return false
+      return true
+    }
+    check('同一进度下：尖→谷单调递减且左右对称（没有波浪边）', sectorOk(r25) && sectorOk(r50) && sectorOk(radiiAt(0.8)), JSON.stringify(r50.map(function (r) { return Number(r.toFixed(2)) }).slice(0, 5)))
+    // 形状空间的过冲：尖在 p≈0.8 处冲过 8.4 一点，到 p=1 精确回到 8.4
+    var r80 = radiiAt(0.8)
+    var r100 = radiiAt(1)
+    check('尖有轻微过冲（p=0.8 处 > p=1 的 8.4，冲出去再收回）', r80[0] > 8.5 && Math.abs(r100[0] - 8.4) < 0.02, 'p=.8 尖 ' + r80[0].toFixed(3) + ' / p=1 尖 ' + r100[0].toFixed(3))
+    check('p=1 的路径与客户端常量逐字相同（和「✦ 解读」那颗星同一条几何）', hook.pillStarAt(1) === hook.pillStarD(), hook.pillStarAt(1) === hook.pillStarD() ? '逐字一致' : '不一致')
+    check('p=0 的路径与客户端常量逐字相同（展开态就是那枚 8px 圆点）', hook.pillStarAt(0) === hook.pillStarDotD(), hook.pillStarAt(0) === hook.pillStarDotD() ? '逐字一致' : '不一致')
+    // 曲线：时间对称（倒放即另一个方向）+ 轻微蓄势/过冲（不直来直去）
+    var xs = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    var ys = xs.map(function (x) { return hook.pillStarEaseAt(x) })
+    var symOk = xs.every(function (x) { return Math.abs(hook.pillStarEaseAt(x) + hook.pillStarEaseAt(1 - x) - 1) < 1e-6 })
+    check('球心图形的曲线时间对称（收/放互为倒放）', symOk, ys.map(function (y) { return y.toFixed(3) }).join(' '))
+    // 曲线本身要"干净"（单调 S，不能是波浪）：过冲放在形状空间，不放在时间轴上
+    var monotone = true
+    for (var mi = 1; mi < xs.length; mi += 1) if (hook.pillStarEaseAt(xs[mi]) <= hook.pillStarEaseAt(xs[mi - 1])) monotone = false
+    check('时间轴上的曲线是干净单调的 S（过冲不放在这里 —— 对称曲线的过冲必成波浪）', monotone && ys[0] > 0 && ys[ys.length - 1] < 1, ys.map(function (y) { return y.toFixed(3) }).join(' '))
+    check('JS 那条时长与 CSS 那条同拍（280ms ↔ .28s）', hook.pillMorphMs() === 280 && morphDur[0] === '0.28s', hook.pillMorphMs() + 'ms vs ' + morphDur[0])
     freezeMotion()
     // 最坏内容（选中文字 12 字 + 最长状态）：自然宽度 301px，最容易被上限拦到
     pillName.textContent = '迁移作业耗时超出了原计划…'
@@ -656,17 +697,46 @@ async function main() {
     check('小球仍然贴着右下角（位置没跑）', balled.rect.right === 20 && balled.rect.bottom === 20, balled.rect.right + '/' + balled.rect.bottom)
 
     // ── 球心里的星芒：收球时 d 换成星、展开时换回圆点，几何都得对得上 ──
-    //    （过渡已冻住，所以这里量到的是终值）
-    var starPath = pillBall.querySelector('.dsh-sel-pillstar')
+    //    球心图形是 JS 按时间推进的（胶囊那条是 CSS 过渡，被 freezeMotion 冻成瞬时），
+    //    所以分三件事验：① 目标对不对（同步）② 计时器真的在推进（短等几拍）③ 终态几何（同步画到终点再量）。
+    //    ⚠️ 不能靠"等 280ms 再看"：这段时间里任何一次活动（比如首轮解读流式结束后的 paintPill）
+    //       都会按设计把球展开回胶囊，等出来的就不是球态了。
     var starCanvas = pillBall.querySelector('.dsh-sel-pillicon')
-    var starD = starPath.getAttribute('d')
-    var starBox = starPath.getBBox()
-    var verts = (starD.match(/[ML]/g) || []).length
+    var starPath = pillBall.querySelector('.dsh-sel-pillstar')
     var starWant = hook.pillStarD()
     var dotWant = hook.pillStarDotD()
-    check('收球后球心里是星芒：d 与客户端那条常量**逐字相同**', starD === starWant, starD === starWant ? '32 顶点一致' : starD.slice(0, 18) + '… ≠ ' + starWant.slice(0, 18))
-    check('星芒 path 是 32 个顶点（圆与星都按 32 边形插值）', verts === 32, String(verts))
-    check('两条 path 命令结构一致（Chrome 才能对 d 插值）', (dotWant.match(/[ML]/g) || []).length === verts, '圆点 ' + (dotWant.match(/[ML]/g) || []).length + ' vs 星 ' + verts)
+    check('收球时球心图形的目标是"星芒"（1）', hook.pillStarTarget() === 1, String(hook.pillStarTarget()))
+    // "计时器真的在推进"用解耦的钩子验（不依赖胶囊此刻是不是球态 ——
+    //  首轮解读收尾时 paintPill→notePillActivity 会按设计把球展开，和这条无关）
+    hook.pillStarAnimate(0)
+    var pAtStart = hook.pillStarProgress()
+    hook.pillStarAnimate(1)
+    var grew = false
+    for (var tick = 0; tick < 12 && !grew; tick += 1) {
+      await sleep(24)
+      if (hook.pillStarProgress() > pAtStart + 0.05) grew = true
+    }
+    check('球心图形的动画真的在推进（计时器在跑，不是画一帧就停）', grew, pAtStart.toFixed(3) + ' → ' + hook.pillStarProgress().toFixed(3))
+    // 球态的画布居中：这是 CSS 那边的事（margin 过渡），冻住运动后是瞬时终值，可以同步量。
+    // ⚠️ 先显式确保还在球态：上面的等待里任何一次活动都会按设计把球展开。
+    if (hook.pillState().ball !== true) {
+      hook.pillIdle()
+      await sleep(80)
+    }
+    check('（前置）此刻确实是球态，下面量的是球心几何', hook.pillState().ball === true, String(hook.pillState().ball))
+    var ballRect = pillBall.getBoundingClientRect()
+    var canvasRect = starCanvas.getBoundingClientRect()
+    check(
+      '星芒在球里居中（图形中心 = 球的中心，±0.6px）',
+      Math.abs(canvasRect.left + canvasRect.width / 2 - (ballRect.left + ballRect.width / 2)) <= 0.6,
+      '画布中心 ' + (canvasRect.left + canvasRect.width / 2).toFixed(1) + ' vs 球中心 ' + (ballRect.left + ballRect.width / 2).toFixed(1),
+    )
+    check('球态画布用 -1px 负边距摆正（内宽 32-2 边框 = 30）', getComputedStyle(starCanvas).marginLeft === '-1px', getComputedStyle(starCanvas).marginLeft)
+    // 同步画到终点，再量终态几何（不受计时器与异步活动影响）
+    hook.pillStarTo(1)
+    var starD = starPath.getAttribute('d')
+    var starBox = starPath.getBBox()
+    check('收球终态：d 与客户端那条常量逐字相同', starD === starWant, starD === starWant ? '32 顶点一致' : starD.slice(0, 18) + '… ≠ ' + starWant.slice(0, 18))
     check(
       '星芒墨迹 16.8×16.8（球 32px，四周留白 7.6）',
       Math.abs(starBox.width - 16.8) < 0.15 && Math.abs(starBox.height - 16.8) < 0.15,
@@ -677,22 +747,19 @@ async function main() {
       /M8\.4 0/.test(starD) && starD.indexOf('L2.25 2.25') > 0,
       starD.slice(0, 30),
     )
-    // 画布 32×32 两侧负边距：球态 -1px → 画布正好落在 30px 内宽里，图形中心 = 球的中心
-    var ballRect = pillBall.getBoundingClientRect()
-    var canvasRect = starCanvas.getBoundingClientRect()
-    check(
-      '星芒在球里居中（图形中心 = 球的中心，±0.6px）',
-      Math.abs(canvasRect.left + canvasRect.width / 2 - (ballRect.left + ballRect.width / 2)) <= 0.6,
-      '画布中心 ' + (canvasRect.left + canvasRect.width / 2).toFixed(1) + ' vs 球中心 ' + (ballRect.left + ballRect.width / 2).toFixed(1),
-    )
-    check('球态画布用 -1px 负边距摆正（内宽 32-2 边框 = 30）', getComputedStyle(starCanvas).marginLeft === '-1px', getComputedStyle(starCanvas).marginLeft)
 
-    // 鼠标一放上去就展开
+    // 鼠标一放上去就展开（若已被异步活动展开过，先收回球态，好让 mouseenter 真的走一次展开）
+    if (hook.pillState().ball !== true) {
+      hook.pillIdle()
+      await sleep(80)
+    }
     pillBall.dispatchEvent(new MouseEvent('mouseenter', { view: window }))
     var expanded = hook.pillState()
     check('鼠标移上去：小球展开回胶囊', expanded.ball === false && expanded.rect.width > 100, expanded.rect.width + 'px')
     // 展开态：图形回到 8px 圆点，且画布**布局占位**仍是 8px（两侧 -12px）——
     // 这样胶囊的排版与宽度和以前那枚 8px 圆点完全一样，不会因为换了个 SVG 就把胶囊撑宽。
+    check('展开时球心图形的目标是"圆点"（0）', hook.pillStarTarget() === 0, String(hook.pillStarTarget()))
+    hook.pillStarTo(0) // 同步画回圆点，量终态
     var dotD = pillBall.querySelector('.dsh-sel-pillstar').getAttribute('d')
     var dotBox = pillBall.querySelector('.dsh-sel-pillstar').getBBox()
     var iconCanvas = pillBall.querySelector('.dsh-sel-pillicon')
@@ -808,8 +875,10 @@ async function main() {
     stage.setAttribute('id', 'shotstage')
     stage.setAttribute('style',
       'position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483600;background:#f4f6f8;' +
-      'display:flex;gap:26px;align-items:center;justify-content:center;color:#57606a;' +
+      'display:flex;flex-direction:column;gap:22px;align-items:center;justify-content:center;color:#57606a;' +
       'font:12px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif')
+    var row1 = document.createElement('div')
+    row1.setAttribute('style', 'display:flex;gap:26px;align-items:center')
     /**
      * 造一格：clone 是胶囊的克隆；ball 决定它摆成球还是展开；scale 是放大倍数；
      * dotOnly 时把球态画布里的 d 换成"圆点"那条 —— 用来单独看圆点的几何。
@@ -848,10 +917,41 @@ async function main() {
       wrap.appendChild(cap)
       return wrap
     }
-    stage.appendChild(cell(false, false, 1, '展开态（真实大小）：球心里是 8px 圆点'))
-    stage.appendChild(cell(true, false, 1, '收球态（真实大小）：8px 圆点长成星芒 16.8px'))
-    stage.appendChild(cell(true, true, 4, '圆点 8px（4×）—— 32 边形，半径恒 4'))
-    stage.appendChild(cell(true, false, 4, '星芒 16.8px（4×）—— 与「✦ 解读」那颗星逐点同形'))
+    row1.appendChild(cell(false, false, 1, '展开态（真实大小）：球心里是 8px 圆点'))
+    row1.appendChild(cell(true, false, 1, '收球态（真实大小）：8px 圆点长成星芒 16.8px'))
+    row1.appendChild(cell(true, true, 4, '圆点 8px（4×）—— 32 边形，半径恒 4'))
+    row1.appendChild(cell(true, false, 4, '星芒 16.8px（4×）—— 与「✦ 解读」那颗星逐点同形'))
+    stage.appendChild(row1)
+
+    // 下行：形变逐帧（直接用 hook.pillStarAt(p) 画真实轨迹）——
+    // 这一条就是"中间帧形状不对"的可视回归图：曾经用 CSS 的 d 过渡做线性插值，
+    // 25%~38% 那几帧会是一个正菱形（谷跟着尖一起动），在这里一眼就能看出来。
+    var row2 = document.createElement('div')
+    row2.setAttribute('style', 'display:flex;gap:9px;align-items:flex-end')
+    for (var fi = 0; fi <= 8; fi += 1) {
+      var fp = fi / 8
+      var fcell = document.createElement('div')
+      fcell.setAttribute('style', 'display:flex;flex-direction:column;align-items:center;gap:5px')
+      var fclone = src.cloneNode(true)
+      fclone.style.position = 'static'
+      fclone.style.right = 'auto'
+      fclone.style.bottom = 'auto'
+      fclone.style.transition = 'none'
+      fclone.setAttribute('data-ball', '1')
+      fclone.setAttribute('data-ready', '1')
+      var fstar = fclone.querySelector('.dsh-sel-pillstar')
+      if (fstar) {
+        fstar.setAttribute('d', window.__dshSelectionExplain.pillStarAt(fp))
+        fstar.style.transform = 'rotate(' + Math.round(8 * (1 - fp) * 100) / 100 + 'deg)'
+      }
+      fcell.appendChild(fclone)
+      var fcap = document.createElement('div')
+      fcap.setAttribute('style', 'font-size:10px;color:#8c959f')
+      fcap.textContent = Math.round(fp * 100) + '%'
+      fcell.appendChild(fcap)
+      row2.appendChild(fcell)
+    }
+    stage.appendChild(row2)
     document.body.appendChild(stage)
     await sleep(400)
   }
@@ -939,7 +1039,7 @@ try {
           '--disable-gpu',
           '--no-first-run',
           '--no-default-browser-check',
-          '--window-size=1160,400',
+          '--window-size=1180,560',
           '--virtual-time-budget=20000',
           `--screenshot=${shotPath}`,
           `http://127.0.0.1:${port}/smoke.html?shot=1`,
