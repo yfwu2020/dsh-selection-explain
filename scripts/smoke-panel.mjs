@@ -771,11 +771,34 @@ async function main() {
     // 展开态：图形回到 8px 圆点，且画布**布局占位**仍是 8px（两侧 -12px）——
     // 这样胶囊的排版与宽度和以前那枚 8px 圆点完全一样，不会因为换了个 SVG 就把胶囊撑宽。
     check('展开时球心图形的目标是"圆点"（0）', hook.pillStarTarget() === 0, String(hook.pillStarTarget()))
+    // 真实悬停路径：展开会重置静置计时，不能因此取消球心图形的动画。
+    pillBall.dispatchEvent(new MouseEvent('mouseleave', { view: window }))
+    if (hook.pillState().ball !== true) hook.pillIdle()
+    hook.pillStarTo(1)
+    pillBall.dispatchEvent(new MouseEvent('mouseenter', { view: window }))
+    await sleep(350)
+    check(
+      '悬停展开后星芒自行回到圆点',
+      hook.pillState().ball === false && hook.pillStarProgress() === 0 && starPath.getAttribute('d') === dotWant,
+      'ball=' + hook.pillState().ball + ' progress=' + hook.pillStarProgress(),
+    )
     hook.pillStarTo(0) // 同步画回圆点，量终态
     var dotD = pillBall.querySelector('.dsh-sel-pillstar').getAttribute('d')
     var dotBox = pillBall.querySelector('.dsh-sel-pillstar').getBBox()
     var iconCanvas = pillBall.querySelector('.dsh-sel-pillicon')
     var iconStyle = getComputedStyle(iconCanvas)
+    var pillRectForDot = pillBall.getBoundingClientRect()
+    var canvasForDot = iconCanvas.getBoundingClientRect()
+    var dotRect = starPath.getBoundingClientRect()
+    var dotCx = dotRect.left + dotRect.width / 2
+    var dotCy = dotRect.top + dotRect.height / 2
+    var canvasCx = canvasForDot.left + canvasForDot.width / 2
+    var pillCy = pillRectForDot.top + pillRectForDot.height / 2
+    check(
+      '展开后圆点墨迹居中：横向在 SVG 画布中心，纵向在胶囊中心',
+      Math.abs(dotCx - canvasCx) < 0.25 && Math.abs(dotCy - pillCy) < 0.25,
+      '偏移 x=' + (dotCx - canvasCx).toFixed(2) + ' y=' + (dotCy - pillCy).toFixed(2),
+    )
     check('展开后回到圆点态：d 与客户端那条常量**逐字相同**', dotD === dotWant, dotD === dotWant ? '32 顶点一致' : dotD.slice(0, 14) + '… ≠ ' + dotWant.slice(0, 14))
     // 这条是补覆盖：上面用 pillStarTo(0) 同步画到终点，验的是"终点长什么样"，
     // 但"展开这条动画**自己**会不会走到终点"没验过 —— 用户报的"展开后没恢复成圆点"正是这里。
@@ -847,6 +870,11 @@ async function main() {
       fireOn('mouseup', midX2 + 4, midY2 + 2, true)
       var wideFree = hook.pillState()
       check('自由摆放（拖到中间）', wideFree.dock === 'free' && wideFree.rect.width > 100, wideFree.dock + ' ' + wideFree.rect.width)
+      check(
+        '自由摆放使用固定的 CSS right 定位，使过渡每一帧都能守住右边缘',
+        wideFree.style.left === 'auto' && wideFree.style.right !== 'auto' && wideFree.style.right !== '',
+        'left=' + wideFree.style.left + ' right=' + wideFree.style.right,
+      )
       var rightBefore = wideFree.rect.right
       hook.pillIdle()
       var ballFree = hook.pillState()
@@ -859,10 +887,15 @@ async function main() {
       check('自由摆放时展开：右边缘也不动（±1px）', wideAgain.ball === false && Math.abs(wideAgain.rect.right - rightBefore) <= 1, '右边缘 ' + rightBefore.toFixed(1) + ' → ' + wideAgain.rect.right.toFixed(1))
       pillBall.dispatchEvent(new MouseEvent('mouseleave', { view: window }))
       // 拖回右下角，后面的断言接着用锚定态
+      var frozenStyle = document.getElementById('freeze-motion')
       fireOn('mousedown', Math.round(pillBall.getBoundingClientRect().left) + 20, Math.round(pillBall.getBoundingClientRect().top) + 10, false)
       fireOn('mousemove', Math.round(window.innerWidth - 30), Math.round(window.innerHeight - 30), true)
+      frozenStyle.remove() // 拖动中 data-drag 会关过渡，此时解除全局冻结，不会让胶囊跳
       fireOn('mouseup', Math.round(window.innerWidth - 30), Math.round(window.innerHeight - 30), true)
-      check('拖回右下角后又吸附（回到 anchor）', hook.pillState().dock === 'anchor', hook.pillState().dock)
+      var snapAnimated = pillBall.getAnimations().some(function (animation) { return animation.transitionProperty === 'left' })
+      check('自由摆放从 CSS right 切回吸附时仍有滑行动画', snapAnimated, String(snapAnimated))
+      document.head.appendChild(frozenStyle)
+      check('拖回右下角后又吸附（回到 anchor）', hook.pillState().dock === 'anchor', JSON.stringify(hook.pillState()))
       check('锚定位置和最初一致', Math.abs(hook.pillState().rect.left - homeRect.left) <= 2, hook.pillState().rect.left + ' vs ' + homeRect.left)
       void anchored
     }

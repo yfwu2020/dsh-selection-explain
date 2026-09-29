@@ -708,7 +708,9 @@ window.__ModuleLoader__.load({
       '.dsh-sel-pillstar{fill:var(--dsw-alias-label-tertiary,#8c959f)}',
       // 图形本身不做 CSS 过渡：两条静态 path 之间 CSS 只能线性插值（中途会出现正菱形），
       // 所以路径由 animatePillStar 按 p 现算（见那里的注释）。
-      '.dsh-sel-pillstar{transform-origin:50% 50%}',
+      // path 的坐标中心是 (0,0)。百分比原点在 SVG 中却算成 (16px,16px)，
+      // 旋转 -8° 会把圆点墨迹推到画布右上方；必须绕路径真正的中心转。
+      '.dsh-sel-pillstar{transform-origin:0 0}',
       // 球态：画布在 32px 的圆里居中 —— 内宽 32-2(边框)=30，两侧各 -1px 负边距正好摆正（中心 16）
       '.dsh-sel-pill[data-ball="1"] .dsh-sel-pillicon{margin:0 -1px}',
       // 状态色照旧，只是从圆点的 background 挪到星的 fill；
@@ -2346,15 +2348,13 @@ window.__ModuleLoader__.load({
        *   · pillDock：'anchor' = 贴费用胶囊（量不到就贴右下角，由 placePill 管）；
        *               'free'   = 用户拖到别处了 —— 位置归用户，轮询不许再动它。
        *   · pillFreeRight：自由摆放时记的是**右边缘**（收球/展开都以右侧为锚点：
-       *     胶囊往左收成球、再往右展开回原样，右边缘一个像素都不动 —— 用户要的就是这个）。
+       *     胶囊向左展开、向右收成球，右边缘一个像素都不动 —— 用户要的就是这个）。
        *     记中心是不行的：收球时右边缘会往左跑，球看起来"飘"了一下。
-       *   · pillFreeWide：自由摆放时"展开态"的宽度（展开时按中心摆回去要用它；轮询顺手刷新）。
        *   · pillAnchorWidth：本次量到的费用胶囊宽度（0 = 没量到）—— 决定"跟随"还是"兜底"，
        *     也是"能不能收球"的前提（用户定的：只有没有费用胶囊时才收成小球）。
        */
       var pillDock = 'anchor'
       var pillFreeRight = null
-      var pillFreeWide = 0
       var pillBall = false
       var pillHover = false
       var pillDrag = null
@@ -3538,15 +3538,13 @@ window.__ModuleLoader__.load({
         return { right: right, bottom: bottom, width: width }
       }
 
-      /** 自由摆放（用户拖到别处）时按**中心**摆 —— 收球/展开都围着同一点，视觉上不跳。 */
-      /** 自由摆放：**右边缘**钉在 pillFreeRight.right 上，宽度变化时往左长/往左收。 */
-      function applyFreePill(width) {
+      /** 自由摆放：用 CSS right 钉住右边缘，宽度过渡的每一帧都往左长/往左收。 */
+      function applyFreePill() {
         if (!pillFreeRight) return
-        var w = width || pill.offsetWidth || 0
         var h = pill.offsetHeight || 0
-        pill.style.left = Math.round(pillFreeRight.right - w) + 'px'
+        pill.style.left = 'auto'
+        pill.style.right = Math.round(window.innerWidth - pillFreeRight.right) + 'px'
         pill.style.top = Math.round(pillFreeRight.y - h / 2) + 'px'
-        pill.style.right = 'auto'
         pill.style.bottom = 'auto'
       }
 
@@ -3564,7 +3562,7 @@ window.__ModuleLoader__.load({
         var y = top + h / 2
         if (Math.abs(right - pillFreeRight.right) < 0.5 && Math.abs(y - pillFreeRight.y) < 0.5) return false
         pillFreeRight = { right: right, y: y }
-        applyFreePill(w)
+        applyFreePill()
         return true
       }
 
@@ -3618,8 +3616,7 @@ window.__ModuleLoader__.load({
         // 再长回来，看着就是先抽一下（真时间轴采样到的 0:10）。
         write('minWidth', pillBall ? PILL_BALL_SIZE + 'px' : '0px')
         if (pillDock === 'free') {
-          // 位置归用户：只保证还在视口里（顺手记下"展开态多宽"，展开时要按它算右边缘）
-          if (!pillBall) pillFreeWide = pill.offsetWidth || pillFreeWide
+          // 位置归用户：CSS right 持续钉住右边缘，只保证胶囊还在视口里。
           clampFreePill()
           return changed
         }
@@ -3846,15 +3843,11 @@ window.__ModuleLoader__.load({
 
       function collapsePill() {
         if (pillBall) return false
-        var rect = pill.getBoundingClientRect()
-        // 记住"展开态多宽"：展开时按中心摆回去要用它（自由摆放才有意义）
-        if (!pillBall) pillFreeWide = Math.max(rect.width, PILL_BALL_SIZE)
         pillBall = true
         pill.setAttribute('data-ball', '1')
         setPillStar(true)
         placePill() // 上限 → 球的尺寸（过渡动画交给 CSS 的 max-width）
-        // 自由摆放时宽度往右收会"跑偏"：按中心摆回去（left 与 max-width 同一条过渡，中心不动）
-        if (pillDock === 'free') applyFreePill(PILL_BALL_SIZE)
+        if (pillDock === 'free') applyFreePill()
         return true
       }
 
@@ -3864,7 +3857,7 @@ window.__ModuleLoader__.load({
         pill.removeAttribute('data-ball')
         setPillStar(false)
         placePill() // 上限交回 200 / 费用胶囊那条
-        if (pillDock === 'free') applyFreePill(pillFreeWide || 0)
+        if (pillDock === 'free') applyFreePill()
         return true
       }
 
@@ -3874,7 +3867,6 @@ window.__ModuleLoader__.load({
        */
       function schedulePillIdle() {
         if (pillIdleId) clearTimeout(pillIdleId)
-        if (pillStarTimer) clearTimeout(pillStarTimer)
         pillIdleId = setTimeout(function () {
           pillIdleId = 0
           if (pillCanBall()) collapsePill()
@@ -3925,17 +3917,19 @@ window.__ModuleLoader__.load({
           // 真的拖了 → 从"贴角/跟随"切成自由摆放：位置归用户，轮询不再动它
           pillDock = 'free'
           pillFreeRight = { right: left + w, y: top + h / 2 }
-          pillFreeWide = w
-          applyFreePill(w)
+          applyFreePill()
         }
         var up = function () {
           window.removeEventListener('mousemove', move, true)
           window.removeEventListener('mouseup', up, true)
           if (pillDrag !== drag) return
+          var dropRect = drag.moved ? pill.getBoundingClientRect() : null
           pillDrag = null
-          pill.removeAttribute('data-drag')
-          if (!drag.moved) return // 没动 = 点击：交给 click 处理（不在这里 reopen）
-          settlePillDrop()
+          if (!drag.moved) {
+            pill.removeAttribute('data-drag')
+            return // 没动 = 点击：交给 click 处理（不在这里 reopen）
+          }
+          settlePillDrop(dropRect)
           notePillActivity()
         }
         window.addEventListener('mousemove', move, true)
@@ -3946,14 +3940,14 @@ window.__ModuleLoader__.load({
        * 松手：拖到贴角位置附近就吸附回去 —— 有费用胶囊就吸附到"跟随它的位置"，
        * 没有就吸附到右下角 20/20；离得远就留在原地（位置归用户）。
        */
-      function settlePillDrop() {
-        var rect = pill.getBoundingClientRect()
+      function settlePillDrop(rect) {
         var target = pillAnchorRect()
         var near =
           Math.abs(rect.left - target.left) <= PILL_SNAP_RADIUS && Math.abs(rect.top - target.top) <= PILL_SNAP_RADIUS
         if (!near) {
           pillDock = 'free'
           clampFreePill()
+          pill.removeAttribute('data-drag')
           return false
         }
         // 吸附：要"滑回去"而不是瞬移。
@@ -3962,12 +3956,17 @@ window.__ModuleLoader__.load({
         var snappedTo = pillAnchorRect()
         pillDock = 'anchor'
         pillFreeRight = null
-        pillFreeWide = 0
         pillSnapUntil = Date.now() + PILL_SNAP_MS
-        pill.style.left = Math.round(snappedTo.left) + 'px'
-        pill.style.top = Math.round(snappedTo.top) + 'px'
+        // 拖动时位置由 right 控制；吸附滑行由 left 控制。先在禁用过渡时
+        // 把当前几何位置交给 left，再启用过渡写目标位置，避免 auto 属性瞬跳。
+        pill.style.left = Math.round(rect.left) + 'px'
+        pill.style.top = Math.round(rect.top) + 'px'
         pill.style.right = 'auto'
         pill.style.bottom = 'auto'
+        void pill.offsetWidth
+        pill.removeAttribute('data-drag')
+        pill.style.left = Math.round(snappedTo.left) + 'px'
+        pill.style.top = Math.round(snappedTo.top) + 'px'
         later(function () {
           pillSnapUntil = 0
           if (pillDock === 'anchor') placePill()
