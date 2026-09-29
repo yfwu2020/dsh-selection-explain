@@ -12,3 +12,13 @@ docs/
 # 提示词快照（dump-prompt.mjs 的产物，含真实注入文本）：只在本地开发时刷新与查阅。
 # 仓库里的真相以 src/prompts.ts 为准；契约由 scripts/test-prompt.mjs 守卫。
 PROMPTS.md
+
+# 不纳入 lockfile：本仓库没有运行时依赖（dependencies 为空），运行时的 @deepseek-ai/*
+# 由 DSH 宿主提供（peerDependencies），构建走 scripts/build.sh（用运行时里的 tsc + junction 链接），
+# 全程不经过 npm 安装；开发依赖里的内部包已在 package.json 里写死精确版本。
+# 曾出现过一份 0.4.0 时期遗留的 package-lock.json（与现状不符），故一并挡掉。
+package-lock.json
+npm-shrinkwrap.json
+yarn.lock
+pnpm-lock.yaml
+
