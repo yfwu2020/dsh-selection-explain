@@ -13,7 +13,7 @@
  * 退出码：全部 PASS = 0；找不到 Chrome 打印 SKIP 后退出 0（与 smoke-bridge 一致）。
  */
 import { createServer } from 'node:http'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
@@ -486,9 +486,17 @@ async function main() {
       easeText + ' → ' + JSON.stringify(easeArgs),
     )
     var nameDur = splitCssList(getComputedStyle(pillName).transitionDuration)[0]
-    var dotDur = getComputedStyle(pillNode.querySelector('.dsh-sel-pilldot')).transitionDuration.trim()
+    var starEl = pillNode.querySelector('.dsh-sel-pillstar')
+    var starTrans = getComputedStyle(starEl)
+    var starDur = splitCssList(starTrans.transitionDuration)[0]
+    var starProp = starTrans.transitionProperty.trim()
+    var starEase = starTrans.transitionTimingFunction.trim()
     check('文字那格的时长和胶囊一致（不一致 → 中间帧宽度由另一条曲线决定）', nameDur === morphDur[0], nameDur + ' vs ' + morphDur[0])
-    check('圆点的时长也一致', dotDur === morphDur[0], dotDur + ' vs ' + morphDur[0])
+    // 星芒是**同一枚球心里的图形**：它的 d 过渡必须和胶囊那条形变同一条时长与曲线，
+    // 否则"圆点长成星芒"和"胶囊收成球"会各走各的，看起来就是两段动画拼起来。
+    check('星芒走的是 d 过渡（不是淡入淡出那种换形）', starProp === 'd', starProp)
+    check('星芒的时长和胶囊一致', starDur === morphDur[0], starDur + ' vs ' + morphDur[0])
+    check('星芒的曲线和胶囊一致（同一条时间对称曲线 → 收放互逆）', starEase === morphEase[0], starEase + ' vs ' + morphEase[0])
     freezeMotion()
     // 最坏内容（选中文字 12 字 + 最长状态）：自然宽度 301px，最容易被上限拦到
     pillName.textContent = '迁移作业耗时超出了原计划…'
@@ -524,6 +532,11 @@ async function main() {
       pillNode.style.maxWidth === '200px' && pillNode.style.width === '',
       pillNode.style.maxWidth + ' / ' + (pillNode.style.width || '宽=空'),
     )
+    // ⚠️ 这里必须把"最坏内容"重新写一遍再量：paintPill() 会在异步里把文案换回**真实内容**
+    //    （真实内容自然宽 184px < 200，于是量到 184 而不是 200）—— 这条断言想验的是
+    //    "上限回到 200"，不是"内容恰好 301px"，写回最坏内容才与内容变化解耦（否则偶发红）。
+    pillName.textContent = '迁移作业耗时超出了原计划…'
+    pillMeta.textContent = '· 追问中 12.3s'
     await sleep(420)
     check('回到兜底后宽度也收回来了', Math.round(pillNode.getBoundingClientRect().width) === 200, Math.round(pillNode.getBoundingClientRect().width) + 'px')
 
@@ -642,10 +655,52 @@ async function main() {
     check('收成小球：32×32 的圆', balled.rect.width === balled.ballSize && balled.rect.height === balled.ballSize, balled.rect.width + '×' + balled.rect.height)
     check('小球仍然贴着右下角（位置没跑）', balled.rect.right === 20 && balled.rect.bottom === 20, balled.rect.right + '/' + balled.rect.bottom)
 
+    // ── 球心里的星芒：收球时 d 换成星、展开时换回圆点，几何都得对得上 ──
+    //    （过渡已冻住，所以这里量到的是终值）
+    var starPath = pillBall.querySelector('.dsh-sel-pillstar')
+    var starCanvas = pillBall.querySelector('.dsh-sel-pillicon')
+    var starD = starPath.getAttribute('d')
+    var starBox = starPath.getBBox()
+    var verts = (starD.match(/[ML]/g) || []).length
+    var starWant = hook.pillStarD()
+    var dotWant = hook.pillStarDotD()
+    check('收球后球心里是星芒：d 与客户端那条常量**逐字相同**', starD === starWant, starD === starWant ? '32 顶点一致' : starD.slice(0, 18) + '… ≠ ' + starWant.slice(0, 18))
+    check('星芒 path 是 32 个顶点（圆与星都按 32 边形插值）', verts === 32, String(verts))
+    check('两条 path 命令结构一致（Chrome 才能对 d 插值）', (dotWant.match(/[ML]/g) || []).length === verts, '圆点 ' + (dotWant.match(/[ML]/g) || []).length + ' vs 星 ' + verts)
+    check(
+      '星芒墨迹 16.8×16.8（球 32px，四周留白 7.6）',
+      Math.abs(starBox.width - 16.8) < 0.15 && Math.abs(starBox.height - 16.8) < 0.15,
+      starBox.width.toFixed(2) + '×' + starBox.height.toFixed(2),
+    )
+    check(
+      '星芒的尖是 8.4、谷是 3.18（内外比 .3788 —— 和「✦ 解读」浮标那颗星同一条几何）',
+      /M8\.4 0/.test(starD) && starD.indexOf('L2.25 2.25') > 0,
+      starD.slice(0, 30),
+    )
+    // 画布 32×32 两侧负边距：球态 -1px → 画布正好落在 30px 内宽里，图形中心 = 球的中心
+    var ballRect = pillBall.getBoundingClientRect()
+    var canvasRect = starCanvas.getBoundingClientRect()
+    check(
+      '星芒在球里居中（图形中心 = 球的中心，±0.6px）',
+      Math.abs(canvasRect.left + canvasRect.width / 2 - (ballRect.left + ballRect.width / 2)) <= 0.6,
+      '画布中心 ' + (canvasRect.left + canvasRect.width / 2).toFixed(1) + ' vs 球中心 ' + (ballRect.left + ballRect.width / 2).toFixed(1),
+    )
+    check('球态画布用 -1px 负边距摆正（内宽 32-2 边框 = 30）', getComputedStyle(starCanvas).marginLeft === '-1px', getComputedStyle(starCanvas).marginLeft)
+
     // 鼠标一放上去就展开
     pillBall.dispatchEvent(new MouseEvent('mouseenter', { view: window }))
     var expanded = hook.pillState()
     check('鼠标移上去：小球展开回胶囊', expanded.ball === false && expanded.rect.width > 100, expanded.rect.width + 'px')
+    // 展开态：图形回到 8px 圆点，且画布**布局占位**仍是 8px（两侧 -12px）——
+    // 这样胶囊的排版与宽度和以前那枚 8px 圆点完全一样，不会因为换了个 SVG 就把胶囊撑宽。
+    var dotD = pillBall.querySelector('.dsh-sel-pillstar').getAttribute('d')
+    var dotBox = pillBall.querySelector('.dsh-sel-pillstar').getBBox()
+    var iconCanvas = pillBall.querySelector('.dsh-sel-pillicon')
+    var iconStyle = getComputedStyle(iconCanvas)
+    check('展开后回到圆点态：d 与客户端那条常量**逐字相同**', dotD === dotWant, dotD === dotWant ? '32 顶点一致' : dotD.slice(0, 14) + '… ≠ ' + dotWant.slice(0, 14))
+    check('圆点态墨迹 8×8（和以前那枚 8px 圆点一致）', Math.abs(dotBox.width - 8) < 0.1 && Math.abs(dotBox.height - 8) < 0.1, dotBox.width.toFixed(2) + '×' + dotBox.height.toFixed(2))
+    check('展开态画布布局占位 = 8px（两侧 -12px 负边距）', iconStyle.marginLeft === '-12px' && iconStyle.marginRight === '-12px', iconStyle.marginLeft + '/' + iconStyle.marginRight)
+    check('展开态画布本身仍是 32px（1 单位 = 1px，几何数字照抄设计稿）', iconStyle.width === '32px' && iconStyle.height === '32px', iconStyle.width + '×' + iconStyle.height)
     check('展开后还是贴右下角', expanded.rect.right === 20 && expanded.rect.bottom === 20, expanded.rect.right + '/' + expanded.rect.bottom)
 
     // 鼠标离开 → 又能收
@@ -739,6 +794,68 @@ async function main() {
     await sleep(120)
   }
 
+  // 可选截图模式（?shot=1）：把两个**终态**摆出来（展开=圆点 / 收球=星芒），
+  // 真实大小各一份 + 几何各一份放大，给人工核对，也给以后换图标留一张回归图。
+  // 用克隆而不是改原胶囊：克隆同样吃到那套 CSS（选择器都是 .dsh-sel-pill[data-ball="1"] …）。
+  if (location.search.indexOf('shot=1') >= 0) {
+    freezeMotion()
+    if (panelIsOpen()) hook.close()
+    await sleep(200)
+    hook.pillIdle()
+    await sleep(400)
+    var src = hook.pill()
+    var stage = document.createElement('div')
+    stage.setAttribute('id', 'shotstage')
+    stage.setAttribute('style',
+      'position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483600;background:#f4f6f8;' +
+      'display:flex;gap:26px;align-items:center;justify-content:center;color:#57606a;' +
+      'font:12px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif')
+    /**
+     * 造一格：clone 是胶囊的克隆；ball 决定它摆成球还是展开；scale 是放大倍数；
+     * dotOnly 时把球态画布里的 d 换成"圆点"那条 —— 用来单独看圆点的几何。
+     * 盒子尺寸按**放大后的视觉尺寸**给（球 32×scale），克隆的布局盒仍是被 scale 前的尺寸，
+     * 所以放大后的图形会对称溢出布局盒、正好落在盒子里。
+     */
+    function cell(ball, dotOnly, scale, label) {
+      var wrap = document.createElement('div')
+      wrap.setAttribute('style', 'display:flex;flex-direction:column;align-items:center;gap:9px')
+      var boxW = ball ? Math.round(48 * scale) + 24 : 232
+      var boxH = ball ? Math.round(48 * scale) + 24 : 92
+      var box = document.createElement('div')
+      box.setAttribute('style', 'display:flex;align-items:center;justify-content:center;' +
+        'width:' + boxW + 'px;height:' + boxH + 'px;background:#fff;border-radius:14px;' +
+        'box-shadow:0 6px 20px rgba(0,0,0,.10)')
+      var clone = src.cloneNode(true)
+      clone.style.position = 'static'
+      clone.style.right = 'auto'
+      clone.style.bottom = 'auto'
+      clone.style.transition = 'none'
+      clone.style.transform = scale === 1 ? 'none' : 'scale(' + scale + ')'
+      if (ball) clone.setAttribute('data-ball', '1')
+      else clone.removeAttribute('data-ball')
+      clone.setAttribute('data-ready', '1')
+      var starClone = clone.querySelector('.dsh-sel-pillstar')
+      if (starClone) {
+        starClone.setAttribute('d', ball && !dotOnly
+          ? window.__dshSelectionExplain.pillStarD()
+          : window.__dshSelectionExplain.pillStarDotD())
+      }
+      box.appendChild(clone)
+      wrap.appendChild(box)
+      var cap = document.createElement('div')
+      cap.setAttribute('style', 'max-width:240px;text-align:center;line-height:1.6')
+      cap.textContent = label
+      wrap.appendChild(cap)
+      return wrap
+    }
+    stage.appendChild(cell(false, false, 1, '展开态（真实大小）：球心里是 8px 圆点'))
+    stage.appendChild(cell(true, false, 1, '收球态（真实大小）：8px 圆点长成星芒 16.8px'))
+    stage.appendChild(cell(true, true, 4, '圆点 8px（4×）—— 32 边形，半径恒 4'))
+    stage.appendChild(cell(true, false, 4, '星芒 16.8px（4×）—— 与「✦ 解读」那颗星逐点同形'))
+    document.body.appendChild(stage)
+    await sleep(400)
+  }
+
   finish()
 }
 
@@ -806,6 +923,34 @@ try {
     })
     dump = out
     results = parseDump(dump)
+  }
+
+  // 截图（可选，失败不影响判定）：把两个终态并排拍一张 —— 换图标时人工核对用。
+  // 走同一个页面，加 ?shot=1 让页面在跑完检查后把"展开态 / 收球态"克隆出来并排摆好。
+  try {
+    const shotDir = resolve(ROOT, 'docs')
+    if (!existsSync(shotDir)) mkdirSync(shotDir, { recursive: true })
+    const shotPath = resolve(shotDir, 'pill-star-states.png')
+    await new Promise((done) => {
+      execFile(
+        chrome,
+        [
+          '--headless',
+          '--disable-gpu',
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--window-size=1160,400',
+          '--virtual-time-budget=20000',
+          `--screenshot=${shotPath}`,
+          `http://127.0.0.1:${port}/smoke.html?shot=1`,
+        ],
+        { encoding: 'utf8', timeout: 90000 },
+        () => done(),
+      )
+    })
+    console.log(`=== 截图（圆点 / 星芒 两个终态）：${shotPath} ===`)
+  } catch (error) {
+    console.log('（截图跳过：' + ((error && error.message) || String(error)) + '）')
   }
 } finally {
   if (typeof server.closeAllConnections === 'function') server.closeAllConnections()

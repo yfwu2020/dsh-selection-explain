@@ -133,6 +133,26 @@ window.__ModuleLoader__.load({
      * 时长给 .34s：所有会变的属性共用它（任何一条不一致，中间帧的宽度就由另一条曲线决定，对称性就破了）。
      */
     var PILL_MORPH = '.28s cubic-bezier(.4,0,.6,1)'
+    /**
+     * 收球后球心里的星芒 —— 与「✦ 解读」浮标那颗星**逐点同形**。
+     *
+     * 按钮里那颗星是 16 画布上的八边形：外半径 5.6、内半径 2.1213（内外比 .3788）、四条边是直线
+     * （path `M8 2.4l1.5 4.1 4.1 1.5-4.1 1.5L8 13.6 6.5 9.5 2.4 8l4.1-1.5L8 2.4z`）。
+     * 球里按 8.4/5.6 = 1.5 倍放大 → 墨迹 16.8px（球 32px，四周留白 7.6px）。
+     *
+     * 形变方式：把"圆点"和"星"都看成 **32 边形**逐顶点插值 ——
+     *   · PILL_STAR_DOT_D：32 个顶点同半径 4 → 8px 圆点（8px 下与正圆无差，最大偏差 0.02px）
+     *   · PILL_STAR_D：32 个顶点正好落在星边界上（尖与谷仍是精确顶点）→ 与按钮那条 path 逐点相同
+     * 两条 path 命令结构一致（M + 31×L + Z），所以 Chrome 能对 `d` 做插值。
+     * 于是"圆点长成星芒"是**同一个形状在长**，而不是"淡出一个、淡入另一个"（那样中间帧会掉分量）。
+     *
+     * ⚠️ 别改成"八个顶点一起插值"：数学上更短，但中间帧会经过一个**正菱形**（谷还没收、边是直的），
+     *    读起来像"方块"，和圆点/星芒都不是一路。必须取样到 32 个顶点（星那条边上的取样点精确落在线段上）。
+     * 顶点由 `node scripts/gen-star-path.mjs` 生成，可重跑核对。
+     */
+    var PILL_STAR_DOT_D = 'M4 0L3.92 0.78L3.7 1.53L3.33 2.22L2.83 2.83L2.22 3.33L1.53 3.7L0.78 3.92L0 4L-0.78 3.92L-1.53 3.7L-2.22 3.33L-2.83 2.83L-3.33 2.22L-3.7 1.53L-3.92 0.78L-4 0L-3.92 -0.78L-3.7 -1.53L-3.33 -2.22L-2.83 -2.83L-2.22 -3.33L-1.53 -3.7L-0.78 -3.92L0 -4L0.78 -3.92L1.53 -3.7L2.22 -3.33L2.83 -2.83L3.33 -2.22L3.7 -1.53L3.92 -0.78Z'
+    var PILL_STAR_D = 'M8.4 0L5.44 1.08L3.94 1.63L2.97 1.99L2.25 2.25L1.99 2.97L1.63 3.94L1.08 5.44L0 8.4L-1.08 5.44L-1.63 3.94L-1.99 2.97L-2.25 2.25L-2.97 1.99L-3.94 1.63L-5.44 1.08L-8.4 0L-5.44 -1.08L-3.94 -1.63L-2.97 -1.99L-2.25 -2.25L-1.99 -2.97L-1.63 -3.94L-1.08 -5.44L0 -8.4L1.08 -5.44L1.63 -3.94L1.99 -2.97L2.25 -2.25L2.97 -1.99L3.94 -1.63L5.44 -1.08Z'
+
     /** 吸附滑行的时长（毫秒）：比过渡时长多一点，走完就把定位交还给 right/bottom。 */
     var PILL_SNAP_MS = 360
 
@@ -653,13 +673,22 @@ window.__ModuleLoader__.load({
       '.dsh-sel-pill[data-ball="1"] .dsh-sel-pillname,.dsh-sel-pill[data-ball="1"] .dsh-sel-pillmeta,.dsh-sel-pill[data-ball="1"] .dsh-sel-pillcaret{max-width:0;opacity:0;pointer-events:none}',
       '.dsh-sel-pill:hover{box-shadow:0 6px 22px rgba(0,0,0,.18)}',
       '.dsh-sel-pill[data-open="1"]{border-color:color-mix(in srgb,var(--sel-a1,#0d9488) 55%,transparent)}',
-      '.dsh-sel-pilldot{flex:none;width:8px;height:8px;margin-left:0;border-radius:50%;background:var(--dsw-alias-label-tertiary,#8c959f);transition:margin-left ' + PILL_MORPH + '}',
-      // 球态：圆点在 32px 的圆里居中 —— (32 - 2 边框 - 8 圆点)/2 = 11px
-      '.dsh-sel-pill[data-ball="1"] .dsh-sel-pilldot{margin-left:11px}',
-      '.dsh-sel-pill[data-tone=busy] .dsh-sel-pilldot{background:var(--sel-a1,#0d9488);animation:dsh-sel-pillpulse 1.5s ease-in-out infinite}',
-      '.dsh-sel-pill[data-tone=done] .dsh-sel-pilldot{background:var(--sel-a1,#0d9488)}',
-      '.dsh-sel-pill[data-tone=error] .dsh-sel-pilldot{background:var(--dsw-alias-state-error-primary,#e5484d)}',
-      '.dsh-sel-pill[data-tone=paused] .dsh-sel-pilldot{background:#d97706}',
+      // 球心里的图形：一枚 32×32 的 SVG 画布，两侧 -12px 负边距把**布局占位**压成 8px ——
+      // 和原来那枚 8px 圆点占位完全相同，所以胶囊的排版与宽度一个像素都不用改；
+      // 而画布本身是 32px，于是 viewBox 的 1 单位 = 1px，设计稿上的数字可以照抄。
+      '.dsh-sel-pillicon{flex:none;width:32px;height:32px;margin:0 -12px;display:block;overflow:visible;transition:margin ' + PILL_MORPH + '}',
+      '.dsh-sel-pillstar{fill:var(--dsw-alias-label-tertiary,#8c959f)}',
+      // d 的过渡只在 data-ready 之后挂：首帧（还没就位）不该播动画
+      '.dsh-sel-pill[data-ready="1"] .dsh-sel-pillstar{transition:d ' + PILL_MORPH + '}',
+      // 球态：画布在 32px 的圆里居中 —— 内宽 32-2(边框)=30，两侧各 -1px 负边距正好摆正（中心 16）
+      '.dsh-sel-pill[data-ball="1"] .dsh-sel-pillicon{margin:0 -1px}',
+      // 状态色照旧，只是从圆点的 background 挪到星的 fill；
+      // "进行中"的呼吸动画挂在画布上（transform 绕自身中心缩放，和原来的圆点脉冲同一条 keyframes）
+      '.dsh-sel-pill[data-tone=busy] .dsh-sel-pillstar{fill:var(--sel-a1,#0d9488)}',
+      '.dsh-sel-pill[data-tone=busy] .dsh-sel-pillicon{animation:dsh-sel-pillpulse 1.5s ease-in-out infinite}',
+      '.dsh-sel-pill[data-tone=done] .dsh-sel-pillstar{fill:var(--sel-a1,#0d9488)}',
+      '.dsh-sel-pill[data-tone=error] .dsh-sel-pillstar{fill:var(--dsw-alias-state-error-primary,#e5484d)}',
+      '.dsh-sel-pill[data-tone=paused] .dsh-sel-pillstar{fill:#d97706}',
       '@keyframes dsh-sel-pillpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.82)}}',
       // 三段的明暗节奏也照抄：主体加粗、次要信息 --secondary、箭头 --tertiary
       // 宽度由 JS 固定成下面那枚费用胶囊的宽度，所以文字必须自己让位：
@@ -2043,12 +2072,23 @@ window.__ModuleLoader__.load({
       pill.setAttribute('role', 'button')
       pill.setAttribute('tabindex', '0')
       pill.style.pointerEvents = 'auto'
-      var pillDot = el('span', 'dsh-sel-pilldot')
+      // 球心里的图形：一枚 32×32 的 SVG（viewBox -16..16，1 单位 = 1px），里面只有一条 path。
+      // 展开态它画成 8px 圆点（PILL_STAR_DOT_D），收球时把 d 换成星芒（PILL_STAR_D）——
+      // 两条 path 命令结构一致，Chrome 对 d 插值，于是"圆点长成星芒"是一条连续形变。
+      var pillIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      pillIcon.setAttribute('class', 'dsh-sel-pillicon')
+      pillIcon.setAttribute('viewBox', '-16 -16 32 32')
+      pillIcon.setAttribute('aria-hidden', 'true')
+      pillIcon.setAttribute('focusable', 'false')
+      var pillStar = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      pillStar.setAttribute('class', 'dsh-sel-pillstar')
+      pillStar.setAttribute('d', PILL_STAR_DOT_D)
+      pillIcon.appendChild(pillStar)
       // 和费用胶囊同构：主体一段（加粗）、次要一段（淡）、箭头一段（更淡）
       var pillName = el('span', 'dsh-sel-pillname', '划词解读')
       var pillMeta = el('span', 'dsh-sel-pillmeta', '· 就绪')
       var pillCaret = el('span', 'dsh-sel-pillcaret', '▴')
-      pill.appendChild(pillDot)
+      pill.appendChild(pillIcon)
       pill.appendChild(pillName)
       pill.appendChild(pillMeta)
       pill.appendChild(pillCaret)
@@ -3585,6 +3625,15 @@ window.__ModuleLoader__.load({
         )
       }
 
+      /**
+       * 球心里的图形切到"圆点"（展开）或"星芒"（收球）。
+       * 只改 d 属性，几何过渡交给 CSS 的 d 过渡（时长/曲线与胶囊那条完全一致）——
+       * 实测：胶囊 --p 走到 0.191 时星进度也是 0.191，两者是同一件事，不是两段动画拼起来。
+       */
+      function setPillStar(ball) {
+        pillStar.setAttribute('d', ball ? PILL_STAR_D : PILL_STAR_DOT_D)
+      }
+
       function collapsePill() {
         if (pillBall) return false
         var rect = pill.getBoundingClientRect()
@@ -3592,6 +3641,7 @@ window.__ModuleLoader__.load({
         if (!pillBall) pillFreeWide = Math.max(rect.width, PILL_BALL_SIZE)
         pillBall = true
         pill.setAttribute('data-ball', '1')
+        setPillStar(true)
         placePill() // 上限 → 球的尺寸（过渡动画交给 CSS 的 max-width）
         // 自由摆放时宽度往右收会"跑偏"：按中心摆回去（left 与 max-width 同一条过渡，中心不动）
         if (pillDock === 'free') applyFreePill(PILL_BALL_SIZE)
@@ -3602,6 +3652,7 @@ window.__ModuleLoader__.load({
         if (!pillBall) return false
         pillBall = false
         pill.removeAttribute('data-ball')
+        setPillStar(false)
         placePill() // 上限交回 200 / 费用胶囊那条
         if (pillDock === 'free') applyFreePill(pillFreeWide || 0)
         return true
@@ -7828,6 +7879,13 @@ window.__ModuleLoader__.load({
 
       // —— 调试钩子（自动化验证用） ——
       window.__dshSelectionExplain = {
+        /** 球心里那两条 path（圆点态 / 星芒态）—— 自检与截图模式用它，避免在测试里抄一遍几何。 */
+        pillStarD: function () {
+          return PILL_STAR_D
+        },
+        pillStarDotD: function () {
+          return PILL_STAR_DOT_D
+        },
         open: function (text, context, label, keyContext) {
           state.selection = { text: text, range: null, rect: null }
           // 和真实划词完全同一条路径（含本地缓存命中）；keyContext 省略时与 context 相同

@@ -2253,12 +2253,22 @@ assert('尾部上下文变化后仍命中历史（不再重新生成一个）', 
 const pill = Array.from(walk(panel.parentNode)).find((n) => n.className === 'dsh-sel-pill')
 assert('右下角有状态胶囊', !!pill, pill ? pill.className : '未找到')
 assert(
-  '胶囊结构和费用胶囊同构：圆点 + 主体 + 次要 + 箭头',
+  '胶囊结构和费用胶囊同构：星芒 + 主体 + 次要 + 箭头',
   !!pill &&
-    ['dsh-sel-pilldot', 'dsh-sel-pillname', 'dsh-sel-pillmeta', 'dsh-sel-pillcaret'].every((c) =>
+    ['dsh-sel-pillname', 'dsh-sel-pillmeta', 'dsh-sel-pillcaret'].every((c) =>
       Array.from(walk(pill)).some((n) => n.className === c),
+    ) &&
+    // SVG 元素的 class 是 SVGAnimatedString，客户端用 setAttribute('class', …) 写 —— 桩里也照这个读
+    ['dsh-sel-pillicon', 'dsh-sel-pillstar'].every((c) =>
+      Array.from(walk(pill)).some((n) => n.getAttribute && n.getAttribute('class') === c),
     ),
   pill ? walk(pill).next().value.className : '',
+)
+const pillStarEl = pill && Array.from(walk(pill)).find((n) => n.getAttribute && n.getAttribute('class') === 'dsh-sel-pillstar')
+assert(
+  '球心里的图形初始是"圆点态"那条 path（展开时不许直接画成星）',
+  !!pillStarEl && /^M4 0/.test(String(pillStarEl.getAttribute('d'))),
+  pillStarEl ? String(pillStarEl.getAttribute('d')).slice(0, 24) : '未找到',
 )
 assert('箭头用和费用胶囊同一个字符 ▴ / ▾（不是大三角 ▲ ▼）', textOf(pill).indexOf('▲') < 0 && textOf(pill).indexOf('▼') < 0, textOf(pill))
 
