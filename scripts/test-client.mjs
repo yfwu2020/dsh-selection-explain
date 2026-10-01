@@ -1704,14 +1704,20 @@ assert(
       /refreshModelRow\(settingsByKey\.modelChoice, true\)/.test(src) &&
       /loadModelCatalog\(!!forceRoute, sessionId\)/.test(src),
       'openSettings 没有触发强制刷新')
-    // 实时性：主会话随时能换模型，插件这边没有可订阅的事件 —— 抽屉开着时轮询那条轻量 /route
-    assert('抽屉开着时轮询 /route（实时跟着会话模型变）',
+    // 实时性：主会话随时能换模型，插件这边没有可订阅的事件 —— **小窗或抽屉任意一个开着**
+    // 就轮询那条轻量 /route（跟随态下输入框那枚胶囊报的就是这个值）
+    assert('小窗/抽屉开着时轮询 /route（实时跟着会话模型变）',
       /function startRouteWatch/.test(src) && /ROUTE_WATCH_MS = \d+/.test(src) &&
-      /stopRouteWatch\(\)/.test(src),
-      '没有轮询或没有停表')
-    assert('关抽屉会停掉轮询（不空转打接口）',
-      /settingsOpen = false\n        stopRouteWatch\(\)/.test(src),
-      'closeSettings 没停表')
+      /if \(!settingsOpen && !panelOpen\) \{ stopRouteWatch\(\); return \}/.test(src),
+      '没有轮询或没有按"小窗+抽屉"判停')
+    assert('两处都收了才停轮询（不空转打接口）',
+      /function syncRouteWatch\(\)/.test(src) &&
+      /if \(!settingsOpen && !panelOpen\) \{ stopRouteWatch\(\); return \}/.test(src) &&
+      !/settingsOpen = false\n        stopRouteWatch\(\)/.test(src),
+      'closeSettings 仍无条件停表（小窗开着时胶囊就不跟了）')
+    assert('跟随值的更新是独立的一处（抽屉那行没渲染出来也不影响胶囊）',
+      /function applyFollowRoute\(route\)/.test(src) && /fetchRoute\([^)]*\)\.then\(applyFollowRoute\)/.test(src),
+      '胶囊的更新仍绑在抽屉那一行上')
     assert('按本小窗所属会话取清单，且快照 current（不共享单例）',
       /panelSessionId \|\| currentSessionId\(\)/.test(src) && /current: catalog\.current/.test(src),
       '会话来源或快照写法不对')
@@ -1761,6 +1767,46 @@ assert(
     for (let i = 0; i < 80 && textOf(pickEl).indexOf('Fast Model') < 0; i += 1) {
       await new Promise((r) => setTimeout(r, 25))
     }
+  }
+
+  // 用户报的"输入框那枚模型胶囊没有及时刷新"：抽屉**关着**、小窗开着时也要跟。
+  // 跟随态下胶囊报的就是"本会话在用的模型"，而以前只在抽屉开着时轮询 ——
+  // 于是"小窗开着、主会话换了模型"要等下一次开/关设置页才更新。
+  {
+    const backBtn = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sheetback')
+    backBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 20))
+    assert('（前提）抽屉收起、小窗还开着、模型是跟随态',
+      settingsSheet.getAttribute('data-open') === '0' && panel.style.display === 'flex' && hook.modelState().choice === null,
+      `sheet=${settingsSheet.getAttribute('data-open')} panel=${panel.style.display} choice=${JSON.stringify(hook.modelState().choice)}`)
+
+    const fixture = globalThis.__modelCatalogFixture
+    globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p1', model: 'm-fast' } }
+    for (let i = 0; i < 120 && hook.modelState().pill.indexOf('m-fast') < 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    assert('抽屉关着：胶囊报出跟随的模型（开窗即对齐，不等第一拍轮询）',
+      hook.modelState().pill.indexOf('m-fast') >= 0,
+      `pill="${hook.modelState().pill}"`)
+
+    // 主会话换模型 —— 一次设置页都不用碰
+    globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p2', model: 'm-other' } }
+    for (let i = 0; i < 120 && hook.modelState().pill.indexOf('m-other') < 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    assert('小窗开着、抽屉关着：主会话换模型后胶囊自己跟着变（轮询生效）',
+      hook.modelState().pill.indexOf('m-other') >= 0,
+      `pill="${hook.modelState().pill}"`)
+
+    // 小窗收起来 → 轮询停：夹具再换值，胶囊不该跟着动（不空转打接口）
+    hook.close()
+    await new Promise((r) => setTimeout(r, 20))
+    globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p1', model: 'm-fast' } }
+    await new Promise((r) => setTimeout(r, 2600))
+    assert('小窗与抽屉都收了：轮询停下（值不再跟着变）',
+      hook.modelState().pill.indexOf('m-other') >= 0,
+      `pill="${hook.modelState().pill}"`)
+    globalThis.__modelCatalogFixture = fixture
   }
 
 

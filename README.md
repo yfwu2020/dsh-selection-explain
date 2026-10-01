@@ -329,7 +329,9 @@ host 半注册了同源路由，可以单独调用：
 | --- | --- |
 | `POST /selection-explain/api/analyze` | 选中文字 + 上下文 → **SSE 流式**返回翻译与详解 |
 | `GET /selection-explain/api/ping` | 健康检查：当前模型路由、各阶段推理档位、限制 |
-| `GET /selection-explain/api/models` | 可选模型列表（面板里的模型选择器用） |
+| `GET /selection-explain/api/models` | 可选模型列表（面板里的模型选择器用；带 `sessionId` 时 `current` 按该会话解析） |
+| `GET/POST /selection-explain/api/settings` | 小窗设置页：`GET` 下发 `{ groups, values, defaults }`（字段声明即校验边界），`POST { values }` 合并写入、`{ reset: true }` 恢复默认 |
+| `GET /selection-explain/api/route` | 极轻的"这一轮用哪个模型"：`?sessionId=…` → `{ provider, model }`（设置页与模型胶囊按秒轮询它；带会话级短缓存，见下面「配置」一节） |
 | `GET/POST /selection-explain/api/history` | 小窗对话历史的读 / 写 / 删除 |
 | `POST /selection-explain/api/quote-context` | 引用上下文：`{ sessionId, text }` → 该引用所在的**一组对话 ± 一组**（`{ matched, context, rounds }`；定位不到时 `matched:false`，客户端退回自己采的局部上下文） |
 | `POST /selection-explain/api/promote` | 升格为正式会话 |
@@ -385,9 +387,13 @@ curl -s http://127.0.0.1:3080/selection-explain/api/ping
   小窗开着时切走会话，解读 / 追问 / 升格与模型解析仍按原来那个会话算 ——
   否则背景会取错会话，模型也会跟着变。
   模型清单请求使用这个会话 ID，并保留各自的响应快照，避免切换时较慢的旧请求覆盖新会话。
-- **括号里的模型名是实时的**：设置抽屉开着时按 2 秒轮询那条轻量接口
-  `GET /selection-explain/api/route?sessionId=…`，主会话里换了模型，这里自己就跟着变，
-  不用关掉重开（`/models` 要列全部模型、`/ping` 要枚举工具表，都不适合按秒轮询）。
+- **模型名是实时的（小窗开着就在跟）**：**小窗或设置抽屉任意一个开着**时按 2 秒轮询那条轻量接口
+  `GET /selection-explain/api/route?sessionId=…`，主会话里换了模型，设置页括号里和**小窗输入框那枚
+  模型胶囊**自己就跟着变，不用关掉重开（`/models` 要列全部模型、`/ping` 要枚举工具表，都不适合按秒轮询）。
+  两个都收起来即停。host 侧这条接口带**会话级短缓存**：live 会话的事件数（`seq`）没涨就直接回上次的结论，
+  涨了也至少隔 3 秒才重读一次 —— 否则"小窗一直开着"会变成每 2 秒把整份会话日志重放一遍
+  （实测 1.5MB 的会话一次 80~125ms）。用户动作路径（解读 / 追问 / 升格 / 模型清单 / ping）不吃这份缓存，
+  拿到的永远是此刻那一份。
 - **首轮、次轮和追问采用同一个模型**。小窗输入框与设置页双向同步，任一处修改均自动保存。
   旧版独立追问配置与浏览器模型缓存不再覆盖这一选择；三个阶段的思考强度仍分别设置。
 - **「恢复默认」立即生效**：恢复各项配置，同时更新模型选择、控件禁用状态与悬浮入口。

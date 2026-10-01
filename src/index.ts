@@ -314,11 +314,24 @@ interface SessionQueryLike {
   readSession?: (sessionId: string) => Promise<{ events?: readonly unknown[] }>
 }
 
+/**
+ * ctx.sessions 的宽松视图 —— 只用来做"会话有没有新事件"的零成本探测。
+ *
+ * `seq` 是 Session 上的 getter（= 日志长度，每次 append 都会涨），同步读、不碰日志；
+ * 拿它跟上次解析时记下的值一比，就知道"结论有没有可能变"（见 liveSeqOf）。
+ */
+interface SessionsLike {
+  get?: (sessionId: string) => { seq?: number } | undefined
+}
+
 /** 解析出的模型路由。 */
 interface Route {
   provider: string
   model: string
 }
+
+/** 会话自己记的模型选择（与 Route 同形，单独取名是为了在注释里说清"来源不同"）。 */
+type SessionModel = Route
 
 /** 写一条 SSE 事件。 */
 function sse(res: ServerResponse, payload: unknown): void {
@@ -1469,6 +1482,37 @@ export function apply(ctx: Context, rawConfig: Config): void {
   /** 会话背景短缓存：同一会话 10 秒内复用（连续划词不重复读日志）。 */
   const backgroundCache = new Map<string, { at: number; events: readonly unknown[] }>()
 
+  /**
+   * 「本会话在用哪个模型」的短缓存 —— 只给按秒轮询的 `/route` 用（见 sessionModelOf）。
+   *
+   * 为什么需要：`readSession` 会把整份日志重放成一个 Session、再逐条深拷贝一遍
+   * （本机实测 1.5MB 的会话一次 80~125ms）。跟随状态下**小窗一开着**就要每 2 秒问一次，
+   * 不缓存等于每 2 秒在宿主进程里重放一次会话日志。
+   *
+   * 变更探测用 live 会话的 `seq`（同步、零成本，见 liveSeqOf）：没涨就直接回缓存；
+   * 涨了（主会话正在连续对话时每轮都在涨）也至少隔 SESSION_MODEL_MIN_MS 才重读一次，
+   * 否则"小窗开着 + 主会话在聊"时每 2 秒照样重放。非 live（磁盘上的旧会话，读不到 seq）按 TTL 兜底。
+   */
+  const sessionModelCache = new Map<string, { at: number; seq: number | null; value: SessionModel | null }>()
+  /** 同一会话正在飞的读取（读可能比轮询间隔还慢，叠起来没意义）。 */
+  const sessionModelPending = new Map<string, Promise<SessionModel | null>>()
+  /** live 会话两次重读之间的最短间隔（挡住"事件一直在涨"时的连续重放）。 */
+  const SESSION_MODEL_MIN_MS = 3_000
+  /** 读不到 seq（非 live）时的兜底 TTL。 */
+  const SESSION_MODEL_TTL_MS = 10_000
+
+  /**
+   * live 会话的事件数（`Session.seq` = 日志长度，每次 append 都会涨）。
+   *
+   * 这是**零成本**的同步读取：不用读日志、不用重放，就能判断"会话有没有新事件"。
+   * 拿不到（会话不在内存里 / 老内核没有 sessions 服务）返回 null，调用方退回 TTL。
+   */
+  const liveSeqOf = (sessionId: string): number | null => {
+    const sessions = ctx.get('sessions') as SessionsLike | undefined
+    const seq = sessions?.get?.(sessionId)?.seq
+    return typeof seq === 'number' ? seq : null
+  }
+
   /** 读取当前会话的模型界面事件（live 优先；失败/超时一律降级为「无背景」）。 */
   const readSurfaceEvents = async (sessionId: string): Promise<readonly unknown[]> => {
     const cached = backgroundCache.get(sessionId)
@@ -1492,15 +1536,13 @@ export function apply(ctx: Context, rawConfig: Config): void {
   }
 
   /**
-   * 读**当前会话**自己的模型选择。
+   * 真读一次：拿会话原始事件里的最后一条 `model/selection`。
    *
    * 来源：会话事件流里的 `model/selection`（每条 = 一次"后续请求用这个模型"的选择，
    * 形如 `{ type:'model/selection', data:{ provider, model, reasoningEffort? } }`）。
    * 取**最后一条** = 会话当前在用的那个；一条都没有（新会话）就返回 null，调用方落回全局默认。
-   *
-   * 复用 readSurfaceEvents：它已有 10 秒缓存，连续划词不会反复读日志。
    */
-  const sessionModelOf = async (sessionId: string): Promise<{ provider: string; model: string } | null> => {
+  const readSessionModel = async (sessionId: string): Promise<SessionModel | null> => {
     if (!sessionId) return null
     const sessionQuery = ctx.get('sessionQuery') as SessionQueryLike | undefined
     if (typeof sessionQuery?.readSession !== 'function') return null
@@ -1523,6 +1565,60 @@ export function apply(ctx: Context, rawConfig: Config): void {
       }
     }
     return null
+  }
+
+  /**
+   * 记下这次的结论（连同"读到它时的 seq"）：下次轮询就能靠 seq 判断结论还有效没。
+   *
+   * 顺手也把"用户动作路径"读到的值种进缓存 —— 那是**此刻**那一份，
+   * 种进来只会让轮询更少重读、更不容易报旧值。
+   */
+  const rememberSessionModel = (sessionId: string, seq: number | null, value: SessionModel | null): void => {
+    sessionModelCache.set(sessionId, { at: Date.now(), seq, value })
+    if (sessionModelCache.size > 8) {
+      const oldest = sessionModelCache.keys().next().value
+      if (oldest !== undefined) sessionModelCache.delete(oldest)
+    }
+  }
+
+  /**
+   * 读**当前会话**自己的模型选择。
+   *
+   * `useCache` 只给按秒轮询的 `/route` 打开；用户动作路径（analyze / models / ping）一律直读，
+   * 拿到的必须是**此刻**那一份 —— 不能让人刚在主会话里换完模型、划词却按旧模型解析。
+   * 直读的结果会顺手种进缓存（见 rememberSessionModel）。
+   */
+  const sessionModelOf = async (sessionId: string, useCache = false): Promise<SessionModel | null> => {
+    if (!sessionId) return null
+    if (!useCache) {
+      // seq 在读**之前**取：读的过程中若又落了事件，缓存就应当被视为旧值（宁可下次重读）
+      const seqNow = liveSeqOf(sessionId)
+      const value = await readSessionModel(sessionId)
+      rememberSessionModel(sessionId, seqNow, value)
+      return value
+    }
+    const seq = liveSeqOf(sessionId)
+    const cached = sessionModelCache.get(sessionId)
+    if (cached) {
+      // 事件没涨 → 结论不可能变。只对 live 会话成立：`seq` 是同步的，每次 append 都会涨。
+      if (seq !== null && cached.seq === seq) return cached.value
+      // 涨了也不立刻重读：主会话正在连续对话时事件一直在涨，否则每 2 秒照样重放一次日志。
+      const floor = seq === null ? SESSION_MODEL_TTL_MS : SESSION_MODEL_MIN_MS
+      if (Date.now() - cached.at < floor) return cached.value
+    }
+    // 同一会话的轮询叠在一起（读可能比轮询间隔还慢）时共用一个在飞的请求
+    const pending = sessionModelPending.get(sessionId)
+    if (pending) return pending
+    const task = readSessionModel(sessionId)
+      .then((value) => {
+        rememberSessionModel(sessionId, seq, value)
+        return value
+      })
+      .finally(() => {
+        sessionModelPending.delete(sessionId)
+      })
+    sessionModelPending.set(sessionId, task)
+    return task
   }
 
   /** 组装会话背景文本。 */
@@ -2259,6 +2355,9 @@ export function apply(ctx: Context, rawConfig: Config): void {
    * 为什么单开一条：设置页要**实时**显示当前会话在用的模型，
    * 而 /models 会去列 provider 与模型（42 个，还要端点发现）、/ping 要枚举工具表并探 DNS ——
    * 两者都不适合按秒轮询。这条只做一次会话模型解析 + 一次 resolveRoute。
+   *
+   * 也是唯一走 `sessionModelOf(…, true)`（短缓存）的地方：客户端在小窗开着时每 2 秒问一次，
+   * 不能每拍都重放一次会话日志（见 sessionModelCache 的注释）。
    */
   const handleRoute = (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
@@ -2272,7 +2371,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
       } catch {
         /* 解析不了就当没带 */
       }
-      const route = resolveRoute(undefined, await sessionModelOf(sessionId), chat)
+      const route = resolveRoute(undefined, await sessionModelOf(sessionId, true), chat)
       sendJson(res, 200, {
         ok: true,
         provider: route?.provider ?? '',

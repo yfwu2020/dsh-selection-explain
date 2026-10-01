@@ -2593,6 +2593,33 @@ window.__ModuleLoader__.load({
       }
 
       /**
+       * 把"跟随主会话"解析出来的路由贴到界面上。
+       *
+       * 跟随态有两个地方显示它，**两处都要贴**：
+       *   · 抽屉里那一行的「跟随主会话（当前：…）」
+       *   · **输入框那枚模型胶囊**（跟随态它显示的就是这个值）
+       * 分开贴是有原因的：以前胶囊的更新写在抽屉那行的 `if (!item.entry) return` 之后 ——
+       * 设置没渲染出来（/settings 失败）时胶囊就永远不跟着变；这里各管各的。
+       */
+      function applyFollowRoute(route) {
+        if (!route || !route.provider || !route.model) return
+        // 选了具体模型时胶囊显示的是那个模型，不显示"跟随（当前：…）"
+        if (!state.modelChoice) {
+          var before = modelCatalog.current
+          if (!before || before.provider !== route.provider || before.model !== route.model) {
+            modelCatalog.current = route
+            paintModelPill()
+          }
+        }
+        var entry = settingsByKey.modelChoice
+        if (!entry) return
+        var old = entry.route
+        if (old && old.provider === route.provider && old.model === route.model) return
+        entry.route = route
+        paintModelPick(entry)
+      }
+
+      /**
        * 刷新一个模型行：清单（带缓存）+ 本行当前值（每次都新取）→ 画按钮、必要时重建列表。
        *
        * `forceRoute` 为真时连清单也强制重取（开抽屉那一次用）。
@@ -2619,12 +2646,7 @@ window.__ModuleLoader__.load({
           fillModelMenu(entry, entry.catalog)
           paintModelPick(entry)
         })
-        fetchRoute(sessionId, isChat).then(function (route) {
-          if (!route) return
-          entry.route = route
-          if (!state.modelChoice) { modelCatalog.current = route; paintModelPill() }
-          paintModelPick(entry)
-        })
+        fetchRoute(sessionId, isChat).then(applyFollowRoute)
       }
 
       /** 按清单把下拉列表填好（清单是异步来的，可能晚于渲染）。 */
@@ -3218,7 +3240,7 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /** 轮询句柄（抽屉关掉必须清掉，不然会一直打接口）。 */
+      /** 轮询句柄（抽屉和小窗都收了必须清掉，不然会一直打接口）。 */
       var routeWatchTimer = 0
       /** 轮询间隔：够快看得出"实时"，又不至于把接口打爆（这条接口只做一次会话解析，很轻）。 */
       var ROUTE_WATCH_MS = 2000
@@ -3227,28 +3249,19 @@ window.__ModuleLoader__.load({
        * 盯着"当前会话在用的模型"。
        *
        * 主会话里随时可以换模型，而插件这边**没有**可订阅的变更事件（模型选择是会话侧的），
-       * 所以抽屉开着时轮询那条轻量 /route：值一变就把模型行的"（当前：…）"改掉。
-       * 关抽屉即停。
+       * 所以只能轮询那条轻量 /route：值一变就把「跟随主会话（当前：…）」和输入框那枚胶囊改掉。
+       *
+       * **小窗开着就要盯，不只是抽屉开着**：跟随态下输入框那枚胶囊报的就是这个值 ——
+       * 以前只在抽屉开着时轮询，于是"小窗开着、主会话换了模型"要等下一次开/关设置页才更新
+       * （用户报的"没有及时刷新"）。抽屉和小窗都收起来即停。
        */
       function startRouteWatch() {
         stopRouteWatch()
         routeWatchTimer = setInterval(function () {
-          if (!settingsOpen) { stopRouteWatch(); return }
-          var sessionId = panelSessionId || currentSessionId()
-          ;[
-            { entry: settingsByKey.modelChoice, chat: false },
-          ].forEach(function (item) {
-            if (!item.entry) return
-            fetchRoute(sessionId, item.chat).then(function (route) {
-              if (!route) return
-              var before = item.entry.route
-              // 只在真的变了才重画（每 2 秒无脑赋值会让浏览器反复标脏）
-              if (before && before.provider === route.provider && before.model === route.model) return
-              item.entry.route = route
-              if (!state.modelChoice) { modelCatalog.current = route; paintModelPill() }
-              paintModelPick(item.entry)
-            })
-          })
+          if (!settingsOpen && !panelOpen) { stopRouteWatch(); return }
+          // 选了具体模型：胶囊与括号显示的都不是"跟随"的值，不必再问
+          if (state.modelChoice) return
+          fetchRoute(panelSessionId || currentSessionId(), false).then(applyFollowRoute)
         }, ROUTE_WATCH_MS)
       }
 
@@ -3257,6 +3270,19 @@ window.__ModuleLoader__.load({
           clearInterval(routeWatchTimer)
           routeWatchTimer = 0
         }
+      }
+
+      /** 抽屉或小窗还开着就继续轮询；两个都收了才停（开着时重复调用不重启计时）。 */
+      function syncRouteWatch() {
+        if (!settingsOpen && !panelOpen) { stopRouteWatch(); return }
+        if (routeWatchTimer) return
+        startRouteWatch()
+      }
+
+      /** 先对齐一次"跟随"的值（开窗/开抽屉那一刻，不等第一拍轮询）。 */
+      function refreshFollowRoute() {
+        if (state.modelChoice) return
+        fetchRoute(panelSessionId || currentSessionId(), false).then(applyFollowRoute)
       }
 
       function openSettings() {
@@ -3270,13 +3296,12 @@ window.__ModuleLoader__.load({
         // 每次开抽屉都重取一次模型（强制，绕过缓存）：
         // 会话换了、或主会话中途换了模型，括号里的名字都要跟着变。
         refreshModelRow(settingsByKey.modelChoice, true)
-        startRouteWatch()
+        syncRouteWatch()
       }
 
       function closeSettings() {
         if (!settingsOpen) return
         settingsOpen = false
-        stopRouteWatch()
         closeModelPicks()
         settingsSheet.setAttribute('data-open', '0')
         settingsScrim.setAttribute('data-open', '0')
@@ -3287,6 +3312,8 @@ window.__ModuleLoader__.load({
           settingsSaveTimer = 0
           flushSettingsSave()
         }
+        // 小窗还开着就继续盯（跟随态下输入框那枚胶囊还指着会话的模型）
+        syncRouteWatch()
       }
 
       function resetSettings() {
@@ -5218,6 +5245,10 @@ window.__ModuleLoader__.load({
         panel.style.left = Math.round(Math.max(10, left)) + 'px'
         panel.style.top = Math.round(Math.max(10, top)) + 'px'
         paintPill()
+        // 跟随态下输入框那枚胶囊报的是"本会话在用的模型"：开窗先对齐一次，
+        // 之后交给 2 秒的轮询（主会话里换了模型，这里自己就跟着变，不用等开一次设置页）。
+        refreshFollowRoute()
+        syncRouteWatch()
       }
 
       function closePanel() {
@@ -5240,6 +5271,8 @@ window.__ModuleLoader__.load({
         if (state.request) state.request.abort()
         state.request = null
         paintPill()
+        // 小窗收了：抽屉若也关着就把轮询停掉（两处都不需要这个值了）
+        syncRouteWatch()
       }
 
       /**
@@ -6237,6 +6270,8 @@ window.__ModuleLoader__.load({
             applyHistoryEntry(data.entry, 'history')
             // 先画内容再摆位置：showPanel 要量面板高度才能决定放上面还是下面
             if (!fromList) showPanel(anchor || rectOfPill())
+            // 从列表进入时**不走 showPanel**（面板不挪位置）—— 轮询与跟随值这里自己补上
+            else { refreshFollowRoute(); syncRouteWatch() }
             // 内容换了、面板高度可能变 → 列表跟着重摆（列表此时已被 applyHistoryEntry 收起，按需再开）
             if (historyList.style.display === 'flex') placeHistoryList()
           })
