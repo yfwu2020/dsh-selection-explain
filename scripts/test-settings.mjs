@@ -27,19 +27,52 @@ let normalizeSettingsPatch
 let normalizeStoredSettings
 let buildSettingsPayload
 
+/**
+ * 载入 spec 模块（三档降级，保证在任何 Node 上都能跑）：
+ *
+ *   ① `import('src/settings.ts')` —— Node ≥ 22.18 / 23.6 默认开类型剥离（本机 Node 24 走这条）；
+ *   ② Node 22.6~22.17 的类型剥离要显式开关（**CI 钉的是 22.14**）：
+ *      `--experimental-strip-types` 可用时，用它把**自己**重跑一遍 —— 仍然测的是 src；
+ *   ③ 连开关都没有的旧 Node → 退到构建产物 `lib/settings.js`（`npm test` 本来就跑在
+ *      `build.sh` 之后：test-settings-host / test-settings-behavior 也是直接 import lib 的）。
+ *
+ * ⚠️ v0.8.3 发布时踩到过：这里原本只有 ①，`catch` 里直接报错退出 ——
+ * CI（Node 22.14）于是报 `Unknown file extension ".ts"`、整个 `npm test` 链断在这儿。
+ */
+let loader = process.execArgv.includes('--experimental-strip-types')
+  ? 'import src/settings.ts（--experimental-strip-types）'
+  : 'import src/settings.ts（Node 默认类型剥离）'
+let mod = null
 try {
-  const mod = await import(SETTINGS_TS)
-  SETTINGS_GROUPS = mod.SETTINGS_GROUPS
-  SETTINGS_KEYS = mod.SETTINGS_KEYS
-  SETTINGS_VIRTUAL_KEYS = mod.SETTINGS_VIRTUAL_KEYS
-  SETTINGS_ITEMS = mod.SETTINGS_ITEMS
-  normalizeSettingsPatch = mod.normalizeSettingsPatch
-  normalizeStoredSettings = mod.normalizeStoredSettings
-  buildSettingsPayload = mod.buildSettingsPayload
-} catch {
-  console.error('✗ 无法加载 src/settings.ts（需要 Node ≥ 22.14 的类型剥离）')
-  process.exit(1)
+  mod = await import(SETTINGS_TS)
+} catch (error) {
+  const strip = '--experimental-strip-types'
+  const canStrip = process.allowedNodeEnvironmentFlags.has(strip) && !process.execArgv.includes(strip)
+  if (canStrip) {
+    // ② 用开关把自己重跑一遍（stdio 直连，退出码照传）
+    const { spawnSync } = await import('node:child_process')
+    const again = spawnSync(process.execPath, [strip, fileURLToPath(import.meta.url)], { stdio: 'inherit' })
+    process.exit(again.status ?? 1)
+  }
+  try {
+    // ③ 构建产物（build.sh 之后才有；CI 是先构建再测试）
+    mod = await import(resolve(ROOT, 'lib', 'settings.js'))
+    loader = `构建产物 lib/settings.js（类型剥离不可用：${error && error.message}）`
+  } catch (fallbackError) {
+    console.error(`✗ 无法加载 src/settings.ts（${error && error.message}）`)
+    console.error(`  也没有构建产物 lib/settings.js（${fallbackError && fallbackError.message}）—— 先 npm run build`)
+    process.exit(1)
+  }
 }
+console.log(`设置 spec 来源：${loader}\n`)
+
+SETTINGS_GROUPS = mod.SETTINGS_GROUPS
+SETTINGS_KEYS = mod.SETTINGS_KEYS
+SETTINGS_VIRTUAL_KEYS = mod.SETTINGS_VIRTUAL_KEYS
+SETTINGS_ITEMS = mod.SETTINGS_ITEMS
+normalizeSettingsPatch = mod.normalizeSettingsPatch
+normalizeStoredSettings = mod.normalizeStoredSettings
+buildSettingsPayload = mod.buildSettingsPayload
 
 let failed = 0
 function assert(label, ok, detail) {
