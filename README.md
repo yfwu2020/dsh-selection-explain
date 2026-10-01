@@ -356,6 +356,57 @@ curl -s http://127.0.0.1:3080/selection-explain/api/ping
 
 ## 配置
 
+### 方式一：在小窗里改（推荐）
+
+小窗头部有一枚 **⚙ 设置**（和「最近」「升格」同款的文字键），点开是一个从右侧滑入的抽屉，
+六个分类按任务分组：
+
+| 分类 | 管什么 |
+| --- | --- |
+| 模型 | 一个模型选择，首轮、次轮与追问各自的思考强度 |
+| 解读 | 选中文字与上下文的长度上限、限流、超时（秒） |
+| 背景 | 解读附带的会话消息数、引用上下文的轮数与字符上限 |
+| 联网 | 联网开关、检索轮数、工具白名单、文件读取边界 |
+| 界面 | 侧边栏划词桥、右下角悬浮胶囊、静置收球时长（秒） |
+| 数据 | 保留最近对话数量，每条包含所选文字、模型回答及后续追问 |
+
+- **改完即时生效，无需重启。** 改动会**自动保存**（防抖 400ms），底部那行只有脏了才报
+  「未保存 · N 项」，不弹 toast、不打断。
+- **模型是一个下拉**，不用自己拼 provider 与 model：选项来自 host 已有的模型清单
+  （`GET /selection-explain/api/models?sessionId=…`，含每个 provider 下的全部模型）。
+  写配置时展开成 `provider` + `model` 两个字段。
+- **「跟随主会话」是名副其实的**：不选具体模型时，插件按**小窗所属会话**的模型解析路由 ——
+  从会话原始事件里取最后一条 `model/selection`（`sessionModelOf`），
+  所以两个会话用不同模型时各用各的，下拉里「（当前：…）」报的也是本会话那一个。
+  会话没记过模型选择时落回 DSH 的全局默认模型。优先级：
+  小窗与设置页的统一选择 → **本会话的模型** → 全局默认 → 第一个可用。
+- **「小窗所属会话」= 划词那一刻的会话**（`panelSessionId`），不是"当前正在看的会话"。
+  新版 DSH 从 `uiSession.adapter.current` 的主视图绑定读取会话 ID；会话目录不再提供 `current`。
+  小窗开着时切走会话，解读 / 追问 / 升格与模型解析仍按原来那个会话算 ——
+  否则背景会取错会话，模型也会跟着变。
+  模型清单请求使用这个会话 ID，并保留各自的响应快照，避免切换时较慢的旧请求覆盖新会话。
+- **括号里的模型名是实时的**：设置抽屉开着时按 2 秒轮询那条轻量接口
+  `GET /selection-explain/api/route?sessionId=…`，主会话里换了模型，这里自己就跟着变，
+  不用关掉重开（`/models` 要列全部模型、`/ping` 要枚举工具表，都不适合按秒轮询）。
+- **首轮、次轮和追问采用同一个模型**。小窗输入框与设置页双向同步，任一处修改均自动保存。
+  旧版独立追问配置与浏览器模型缓存不再覆盖这一选择；三个阶段的思考强度仍分别设置。
+- **「恢复默认」立即生效**：恢复各项配置，同时更新模型选择、控件禁用状态与悬浮入口。
+- **时间一律按「秒」填**。配置里仍是毫秒（schema 与既有 yml 值不动），
+  换算由 spec 上的 `scale: 1000` 声明 —— 边界的唯一事实来源还是 Config schema。
+- 写完落在插件自己的目录，**不碰 `cordis.patch.yml`**：
+
+  ```
+  ${DSH_HOME:-~/.dsh}/selection-explain/settings.json
+  ```
+
+  只存**改过的键**；「恢复默认」就是把它清空，回到下面表里的 yml/出厂值。
+  那个 yml 是**装配清单**，让 UI 去改它既要人肉重启、又可能把 YAML 结构写坏，所以不碰。
+
+> 字段的标题 / 说明 / 边界由 host 通过 `GET /selection-explain/api/settings` 下发，
+> 客户端只负责画（见 `src/settings.ts`）。这样 UI 的边界和 host 的 clamp 不会各写一份、久了互相漂。
+
+### 方式二：写 `cordis.patch.yml`
+
 配置写在 profile 的 `cordis.patch.yml` 里同 id 的行上（`dsh plugin add` 装好后，包自带的 `cordis.patch.yml` 里已有可改的样板）：
 
 ```yaml
@@ -374,15 +425,17 @@ curl -s http://127.0.0.1:3080/selection-explain/api/ping
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `provider` | `''` | 固定 provider 路由；留空 = 跟随「设置 → 默认模型」 |
-| `model` | `''` | 固定 model id；留空 = 跟随默认模型 |
+| `model` | `''` | 固定 model id；留空 = 跟随主会话 |
 | `reasoningEffort` | `high` | **详解**阶段推理档位（`off` / `low` / `high` / `max`） |
-| `translationReasoningEffort` | `low` | **首轮翻译**单独一档。这一轮只需挑英文片段，压低换首字速度 |
+| `translationReasoningEffort` | `off` | **首轮**翻译、解读或注释单独一档，默认关闭思考 |
 | `chatReasoningEffort` | `high` | **追问**档位（追问要准不要快；想更快可调 `low`） |
 | `temperature` | `-1` | 采样温度。**`-1` = 不传**，交给供应商默认（与主会话一致）；`0`~`2` 之间才真的传 |
 | `maxTokens` | `0` | 单次输出上限（tokens）。**`0` = 不限制**。填正数可控成本 / 控时延 |
 | `timeoutMs` | `300000` | 单次调用超时（含工具轮；客户端断开即中止上游） |
 
-> 推理档位三档分开是有原因的：翻译不需要深度推理，详解需要。默认 `translationReasoningEffort: low` 让首字快、`reasoningEffort: high` 让详解细。
+> 三个阶段的思考强度可分别设置。默认 `translationReasoningEffort: off` 优先让首轮快速回答；代码中的详解初始值为 `reasoningEffort: high`，安装配置为 `off`，追问默认 `high`。
+
+输出上限、采样温度和结果缓存不在设置页展示；既有底层配置继续兼容。
 
 ### 上下文与缓存
 
@@ -398,9 +451,13 @@ curl -s http://127.0.0.1:3080/selection-explain/api/ping
 | `quoteContextMaxCharsPerTurn` | `2000` | 引用上下文里单条消息的上限（超了**围绕引用**截断，不裁掉引用本身） |
 | `quoteContextMaxChars` | `6000` | 引用上下文整段上限（超了先丢最早的、再丢引用之后的） |
 | `resultCacheTtlMs` | `600000` | 共享结果缓存 TTL（毫秒）；`0` = 关闭 |
-| `historyMaxEntries` | `20` | 小窗对话历史保留多少个划词条目；`0` = 关闭历史 |
+| `historyMaxEntries` | `20` | 保留最近对话数量；`0` = 不保存新对话，已有对话保留 |
 | `maxRequestsPerMinute` | `40` | 本地限流，防误触发刷爆额度 |
 | `bridgeSidebarPreview` | `true` | 侧边栏 HTML 预览里的划词桥。关掉 = 预览网页里选中文字不再弹按钮（预览帧不再补 `allow-scripts`，也不注入桥脚本） |
+| `chatProvider` | `''` | 旧版兼容字段，不再参与模型选择 |
+| `chatModel` | `''` | 旧版兼容字段，不再参与模型选择 |
+| `pillEnabled` | `true` | 右下角悬浮胶囊（最近一次划词的状态入口）。关掉 = 右下角不再出现胶囊 |
+| `pillIdleMs` | `10000` | 静置多久把胶囊收成小球（毫秒，2000~600000）。只在**没装费用胶囊**时生效（有费用胶囊时两者并排，收球会让它们错位） |
 
 ### 工具（联网 / 文件）
 

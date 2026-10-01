@@ -400,6 +400,21 @@ const routeFetch = (input, init) => {
     const body = globalThis.__modelCatalogFixture || { ok: true, current: null, stages: null, models: [] }
     return Promise.resolve(new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } }))
   }
+  // 「这一轮用哪个模型」的轻量查询（设置页轮询它做实时刷新）：同样走 fixture，
+  // 否则用例会打到真实 host，拿到的模型随本机会话变，断言就不确定了。
+  if (url.indexOf('/selection-explain/api/route') >= 0) {
+    const chat = url.indexOf('chat=1') >= 0
+    const fx = globalThis.__modelCatalogFixture || { current: null }
+    const chatFx = globalThis.__chatRouteFixture
+    const cur = chat && chatFx ? chatFx : fx.current
+    const body = {
+      ok: true,
+      provider: (cur && cur.provider) || '',
+      model: (cur && cur.model) || '',
+      chatFollows: !(chat && chatFx),
+    }
+    return Promise.resolve(new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } }))
+  }
   // 小窗历史（A′）：内存版实现，避免打到真实 host 拿到脏历史
   if (url.indexOf('/selection-explain/api/history') >= 0) {
     if (init && init.method === 'DELETE') {
@@ -1005,9 +1020,14 @@ const ctx = {
   },
   on() {},
   get(name) {
+    if (name === 'uiSession') {
+      return { adapter: { current: { getSnapshot: () => ({
+        key: 'session-stub-1', props: { sessionId: 'session-stub-1' },
+      }) } } }
+    }
     if (name === 'sessions') {
       return {
-        list: { getSnapshot: () => ({ current: 'session-stub-1' }) },
+        list: { getSnapshot: () => ({ ids: ['session-stub-1'], byId: {}, phase: 'ready', projectionsBySession: {} }) },
         open: (id) => {
           openedSessions.push(String(id))
         },
@@ -1187,10 +1207,10 @@ if (HOST_UP) {
     )
   }
   assert(
-    '追问档位默认 high（翻译仍 low、详解仍 high）',
+    '追问档位默认 high，首轮默认 off',
     /chatReasoningEffort: z\.string\(\)\.default\('high'\)/.test(hostSrc) &&
       /chatReasoningEffort: rawConfig\?\.chatReasoningEffort \?\? 'high'/.test(hostSrc) &&
-      /translationReasoningEffort: z\.string\(\)\.default\('low'\)/.test(hostSrc),
+      /translationReasoningEffort: z\.string\(\)\.default\('off'\)/.test(hostSrc),
     'src/index.ts',
   )
 }
@@ -1391,11 +1411,13 @@ assert(
 )
 
 assert(
-  '右上角是「最近 + 升格 + 关闭」三个，没有复制按钮',
+  '右上角是「最近 + 升格 + 设置 + 关闭」四个，没有复制按钮',
   !Array.from(walk(panelHead)).some((n) => textOf(n).indexOf('复制') >= 0) &&
     Array.from(walk(panelHead)).filter((n) => n.className === 'dsh-sel-icon').length === 1 &&
-    Array.from(walk(panelHead)).filter((n) => n.className.indexOf('dsh-sel-action') >= 0).length === 2 &&
-    Array.from(walk(panelHead)).some((n) => n.className.indexOf('dsh-sel-action') >= 0 && textOf(n).indexOf('最近') >= 0),
+    // 文字动作键：最近 / 升格 / 设置 —— 三个同款（设置键也带文字，不再是一枚裸图标）
+    Array.from(walk(panelHead)).filter((n) => n.className.indexOf('dsh-sel-action') >= 0).length === 3 &&
+    Array.from(walk(panelHead)).some((n) => n.className.indexOf('dsh-sel-action') >= 0 && textOf(n).indexOf('最近') >= 0) &&
+    Array.from(walk(panelHead)).some((n) => n.className.indexOf('dsh-sel-action') >= 0 && textOf(n).indexOf('设置') >= 0),
   Array.from(walk(panelHead)).map((n) => n.className + ':' + textOf(n).slice(0, 6)).join(' | '),
 )
 const promoteBtn = Array.from(walk(panelHead)).find((n) => n.className.indexOf('dsh-sel-action') >= 0 && textOf(n).indexOf('升格') >= 0)
@@ -1404,6 +1426,473 @@ assert(
   !!promoteBtn && textOf(promoteBtn).indexOf('升格') >= 0,
   promoteBtn ? promoteBtn.className + '｜' + textOf(promoteBtn) : '未找到',
 )
+
+// ───────────────────────── 设置（小窗设置抽屉） ─────────────────────────
+// 设计约束（用户明确要求）：设置键与「最近 / 升格」**同款** —— 带边框的文字键、图标 + 文字，
+// 而不是一枚孤零零的裸图标。图标本身走统一 SVG 规范（16 画布 / 14px / stroke 1.5）。
+const settingsBtn = Array.from(walk(panelHead)).find(
+  (n) => n.className.indexOf('dsh-sel-action') >= 0 && textOf(n).indexOf('设置') >= 0,
+)
+assert(
+  '头部有「设置」文字键（不是裸图标）',
+  !!settingsBtn && settingsBtn.className.indexOf('dsh-sel-action') >= 0,
+  settingsBtn ? settingsBtn.className + '｜' + textOf(settingsBtn) : '未找到',
+)
+assert(
+  '「设置」键的图标与「最近 / 升格」同款（都是 14px 的 SVG，不是 Unicode 字形）',
+  !!settingsBtn && !!Array.from(walk(settingsBtn)).find((n) => n.tagName === 'SVG' && n.attrs.width === '14'),
+  settingsBtn ? Array.from(walk(settingsBtn)).map((n) => n.tagName + '/' + (n.attrs.width || '')).join(',') : '未找到',
+)
+// 头部每个图标都得走同一套画布：viewBox 16×16、stroke-width 1.5、linecap round。
+// 混用 Unicode 字形（🕘 ↗ ✕）时这组属性根本不存在 —— 这条断言就是防它回潮。
+{
+  const headIcons = []
+  for (const btn of walk(panelHead)) {
+    if (btn.tagName !== 'SVG') continue
+    headIcons.push(btn)
+  }
+  const uniform = headIcons.length >= 4 && headIcons.every((svg) =>
+    svg.attrs.viewBox === '0 0 16 16' && svg.attrs['stroke-width'] === '1.5' &&
+    svg.attrs['stroke-linecap'] === 'round' && svg.attrs.width === '14')
+  assert(
+    '头部所有图标同规范（viewBox 16×16 / 14px / stroke 1.5 / round）',
+    uniform,
+    headIcons.map((s) => `${s.attrs.width}px,vb=${s.attrs.viewBox},sw=${s.attrs['stroke-width']}`).join(' | ') || '没有 SVG 图标',
+  )
+}
+
+const settingsSheet = Array.from(walk(panel)).find((n) => n.className === 'dsh-sel-sheet')
+assert('抽屉默认是收起的（data-open=0）', !!settingsSheet && settingsSheet.getAttribute('data-open') === '0',
+  settingsSheet ? String(settingsSheet.getAttribute('data-open')) : '未找到抽屉')
+
+// 模型下拉的清单来自 harness 的 /models 桩：默认是**空**的（免得跑用例依赖真实 host），
+// 所以这里先装一份夹具，再开抽屉 —— 否则下拉里只有一行「跟随主会话」。
+globalThis.__modelCatalogFixture = {
+  ok: true,
+  // current = **当前会话**在用的模型（host 按 sessionId 解析出来给客户端）
+  current: { provider: 'p1', model: 'm-fast' },
+  stages: { chat: 'high', translation: 'low', detail: 'off' },
+  models: [
+    { provider: 'p1', providerName: 'Provider One', model: 'm-fast', name: 'Fast Model', efforts: [], defaultEffort: 'high' },
+    { provider: 'p1', providerName: 'Provider One', model: 'm-strong', name: 'Strong Model', efforts: [], defaultEffort: 'high' },
+    { provider: 'p2', providerName: 'Provider Two', model: 'm-other', name: 'Other Model', efforts: [], defaultEffort: null },
+  ],
+}
+// 这套用例打的是**真实 host** 的 /settings，会真的落盘。先清一次覆盖，
+// 保证不管上一次跑成什么样（哪怕中途崩了），这次都从默认值开始 —— 用例要能独立重跑。
+await fetch(ORIGIN + '/selection-explain/api/settings', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ reset: true }),
+})
+
+// 点一下：抽屉打开 + 去 host 拉 spec/当前值
+settingsBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+await new Promise((r) => setTimeout(r, 30))
+assert('点「设置」把抽屉打开', settingsSheet.getAttribute('data-open') === '1',
+  String(settingsSheet.getAttribute('data-open')))
+
+// 等 host 把 spec 拉回来（真实请求，给足时间）
+for (let i = 0; i < 60 && !Array.from(walk(settingsSheet)).some((n) => n.className === 'dsh-sel-railbtn'); i += 1) {
+  await new Promise((r) => setTimeout(r, 25))
+}
+const settingsRail = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-rail')
+const railButtons = settingsRail ? Array.from(walk(settingsRail)).filter((n) => n.className === 'dsh-sel-railbtn') : []
+assert(
+  '抽屉里按 host 下发的 spec 画出 6 个分类（模型/解读/背景/联网/界面/数据）',
+  railButtons.length === 6 && railButtons.some((b) => textOf(b).indexOf('模型') >= 0),
+  railButtons.map((b) => textOf(b)).join(' / ') || '一个都没有',
+)
+const settingsRows = Array.from(walk(settingsSheet)).filter((n) => n.className === 'dsh-sel-srow')
+assert(
+  '分类设置均呈现，移除的控件不再出现',
+  settingsRows.length >= 20 && !settingsRows.some(r => /输出上限|采样温度|缓存有效期|追问模型/.test(textOf(r))),
+  `rows=${settingsRows.length}`,
+)
+
+// 切分类：只有当前分类的 pane 可见（其余 display:none）
+{
+  const toolsTab = railButtons.find((b) => textOf(b).indexOf('联网') >= 0)
+  toolsTab.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 10))
+  const panes = Array.from(walk(settingsSheet)).filter((n) => n.className === 'dsh-sel-grp')
+  const visible = panes.filter((p) => p.style.display !== 'none')
+  assert(
+    '点分类只切出这一类（其余收起）',
+    visible.length === 1 && visible[0].getAttribute('data-pane') === 'tools',
+    panes.map((p) => p.getAttribute('data-pane') + ':' + (p.style.display === 'none' ? 'off' : 'on')).join(' | '),
+  )
+}
+
+// 改一项开关 → 底部动作栏报"未保存"（不弹 toast、不打断）
+{
+  const sw = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sws')
+  const note = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sfootnote')
+  assert('开关与底部状态栏都在', !!sw && !!note, sw ? 'ok' : '没有开关')
+  const before = sw.getAttribute('aria-checked')
+  sw.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 10))
+  assert(
+    '改一项后立刻标脏（底部报未保存）',
+    sw.getAttribute('aria-checked') !== before && note.getAttribute('data-dirty') === '1' &&
+      /未保存/.test(textOf(note)),
+    `checked=${before}→${sw.getAttribute('aria-checked')} dirty=${note.getAttribute('data-dirty')} "${textOf(note)}"`,
+  )
+  const settingInput = label => Array.from(walk(settingsSheet)).find(n => n.getAttribute('aria-label') === label)
+  assert('关闭会话消息开关后，三个上下文输入框禁用',
+    ['首轮上下文消息数', '次轮与追问上下文消息数', '上下文总字符上限'].every(label => settingInput(label)?.disabled === true))
+  assert('解读的会话消息开关不影响引用轮数', settingInput('上下文轮数')?.disabled !== true)
+  // 防抖 400ms 后才真的落盘；这里等它发完并回填，避免污染后面用例的状态
+  await new Promise((r) => setTimeout(r, 700))
+  assert('保存完成后底部回到"改动会自动保存"', /改动会自动保存/.test(textOf(note)), `"${textOf(note)}"`)
+  // 改回原值（用户环境不该被测试改掉）
+  sw.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 700))
+  assert('重新开启后，上下文输入框恢复可改', settingInput('首轮上下文消息数')?.disabled === false)
+}
+
+// 模型：一个下拉同时定 provider + model（不再让用户自己拼两个 id）
+{
+  railButtons.find((b) => textOf(b).indexOf('模型') >= 0).dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 10))
+  const pick = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-spick')
+  assert('模型是自绘下拉的按钮（不是原生 <select>）', !!pick && !Array.from(walk(settingsSheet)).some((n) => n.tagName === 'SELECT'),
+    pick ? 'button' : '未找到')
+
+  // 清单是异步拉的，等它填进来
+  for (let i = 0; i < 80 && Array.from(walk(settingsSheet)).filter((n) => n.className === 'dsh-sel-spickrow').length === 0; i += 1) {
+    await new Promise((r) => setTimeout(r, 25))
+  }
+  // 列表默认藏着，点按钮才弹出来
+  const menu = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-spickmenu')
+  assert('下拉菜单默认收起（data-open=0）', !!menu && menu.getAttribute('data-open') === '0',
+    menu ? String(menu.getAttribute('data-open')) : '未找到菜单')
+  pick.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 10))
+  assert('点按钮把下拉弹出来', menu.getAttribute('data-open') === '1', String(menu.getAttribute('data-open')))
+
+  // 三个推理档位按**实际发生顺序**命名：首轮（翻译/解读/注释）→ 次轮详解 → 追问。
+  // 顺序本身是信息（用户是照着"小窗先出什么、再出什么"理解这三档的），别改成字母序或历史序。
+  {
+    const modelPane = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-grp' && n.getAttribute('data-pane') === 'model')
+    const labels = Array.from(walk(modelPane))
+      .filter((n) => n.className === 'dsh-sel-srowt')
+      .map((n) => textOf(n))
+    const first = labels.findIndex((t) => t.indexOf('首轮') >= 0)
+    const second = labels.findIndex((t) => t.indexOf('次轮') >= 0)
+    const chat = labels.findIndex((t) => t === '追问')
+    assert('推理三档按「首轮 → 次轮 → 追问」排列',
+      first >= 0 && second > first && chat > second,
+      labels.join(' / '))
+    assert('首轮说明包含翻译、解读与注释', textOf(modelPane).includes('翻译 / 解读 / 注释'), textOf(modelPane))
+    assert('次轮说明对应展开详解', textOf(modelPane).includes('点击「展开详解」'), textOf(modelPane))
+  }
+
+  // 默认项写「跟随主会话（当前：…）」：括号里必须是**当前会话**在用的那个模型。
+  // host 侧 resolveRoute 现在是会话级的（读会话事件流里的 model/selection），
+  // 所以两个会话用不同模型时各自看到的也不同 —— 报的就是自己那一个。
+  assert('默认项写明「跟随主会话」并带出当前会话的模型',
+    textOf(pick).indexOf('跟随主会话') >= 0 && textOf(pick).indexOf('当前') >= 0,
+    textOf(pick))
+  assert('括号里的模型来自会话级 /models（夹具的 current，不是全局猜测）',
+    textOf(pick).indexOf('Fast Model') >= 0,
+    textOf(pick))
+
+  const rows = Array.from(walk(settingsSheet)).filter((n) => n.className === 'dsh-sel-spickrow')
+  assert('下拉里列出了模型清单 + 一个「跟随主会话」', rows.length >= 4 &&
+    textOf(rows[0]).indexOf('跟随主会话') >= 0, `rows=${rows.length} first="${rows[0] ? textOf(rows[0]) : ''}"`)
+
+  // 用户报的 bug：42 个模型时下拉没有滚动条。
+  // 关键就是列表自己有 max-height + overflow:auto —— 断言这条 CSS 契约，防止被改回"整页顶出去"。
+  const cssSrc = readFileSync(resolve(HERE, '..', 'src', 'client', 'index.js'), 'utf8')
+  assert('下拉列表自带 max-height + overflow（滚动条是确定的）',
+    /\.dsh-sel-spicklist\{[^}]*max-height:\d+px/.test(cssSrc) && /\.dsh-sel-spicklist\{[^}]*overflow-y:auto/.test(cssSrc),
+    '.dsh-sel-spicklist 缺少 max-height 或 overflow-y:auto')
+  assert('下拉菜单挂在抽屉上（不是行里，避开滚动区的裁剪）',
+    !!menu && menu.parentNode === settingsSheet,
+    menu ? (menu.parentNode ? menu.parentNode.className : '无父节点') : '未找到')
+
+  // 选一个模型 → 应该同时写 provider 与 model 两个键
+  const target = rows.find((r) => textOf(r).indexOf('Fast Model') >= 0)
+  target.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 900))
+  const after = await (await fetch(ORIGIN + '/selection-explain/api/settings', { headers: { accept: 'application/json' } })).json()
+  assert('选一个模型 = 同时写入 provider 与 model',
+    after.values.provider === 'p1' && after.values.model === 'm-fast',
+    `provider=${after.values.provider} model=${after.values.model}`)
+  assert('选完下拉自动收起', menu.getAttribute('data-open') === '0', String(menu.getAttribute('data-open')))
+  assert('选中的那一行打勾', target.getAttribute('data-on') === '1', String(target.getAttribute('data-on')))
+
+  // 两处模型选择共用一份持久配置。
+  {
+    const picks = Array.from(walk(settingsSheet)).filter(n => n.className === 'dsh-sel-spick')
+    assert('设置页只保留一个模型选择', picks.length === 1, String(picks.length))
+    assert('设置选择立即更新输入框模型', hook.modelState().choice?.model === 'm-fast', JSON.stringify(hook.modelState().choice))
+    await hook.loadModels(true)
+    const composerRows = () => Array.from(walk(hook.modelNodes().menu)).filter(n => n.className === 'dsh-sel-pickerrow')
+    composerRows().find(r => textOf(r).includes('Strong Model')).dispatch('click', { preventDefault() {}, stopPropagation() {} })
+    assert('输入框选择立即更新设置模型', textOf(pick).includes('Strong Model'), textOf(pick))
+    await new Promise(r => setTimeout(r, 900))
+    const shared = await (await fetch(ORIGIN + '/selection-explain/api/settings')).json()
+    assert('输入框选择持久保存到统一模型', shared.values.provider === 'p1' && shared.values.model === 'm-strong', JSON.stringify(shared.values))
+
+  }
+
+  // 恢复默认：所有参数**立刻**回到默认并显示出来（含两行模型下拉）。
+  // 这里专挑"复合键"踩过的坑：模型行的条目 key 是虚拟的，服务端返回的却是 provider/model，
+  // 早先按返回键逐个查条目会查不到 —— 于是恢复默认后模型下拉纹丝不动。
+  {
+    // 先改几项，制造"非默认"状态
+    const pick0 = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-spick')
+    pick0.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 20))
+    const rows0 = Array.from(walk(settingsSheet)).filter((n) => n.className === 'dsh-sel-spickrow')
+    rows0.find((r) => textOf(r).indexOf('Fast Model') >= 0).dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 900))
+    assert('（前提）已改成一个具体模型', textOf(pick0).indexOf('Fast Model') >= 0, textOf(pick0))
+
+    const resetBtn = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sbtn' && textOf(n).indexOf('恢复默认') >= 0)
+    resetBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 900))
+
+    const afterReset = await (await fetch(ORIGIN + '/selection-explain/api/settings', { headers: { accept: 'application/json' } })).json()
+    assert('恢复默认：服务端全部回到默认',
+      afterReset.values.provider === '' && afterReset.values.model === '' && hook.modelState().choice === null,
+      `provider=${afterReset.values.provider} chatProvider=${afterReset.values.chatProvider}`)
+    // 只看"是不是回到了跟随态"：括号里出现 Fast Model 是正常的 ——
+    // 那正是本会话当前在用的模型（夹具的 current），跟随态就该把它报出来。
+    assert('恢复默认：模型下拉**立刻**显示回「跟随」（不是停在刚才选的）',
+      textOf(pick0).indexOf('跟随主会话') >= 0,
+      textOf(pick0))
+    // 数字/开关也要回到默认：随便挑一个数字输入框比对
+    const ttlRow = Array.from(walk(settingsSheet)).find((r) =>
+      r.className === 'dsh-sel-srow' && !!Array.from(walk(r)).find((n) => n.attrs && n.attrs['aria-label'] === '生成时限'))
+    const ttlInput = ttlRow ? Array.from(walk(ttlRow)).find((n) => n.className === 'dsh-sel-snum') : null
+    assert('恢复默认：数字项也回到默认值（600 秒）',
+      !!ttlInput && String(ttlInput.value) === String(afterReset.values.timeoutMs / 1000),
+      ttlInput ? `${ttlInput.value} vs ${afterReset.values.timeoutMs / 1000}` : '未找到')
+  }
+
+  // 真·实时：抽屉**开着不动**，主会话换了模型 → 括号里的名字自己跟着变。
+  // （这条是用户报的"还是没有实现"的核心：以前只在开抽屉那一下取一次。）
+  {
+    const pickEl = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-spick')
+    const before = textOf(pickEl)
+    const fixture = globalThis.__modelCatalogFixture
+    globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p1', model: 'm-strong' } }
+    // 轮询间隔 2000ms，给够两拍
+    for (let i = 0; i < 120 && textOf(pickEl).indexOf('Strong Model') < 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    assert('抽屉开着不动，主会话换模型后括号自己跟着变（轮询生效）',
+      textOf(pickEl).indexOf('Strong Model') >= 0 && textOf(pickEl) !== before,
+      `之前"${before}" → 现在"${textOf(pickEl)}"`)
+    globalThis.__modelCatalogFixture = fixture
+    for (let i = 0; i < 120 && textOf(pickEl).indexOf('Fast Model') < 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+  }
+
+  // 实时性：小窗属于**划词那一刻的会话**，且每次开抽屉都要重取模型。
+  // 否则切到别的会话 / 主会话中途换模型之后，括号里还停在第一次渲染的那个（用户报的问题）。
+  {
+    const src = readFileSync(resolve(HERE, '..', 'src', 'client', 'index.js'), 'utf8')
+    assert('小窗记住"划词那一刻的会话"（不跟着 currentSessionId 乱跑）',
+      /var panelSessionId = ''/.test(src) && /panelSessionId = currentSessionId\(\)/.test(src),
+      '没有 panelSessionId 或其捕获点')
+    assert('开抽屉时强制重取模型（绕过 60 秒缓存）',
+      /refreshModelRow\(settingsByKey\.modelChoice, true\)/.test(src) &&
+      /loadModelCatalog\(!!forceRoute, sessionId\)/.test(src),
+      'openSettings 没有触发强制刷新')
+    // 实时性：主会话随时能换模型，插件这边没有可订阅的事件 —— 抽屉开着时轮询那条轻量 /route
+    assert('抽屉开着时轮询 /route（实时跟着会话模型变）',
+      /function startRouteWatch/.test(src) && /ROUTE_WATCH_MS = \d+/.test(src) &&
+      /stopRouteWatch\(\)/.test(src),
+      '没有轮询或没有停表')
+    assert('关抽屉会停掉轮询（不空转打接口）',
+      /settingsOpen = false\n        stopRouteWatch\(\)/.test(src),
+      'closeSettings 没停表')
+    assert('按本小窗所属会话取清单，且快照 current（不共享单例）',
+      /panelSessionId \|\| currentSessionId\(\)/.test(src) && /current: catalog\.current/.test(src),
+      '会话来源或快照写法不对')
+    // 显示与实际必须同一个会话：解读/追问/升格三处请求也要用面板所属会话，
+    // 否则"括号里显示 A 的模型、实际按 B 解析"，又变成报错。
+    const requestSites = (src.match(/sessionId: panelOrCurrentSessionId\(\)/g) || []).length
+    assert('解读 / 追问 / 升格三处请求都按面板所属会话发',
+      requestSites === 3, `找到 ${requestSites} 处（应为 3）`)
+  }
+
+  // 选回「跟随主会话」，别动用户环境
+  pick.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 10))
+  rows[0].dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 900))
+  const restored = await (await fetch(ORIGIN + '/selection-explain/api/settings', { headers: { accept: 'application/json' } })).json()
+  assert('选回「跟随主会话」把 provider/model 都清空',
+    restored.values.provider === '' && restored.values.model === '',
+    `provider=${restored.values.provider} model=${restored.values.model}`)
+}
+
+  // 行为验证（用户报的"没有实时更新"）：换掉会话的模型 → 重开抽屉 → 括号里必须跟着变。
+  {
+    // pick 是上一个块里的 const，出了块就没了 —— 这里重新按类名取一次
+    const pickEl = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-spick')
+    const backBtn = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sheetback')
+    const labelBefore = textOf(pickEl)
+    // 主会话把模型换成另一个（夹具的 current 就是"本会话在用的模型"）
+    const fixture = globalThis.__modelCatalogFixture
+    globalThis.__modelCatalogFixture = {
+      ...fixture,
+      current: { provider: 'p2', model: 'm-other' },
+    }
+    backBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 20))
+    settingsBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    for (let i = 0; i < 80 && textOf(pickEl).indexOf('Other Model') < 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 25))
+    }
+    assert('重开抽屉后括号里的模型跟着会话变（不是停在第一次渲染）',
+      textOf(pickEl).indexOf('Other Model') >= 0 && textOf(pickEl) !== labelBefore,
+      `之前"${labelBefore}" → 现在"${textOf(pickEl)}"`)
+    globalThis.__modelCatalogFixture = fixture // 还原，别影响后面的用例
+    backBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 20))
+    settingsBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    for (let i = 0; i < 80 && textOf(pickEl).indexOf('Fast Model') < 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 25))
+    }
+  }
+
+
+// 保存后的设置必须影响入口、状态胶囊和实际选区处理，而不只改变显示值。
+{
+  const inputFor = label => Array.from(walk(settingsSheet)).find(n => n.getAttribute('aria-label') === label)
+  const setNumber = async (label, value) => {
+    const input = inputFor(label)
+    input.value = String(value)
+    input.dispatch('input', { stopPropagation() {}, preventDefault() {} })
+    await new Promise(r => setTimeout(r, 700))
+  }
+  const clickSwitch = async label => {
+    inputFor(label).dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise(r => setTimeout(r, 700))
+  }
+  await setNumber('选中文字上限', 6000)
+  hook.close()
+  const originalText = selection.toString
+  selection.toString = () => '长'.repeat(4500)
+  documentStub.dispatch('mouseup', { target: body })
+  await new Promise(r => setTimeout(r, 20))
+  assert('选中文字上限调到 6000 后，4500 字选区能显示解读入口', button.style.display === 'inline-flex')
+  await setNumber('选中文字上限', 20)
+  selection.toString = () => '长'.repeat(21)
+  documentStub.dispatch('mouseup', { target: body })
+  await new Promise(r => setTimeout(r, 20))
+  assert('选中文字上限调到 20 后，21 字选区不显示入口', button.style.display === 'none')
+  await setNumber('选中文字上限', 4000)
+  selection.toString = originalText
+
+  const frame = new FakeEl('iframe')
+  frame.setAttribute('data-html-preview', 'true'); frame.setAttribute('sandbox', ''); frame.setAttribute('srcdoc', '<p>入口测试</p>')
+  frame.isConnected = true; frame.contentWindow = {name:'settings-bridge-test'}
+  const oldQuery = documentStub.querySelectorAll
+  documentStub.querySelectorAll = selector => selector === 'iframe' ? [frame] : []
+  hook.bridgeScan(); hook.reset()
+  const reportSelection = () => windowStub.dispatch('message', {source:frame.contentWindow,data:{__dshSel:1,kind:'selection',sel:{text:'入口测试',context:'',rect:{x:10,y:20,right:100,bottom:38,w:90,h:18}}}})
+  await clickSwitch('侧边栏网页划词'); reportSelection()
+  assert('关闭侧边栏划词后，已有桥发来的选区也不打开入口', hook.bridge().on === false && hook.selection() === null)
+  await clickSwitch('侧边栏网页划词'); reportSelection()
+  assert('重新开启侧边栏划词后，帧内选区恢复入口', hook.bridge().on === true && hook.selection()?.source === 'iframe' && button.style.display === 'inline-flex')
+  frame.isConnected = false; documentStub.querySelectorAll = oldQuery; hook.reset()
+
+  await clickSwitch('显示状态胶囊')
+  assert('关闭状态胶囊保存后实际隐藏', hook.pill().style.display === 'none')
+  await clickSwitch('显示状态胶囊')
+  assert('开启状态胶囊保存后恢复显示', hook.pill().style.display !== 'none')
+  const actualSetTimeout = globalThis.setTimeout
+  const scheduledDelays = []
+  globalThis.setTimeout = (fn, delay, ...args) => {
+    scheduledDelays.push(delay)
+    return actualSetTimeout(fn, delay, ...args)
+  }
+  try { await setNumber('自动收起时间', 5) }
+  finally { globalThis.setTimeout = actualSetTimeout }
+  assert('自动收起时间实际更新胶囊计时偏好', hook.pillState().idleMs === 5000)
+  assert('修改自动收起时间后，已有计时立即按新时长重新安排', scheduledDelays.includes(5000))
+  await setNumber('自动收起时间', 10)
+  hook.open('settings-return', '', '设置验证')
+  await new Promise(r=>setTimeout(r,80))
+  settingsBtn.dispatch('click', {stopPropagation(){},preventDefault(){}})
+  await new Promise(r=>setTimeout(r,20))
+}
+
+// 时间字段按「秒」显示：配置里仍是毫秒（scale 只管显示）
+{
+  railButtons.find((b) => textOf(b).indexOf('数据') >= 0).dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 10))
+  const units = Array.from(walk(settingsSheet))
+    .filter((n) => n.className === 'dsh-sel-sunit')
+    .map((n) => textOf(n))
+  assert('时间字段的单位是「秒」而不是「毫秒」',
+    units.filter((u) => u === '秒').length >= 2 && units.indexOf('毫秒') < 0,
+    units.join(' / '))
+
+  // 生成时限按秒显示，host 仍存毫秒
+  const cacheSpec = await (await fetch(ORIGIN + '/selection-explain/api/settings', { headers: { accept: 'application/json' } })).json()
+  const rowInput = (key) => {
+    const rowEl = Array.from(walk(settingsSheet)).find((r) =>
+      r.className === 'dsh-sel-srow' && !!Array.from(walk(r)).find((n) => n.attrs && n.attrs['aria-label'] === key))
+    return rowEl ? Array.from(walk(rowEl)).find((n) => n.className === 'dsh-sel-snum') : null
+  }
+  const cacheInput = rowInput('生成时限')
+  assert('生成时限的毫秒 → 秒换算正确',
+    !!cacheInput && String(cacheInput.value) === String(cacheSpec.values.timeoutMs / 1000),
+    cacheInput ? `${cacheInput.value} vs ${cacheSpec.values.timeoutMs / 1000}` : '未找到输入框')
+
+  // 在界面里改成 120 秒 → 配置里应存 120000 毫秒
+  cacheInput.value = '120'
+  cacheInput.dispatch('input', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 900))
+  const saved = await (await fetch(ORIGIN + '/selection-explain/api/settings', { headers: { accept: 'application/json' } })).json()
+  assert('界面填 120 秒 = 配置存 120000 毫秒',
+    saved.values.timeoutMs === 120000, String(saved.values.timeoutMs))
+  // 还原（改回 600 秒）
+  cacheInput.value = '300'
+  cacheInput.dispatch('input', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 900))
+}
+
+// 收尾：这套断言打的是**真实 host** 的 /settings，会真的落盘到
+// ${DSH_HOME:-~/.dsh}/selection-explain/settings.json。跑完必须清掉覆盖，
+// 否则跑一次测试就在用户环境里留下一份 settings.json（值等于默认，但仍是脏状态）。
+{
+  const resetRes = await fetch(ORIGIN + '/selection-explain/api/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ reset: true }),
+  })
+  const resetBody = await resetRes.json().catch(() => null)
+  assert('测试收尾：清掉设置覆盖，不留 settings.json 残留',
+    !!resetBody && resetBody.ok === true && resetBody.values.historyMaxEntries === 20,
+    JSON.stringify(resetBody && { ok: resetBody.ok, history: resetBody.values && resetBody.values.historyMaxEntries }))
+}
+
+// Esc 只退一层：先收抽屉，小窗留着
+{
+  const before = panel.style.display
+  documentStub.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} })
+  await new Promise((r) => setTimeout(r, 10))
+  assert(
+    'Esc 先收抽屉、不关小窗（一次只退一层）',
+    settingsSheet.getAttribute('data-open') === '0' && panel.style.display === before,
+    `sheet=${settingsSheet.getAttribute('data-open')} panel=${panel.style.display}`,
+  )
+}
+
+if (process.env.SEL_SETTINGS_ONLY === '1') {
+  console.log('=== 设置与模型集成测试结束（真实 host，临时数据目录）===')
+  process.exit(process.exitCode ?? 0)
+}
 
 // ───────────────────────── 升格为正式会话 ─────────────────────────
 // 先走一遍两阶段（翻译 → 展开详解），确保升格时取的是两个阶段的结果而不是最后一段流
@@ -2493,7 +2982,9 @@ assert('点回来看到"已停止"的状态与可重试入口', hook.state().pha
   const strong = rowsIn().find((r) => textOf(r).indexOf('Strong Model') >= 0)
   strong.dispatch('click', { preventDefault() {}, stopPropagation() {} })
   assert('点模型行 → 胶囊换成新模型名', nodes.pill.textContent.indexOf('Strong Model') >= 0, nodes.pill.textContent)
-  assert('模型选择落盘（provider\tmodel）', String(windowStub.localStorage.getItem('dsh-selection-explain:model')) === 'p1\tm-strong', String(windowStub.localStorage.getItem('dsh-selection-explain:model')))
+  await new Promise(r => setTimeout(r, 700))
+  const selectedSettings = await (await fetch(ORIGIN + '/selection-explain/api/settings')).json()
+  assert('模型选择保存到统一设置', selectedSettings.values.provider === 'p1' && selectedSettings.values.model === 'm-strong', JSON.stringify(selectedSettings.values))
   assert('菜单里的勾选跟着换', rowsIn().filter((r) => r.getAttribute('data-on') === '1').length === 1, '')
   assert('档位按钮收缩成该模型支持的 2 档', tiersIn().map((b) => textOf(b)).join('/') === '关/高', tiersIn().map((b) => textOf(b)).join('/'))
 

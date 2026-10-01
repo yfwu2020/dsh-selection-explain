@@ -32,6 +32,9 @@ import {
   PROMPT_HEAD,
   TRANSLATION_PROMPT,
 } from './prompts.js'
+// 设置页的字段声明与校验：与 Config 一一对应，GET /settings 直接把 spec 发给客户端，
+// 客户端只负责画 —— 避免 UI 的边界和 host 的 clamp 各写一份、时间久了互相漂。
+import { buildSettingsPayload, normalizeSettingsPatch, normalizeStoredSettings, PERSISTED_SETTING_KEYS, SETTINGS_KEYS, SETTINGS_GROUPS } from './settings.js'
 
 /** 插件名（= package.json name，客户端 bundle 的模块 id 也是它）。 */
 export const name = '@yfwu2020/dsh-selection-explain'
@@ -66,12 +69,22 @@ const BODY_LIMIT = 512 * 1024
 
 /** 插件配置。 */
 export interface Config {
-  /** 固定 provider 路由；留空 = 跟随默认模型。 */
+  /** 固定 provider 路由；留空 = 跟随主会话（用户在 DSH 里选的默认模型）。 */
   provider: string
-  /** 固定 model id；留空 = 跟随默认模型。 */
+  /** 固定 model id；留空 = 跟随主会话。 */
   model: string
-  /** 推理档位（off / low / high / max）；留空 = 适配器默认。 */
+  /**
+   * **追问**单独用的 provider；留空 = 跟首轮/次轮同一个（默认如此）。
+   *
+   * 为什么要能单独设：首轮/次轮要的是"读懂上下文"，追问往往是"快速问一句"，
+   * 两者对模型的要求不同（一个要准、一个要快）。
+   */
+  chatProvider: string
+  /** **追问**单独用的 model id；留空 = 跟首轮/次轮同一个。 */
+  chatModel: string
+  /** **次轮详解**的推理档位（off / low / high / max）；留空 = 适配器默认。 */
   reasoningEffort: string
+  /** **首轮**（翻译 / 解读 / 注释）的推理档位。 */
   translationReasoningEffort: string
   historyMaxEntries: number
   /** 采样温度。 */
@@ -116,7 +129,7 @@ export interface Config {
   toolResultMaxChars: number
   /** 文件类工具（read/grep/glob）的读取边界：'' = 会话工作目录，'*' = 不限制，其他 = 该目录 */
   toolReadRoot: string
-  /** 追问（对话小窗）用的推理档位：通常比首次解读轻，响应更快。 */
+  /** 追问（对话小窗）用的推理档位：通常比次轮详解轻，响应更快。 */
   chatReasoningEffort: string
   /**
    * 侧边栏 HTML 预览里的划词桥（默认开）。
@@ -128,15 +141,26 @@ export interface Config {
    * 关掉 = 侧边栏网页里不弹「解读」按钮。
    */
   bridgeSidebarPreview: boolean
+  /** 是否显示右下角悬浮胶囊（最近一次划词的状态入口）。 */
+  pillEnabled: boolean
+  /**
+   * 静置多久把胶囊收成小球（毫秒）。
+   *
+   * 只在**没装费用胶囊**时生效 —— 有费用胶囊时两者并排，收球会让它们错位。
+   * 默认 10 秒：短于这个数会显得"刚看一眼就没了"，长了又失去"收起来不挡视线"的意义。
+   */
+  pillIdleMs: number
 }
 
 /** 配置 schema（缺省值即推荐值）。 */
 export const Config = z.object({
   provider: z.string().default(''),
   model: z.string().default(''),
+  chatProvider: z.string().default(''),
+  chatModel: z.string().default(''),
   reasoningEffort: z.string().default('high'),
-  /** 首轮「翻译」单独一档：这一轮只挑英文片段做翻译，不需要深度推理，默认压低换首字速度。 */
-  translationReasoningEffort: z.string().default('low'),
+  /** 首轮单独一档：默认关闭思考，优先快速给出翻译、解读或注释。 */
+  translationReasoningEffort: z.string().default('off'),
   /**
    * 小窗对话历史（A′）：把整段对话落到插件自己的目录，重划同一个词直接回放。
    * 0 = 关闭历史。只留最近 N 个「划词条目」（每个条目内含它自己的全部追问轮次）。
@@ -191,6 +215,10 @@ export const Config = z.object({
    * 侧边栏网页里选中文字不会再弹「解读」。
    */
   bridgeSidebarPreview: z.boolean().default(true),
+  /** 悬浮胶囊开关（小窗设置页可改）。 */
+  pillEnabled: z.boolean().default(true),
+  /** 静置收球时长（毫秒）——默认 10 秒，见 Config 注释。 */
+  pillIdleMs: z.number().min(2000).max(600000).default(10000),
 })
 
 /** 联网类工具名：用来判断"首选里的联网工具在不在"。 */
@@ -273,9 +301,17 @@ interface BackgroundOptions {
   marker: string
 }
 
-/** ctx.sessionQuery 的宽松视图（只用到 readSurface）。 */
+/**
+ * ctx.sessionQuery 的宽松视图。
+ *
+ *   · readSurface —— 会话的**消息表面**（对话背景用）。
+ *   · readSession —— **原始事件**（带 data）。读会话模型必须走它：
+ *     `model/selection` 在文档里写明是 log-only，"never enters derived model history"，
+ *     所以它**不会**出现在 readSurface 的 surface 里（实测：用它读到的永远是空）。
+ */
 interface SessionQueryLike {
   readSurface?: (sessionId: string) => Promise<{ events?: readonly unknown[] }>
+  readSession?: (sessionId: string) => Promise<{ events?: readonly unknown[] }>
 }
 
 /** 解析出的模型路由。 */
@@ -1133,8 +1169,10 @@ export function apply(ctx: Context, rawConfig: Config): void {
   const config: Config = {
     provider: rawConfig?.provider ?? '',
     model: rawConfig?.model ?? '',
+    chatProvider: rawConfig?.chatProvider ?? '',
+    chatModel: rawConfig?.chatModel ?? '',
     reasoningEffort: rawConfig?.reasoningEffort ?? 'high',
-    translationReasoningEffort: rawConfig?.translationReasoningEffort ?? 'low',
+    translationReasoningEffort: rawConfig?.translationReasoningEffort ?? 'off',
     historyMaxEntries: rawConfig?.historyMaxEntries ?? 20,
     temperature: rawConfig?.temperature ?? -1,
     maxTokens: rawConfig?.maxTokens ?? 0,
@@ -1158,6 +1196,90 @@ export function apply(ctx: Context, rawConfig: Config): void {
     toolReadRoot: rawConfig?.toolReadRoot ?? '',
     chatReasoningEffort: rawConfig?.chatReasoningEffort ?? 'high',
     bridgeSidebarPreview: rawConfig?.bridgeSidebarPreview ?? true,
+    pillEnabled: rawConfig?.pillEnabled ?? true,
+    pillIdleMs: rawConfig?.pillIdleMs ?? 10000,
+  }
+
+  /**
+   * 出厂默认值（**不含**用户在设置页改过的部分）。
+   *
+   * 为什么单独留一份：设置页的「恢复默认」要能把值写回这里，
+   * 而"这一项改过没有"也要拿它对比 —— 只有一个 config 的话，改完就再也说不出原值是什么。
+   * 注意它取的是 rawConfig（cordis.patch.yml 里的配置），所以 yml 里写过的值也算"默认"：
+   * 用户在设置页恢复默认，应该回到 yml 写的那个数，而不是硬编码的出厂数。
+   */
+  const configDefaults: Record<string, unknown> = { ...config } as unknown as Record<string, unknown>
+
+  /**
+   * 设置页写入的覆盖值（**只存改过的键**）。
+   *
+   * 落盘在插件自己的目录（与 history.json / pill.json 同级），不碰 cordis.patch.yml：
+   * 那个文件是**装配清单**，让 UI 去改它既容易写坏结构，也要重启才生效。
+   * 这里的内存值即刻生效（下方所有 config.x 都是每次请求现读的），落盘只为跨重启保留。
+   */
+  let settingsOverrides: Record<string, unknown> = {}
+  let settingsLoaded = false
+  let settingsTimer: ReturnType<typeof setTimeout> | null = null
+  const settingsFile = (): string =>
+    join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain', 'settings.json')
+
+  /**
+   * 把覆盖值套用到 config 上。
+   *
+   * 只接受 SETTINGS_KEYS 里的键，并且**类型必须与默认值一致** ——
+   * 文件是手工可编辑的（也可能被旧版本写坏），不能让它把 boolean 写成字符串，
+   * 那会让 `if (config.tools)` 这种判断悄悄变成永真。
+   */
+  function applyOverrides(patch: Record<string, unknown>): void {
+    const target = config as unknown as Record<string, unknown>
+    for (const [key, value] of Object.entries(patch)) {
+      if (!SETTINGS_KEYS.includes(key) && !PERSISTED_SETTING_KEYS.includes(key)) continue
+      if (typeof value !== typeof configDefaults[key]) continue
+      target[key] = value
+    }
+  }
+
+  /** 读设置覆盖文件（进程内只读一次，与 loadHistory / loadPillPos 同节奏）。 */
+  async function loadSettings(): Promise<void> {
+    if (settingsLoaded) return
+    settingsLoaded = true
+    try {
+      const parsed = JSON.parse(await readFile(settingsFile(), 'utf8')) as { values?: unknown }
+      const raw = parsed?.values
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        const values = normalizeStoredSettings(raw)
+        settingsOverrides = values
+        applyOverrides(values)
+      }
+    } catch {
+      // 没存过 / 坏了都当作"没改过"：出厂默认本来就是可用状态，没必要因此报错
+      settingsOverrides = {}
+    }
+  }
+
+  /** 落盘（防抖：拖数字输入框会连发多次，没必要每次都写文件）。 */
+  function scheduleSettingsWrite(): void {
+    if (settingsTimer) clearTimeout(settingsTimer)
+    settingsTimer = setTimeout(() => {
+      settingsTimer = null
+      void (async () => {
+        try {
+          await mkdir(join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain'), { recursive: true })
+          await writeFile(settingsFile(), JSON.stringify({ version: 1, values: settingsOverrides }, null, 0), 'utf8')
+        } catch (error) {
+          ctx.logger?.warn?.(`[${name}] 写入设置失败：${String((error as Error)?.message ?? error)}`)
+        }
+      })()
+    }, 300)
+    settingsTimer.unref?.()
+  }
+
+  /** 当前生效值（按 spec 的键序取，客户端可以直接对比 defaults 判断改过没有）。 */
+  function currentSettings(): Record<string, unknown> {
+    const target = config as unknown as Record<string, unknown>
+    const values: Record<string, unknown> = {}
+    for (const key of SETTINGS_KEYS) values[key] = target[key]
+    return values
   }
 
   /** 兜底路由：第一次真实 LLM 调用后捕获。 */
@@ -1283,13 +1405,36 @@ export function apply(ctx: Context, rawConfig: Config): void {
   }
 
   /** 请求里带 provider+model 时优先用它（并按清单校验；清单还没加载出来就只做形状校验）。 */
-  const resolveRoute = (override?: { provider?: string; model?: string }): Route | null => {
+  const resolveRoute = (
+    override?: { provider?: string; model?: string },
+    /**
+     * **当前会话**自己的模型选择（见 sessionModelOf）。
+     *
+     * 为什么要有它：会话是各自选模型的（每个 Agent 一份 model-selection），
+     * 而 `agentDefaultModel.currentSelection()` 是**全局默认**、与会话无关。
+     * 以前只用后者，于是"跟随主会话"其实跟的是"全局默认"——
+     * 两个会话用不同模型时，插件对两个会话都用同一个默认模型，跟谁都对不上。
+     *
+     * 优先级：显式 override（小窗胶囊选的）→ 插件配置（设置页选的）→ **本会话的模型** → 全局默认 → 第一个可用。
+     * 会话没记过选择（新会话、或日志里没有 model/selection）时自然落回全局默认，行为与以前一致。
+     */
+    sessionModel?: { provider?: string; model?: string } | null,
+    /**
+     * 这一轮是不是**追问**。
+     *
+     * 三个阶段沿用同一模型；旧 chatProvider/chatModel 仅保留配置兼容，不再参与路由。
+     */
+    chat?: boolean,
+  ): Route | null => {
     if (override?.provider && override?.model) {
       const wanted = { provider: override.provider, model: override.model }
       const known = modelCache.items.some((item) => item.provider === wanted.provider && item.model === wanted.model)
       if (known || modelCache.items.length === 0) return wanted
     }
     if (config.provider && config.model) return { provider: config.provider, model: config.model }
+    if (sessionModel?.provider && sessionModel?.model) {
+      return { provider: sessionModel.provider, model: sessionModel.model }
+    }
     const service = ctx.get('agentDefaultModel') as AgentDefaultModelConfig | undefined
     const selection = service?.currentSelection?.()
     if (selection?.provider && selection?.model) {
@@ -1344,6 +1489,40 @@ export function apply(ctx: Context, rawConfig: Config): void {
       ctx.logger?.warn?.(`[${name}] 读取会话背景失败（${sessionId}）：${String((error as Error)?.message ?? error)}`)
       return []
     }
+  }
+
+  /**
+   * 读**当前会话**自己的模型选择。
+   *
+   * 来源：会话事件流里的 `model/selection`（每条 = 一次"后续请求用这个模型"的选择，
+   * 形如 `{ type:'model/selection', data:{ provider, model, reasoningEffort? } }`）。
+   * 取**最后一条** = 会话当前在用的那个；一条都没有（新会话）就返回 null，调用方落回全局默认。
+   *
+   * 复用 readSurfaceEvents：它已有 10 秒缓存，连续划词不会反复读日志。
+   */
+  const sessionModelOf = async (sessionId: string): Promise<{ provider: string; model: string } | null> => {
+    if (!sessionId) return null
+    const sessionQuery = ctx.get('sessionQuery') as SessionQueryLike | undefined
+    if (typeof sessionQuery?.readSession !== 'function') return null
+    let events: readonly unknown[] = []
+    try {
+      const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000))
+      const log = await Promise.race([sessionQuery.readSession(sessionId), timeout])
+      events = log && Array.isArray((log as { events?: unknown }).events) ? ((log as { events: readonly unknown[] }).events) : []
+    } catch {
+      return null
+    }
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i]
+      if (!event || typeof event !== 'object') continue
+      const typed = event as { type?: unknown; data?: unknown }
+      if (typed.type !== 'model/selection') continue
+      const data = (typed.data ?? {}) as { provider?: unknown; model?: unknown }
+      if (typeof data.provider === 'string' && data.provider && typeof data.model === 'string' && data.model) {
+        return { provider: data.provider, model: data.model }
+      }
+    }
+    return null
   }
 
   /** 组装会话背景文本。 */
@@ -1503,7 +1682,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
         if (typeof entry?.key !== 'string' || entry.key.length === 0) continue
         history.set(entry.key, {
           key: entry.key,
-          text: clampText(entry.text, 4000),
+          // 按可设置的最高选区长度保留，调低当前限制也不截断已有历史。
+          text: clampText(entry.text, 20000),
           context: clampText(entry.context, 20000),
           label: clampText(entry.label, 60),
           at: typeof entry.at === 'number' ? entry.at : Date.now(),
@@ -1555,7 +1735,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     const previous = history.get(key)
     const entry: HistoryEntry = {
       key,
-      text: clampText(input.text, 4000),
+      text: clampText(input.text, 20000),
       context: clampText(input.context, 20000),
       label: clampText(input.label, 60),
       at: Date.now(),
@@ -1902,11 +2082,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
 
   const handleHistory = (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
+      await loadSettings()
       await loadHistory()
-      if (config.historyMaxEntries <= 0) {
-        sendJson(res, 200, { ok: true, entries: [] })
-        return
-      }
       const url = new URL(req.url ?? '/', 'http://localhost')
       if (req.method === 'DELETE') {
         // 删除一条（?key=）或清空（?all=1）。
@@ -2002,7 +2179,14 @@ export function apply(ctx: Context, rawConfig: Config): void {
     } catch (thrown) {
       error = String((thrown as Error)?.message ?? thrown)
     }
-    const current = resolveRoute()
+    // 会话级：设置页的「跟随主会话」要显示**当前会话**在用的模型
+    let modelsSessionId = ''
+    try {
+      modelsSessionId = url.searchParams.get('sessionId') ?? ''
+    } catch {
+      /* 解析不了就当没带 */
+    }
+    const current = resolveRoute(undefined, await sessionModelOf(modelsSessionId))
     sendJson(res, 200, {
       ok: true,
       current,
@@ -2020,6 +2204,87 @@ export function apply(ctx: Context, rawConfig: Config): void {
     })
   }
 
+  /**
+   * 设置页的读写口。
+   *
+   *   GET  → { groups, values, defaults }：spec 一并下发，客户端只负责画
+   *   POST → { values: {...} }：归一 → 立刻生效（改内存）→ 防抖落盘
+   *   POST { reset: true }    ：清空覆盖，回到 cordis.patch.yml / 出厂默认
+   *
+   * 为什么不是"写回 cordis.patch.yml"：那是装配清单，
+   * 让 UI 去改它既要人肉重启、又可能把 YAML 结构写坏；这里落在插件自己的目录，改完即时生效。
+   */
+  const handleSettings = (req: IncomingMessage, res: ServerResponse): void => {
+    void (async () => {
+      await loadSettings()
+      if (req.method === 'POST') {
+        const raw = await readBody(req, 200_000)
+        let body: { values?: unknown; reset?: unknown } = {}
+        try {
+          body = raw ? (JSON.parse(raw) as { values?: unknown; reset?: unknown }) : {}
+        } catch {
+          sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' })
+          return
+        }
+        if (body.reset === true) {
+          settingsOverrides = {}
+          applyOverrides(configDefaults)
+          scheduleSettingsWrite()
+          sendJson(res, 200, { ok: true, values: currentSettings(), rejected: [] })
+          return
+        }
+        const result = normalizeSettingsPatch(body.values)
+        if (Object.keys(result.values).length === 0 && result.rejected.length > 0) {
+          sendJson(res, 400, { ok: false, error: '没有可写入的字段', rejected: result.rejected })
+          return
+        }
+        // 合并而不是覆盖：只发一个键的补丁不该把其它改过的项抹掉
+        settingsOverrides = { ...settingsOverrides, ...result.values }
+        applyOverrides(result.values)
+        scheduleSettingsWrite()
+        sendJson(res, 200, { ok: true, values: currentSettings(), rejected: result.rejected })
+        return
+      }
+      sendJson(res, 200, { ok: true, ...buildSettingsPayload(currentSettings(), configDefaults) })
+    })().catch((error: unknown) => {
+      sendJson(res, 500, { ok: false, error: String((error as Error)?.message ?? error) })
+    })
+  }
+
+  /**
+   * 极轻的"这一轮会用哪个模型"查询。
+   *
+   *   GET /selection-explain/api/route?sessionId=…[&chat=1]
+   *
+   * 为什么单开一条：设置页要**实时**显示当前会话在用的模型，
+   * 而 /models 会去列 provider 与模型（42 个，还要端点发现）、/ping 要枚举工具表并探 DNS ——
+   * 两者都不适合按秒轮询。这条只做一次会话模型解析 + 一次 resolveRoute。
+   */
+  const handleRoute = (req: IncomingMessage, res: ServerResponse): void => {
+    void (async () => {
+      await loadSettings()
+      let sessionId = ''
+      let chat = false
+      try {
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        sessionId = url.searchParams.get('sessionId') ?? ''
+        chat = url.searchParams.get('chat') === '1'
+      } catch {
+        /* 解析不了就当没带 */
+      }
+      const route = resolveRoute(undefined, await sessionModelOf(sessionId), chat)
+      sendJson(res, 200, {
+        ok: true,
+        provider: route?.provider ?? '',
+        model: route?.model ?? '',
+        // 是不是"跟首轮/次轮同一个"：客户端据此把追问下拉显示成「跟随首轮 / 次轮」
+        chatFollows: true,
+      })
+    })().catch((error: unknown) => {
+      sendJson(res, 500, { ok: false, error: String((error as Error)?.message ?? error) })
+    })
+  }
+
   const handlePing = (req: IncomingMessage, res: ServerResponse): void => {
     const sessionQuery = ctx.get('sessionQuery') as SessionQueryLike | undefined
     // 可以带 ?sessionId=xxx：工具是**按会话作用域**注册的，不带 id 只能看到全局视图（里面没有 web_search）
@@ -2032,6 +2297,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
     // 小窗能调哪些工具：白名单是配置，实际放行还要看本机能不能抓网页（见下）。
     // 用 async 包一层：探测 DNS 是异步的，出错也要给出结构化响应（和 history 路由同一写法）。
     void (async () => {
+      // 先把用户改过的设置套上：下面报的每一条都必须是**当前生效**的值
+      await loadSettings()
       const whitelist = config.toolNames
         .split(',')
         .map((item) => item.trim())
@@ -2073,7 +2340,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
       sendJson(res, 200, {
         ok: true,
         plugin: name,
-        route: resolveRoute(),
+        route: resolveRoute(undefined, await sessionModelOf(pingSessionId)),
         reasoningEffort: config.reasoningEffort,
         modelsRoute: `${API_PREFIX}/models`,
         history: { maxEntries: config.historyMaxEntries, file: historyFile() },
@@ -2105,6 +2372,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
         sessionContext: config.sessionContext && typeof sessionQuery?.readSurface === 'function',
         // 侧边栏 HTML 预览里的划词桥开关：客户端据此决定要不要往预览帧注入桥脚本
         bridgeSidebarPreview: config.bridgeSidebarPreview,
+        // 悬浮胶囊的两个偏好：跟着 ping 一起下发，省得客户端为它单开一次请求
+        pill: { enabled: config.pillEnabled, idleMs: config.pillIdleMs },
         limits: {
           maxSelectionChars: config.maxSelectionChars,
           maxContextChars: config.maxContextChars,
@@ -2414,7 +2683,9 @@ export function apply(ctx: Context, rawConfig: Config): void {
       typeof body.provider === 'string' && typeof body.model === 'string' && body.provider && body.model
         ? { provider: body.provider, model: body.model }
         : undefined
-    const route = resolveRoute(override)
+    // 名字避开下面的 isChat（那里判的是"提示词用追问那套"，此处判的是"模型用追问那个"）
+    const isChatRound = typeof body.question === 'string' && body.question.trim().length > 0
+    const route = resolveRoute(override, await sessionModelOf(sessionIdOf(body)), isChatRound)
     if (!route) {
       sendJson(res, 503, { error: '尚未确定模型路由：请先在设置里选择默认模型后重试' })
       return
@@ -2742,7 +3013,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
         rounds: 0,
         error: '',
       }
-      const toolRounds = config.maxToolRounds + 1
+      const toolRounds = config.maxToolRounds
       // 档位被上游拒绝时（400/401/500）去掉档位重试一次：清单里声明的档位是**建议值**，
       // 实测很多模型并不接受 max（qwen3.7-max 直接 400、minimax-m2.7/gpt-5.6-luna 500）。
       const canRetryEffort = isChat && bodyEffort.length > 0
@@ -2923,6 +3194,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
           answer = answer.slice(0, Math.max(0, answer.length - roundText.length))
           sse(res, { type: 'drop', chars: roundText.length, text: roundText.slice(-2000), round })
         }
+        // 有的模型不带工具定义也会返回调用；执行端同样遵守开关和轮数上限。
+        if (wrapUp || toolSchemas.length === 0) break
         // 执行工具→把结果回灌，再让模型继续（上限 maxToolRounds 轮）
         toolMessages.push(
           createAssistantMessage({
@@ -2948,7 +3221,9 @@ export function apply(ctx: Context, rawConfig: Config): void {
           const rawPath = (parsed as { file_path?: unknown; path?: unknown })?.file_path ?? (parsed as { path?: unknown })?.path
           const wantPath = typeof rawPath === 'string' ? rawPath : ''
           const execution =
-            FS_TOOL_NAMES.includes(call.name) && !isInsideRoot(readRoot, wantPath)
+            !toolSchemas.some((schema) => schema.name === call.name)
+              ? { content: [{ type: 'text' as const, text: `（调用已拒绝：${call.name} 不在本次允许的工具中）` }], isError: true }
+              : FS_TOOL_NAMES.includes(call.name) && !isInsideRoot(readRoot, wantPath)
               ? {
                   content: [
                     {
@@ -3104,6 +3379,14 @@ export function apply(ctx: Context, rawConfig: Config): void {
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/analyze`, handler: handleAnalyze }),
     `${name}: analyze route`,
+  )
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/settings`, handler: handleSettings }),
+    `${name}: settings route`,
+  )
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/route`, handler: handleRoute }),
+    `${name}: route route`,
   )
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/ping`, handler: handlePing }),

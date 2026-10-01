@@ -33,6 +33,15 @@ window.__ModuleLoader__.load({
     /** 模型清单（带每个模型支持的推理等级）。 */
     var MODELS = '/selection-explain/api/models'
     /**
+     * 小窗设置：GET 拿 spec + 当前值，POST 写回。
+     *
+     * spec（分组 / 标题 / 说明 / 边界 / 单位）由 host 下发 —— 客户端**不做业务判断**，
+     * 免得 UI 的边界和 host 的 clamp 各写一份、时间久了互相漂（见 src/settings.ts 顶部注释）。
+     */
+    var SETTINGS = '/selection-explain/api/settings'
+    /** 极轻的"这一轮用哪个模型"查询：设置页开着时按秒轮询它，让括号里的名字实时跟着变。 */
+    var ROUTE = '/selection-explain/api/route'
+    /**
      * 语音输入（小窗麦克风）：识别在 host 上做，浏览器只负责录一段规范 WAV 送过去。
      *   · 目录接口说清"能不能录、要录多久、要不要先准备模型"；
      *   · 音频不落盘、不进会话，转写完即丢（客户端的引用里也不会出现音频）。
@@ -342,6 +351,11 @@ window.__ModuleLoader__.load({
       'background:transparent;color:inherit;font:inherit;font-size:11.5px;line-height:1;opacity:.85}',
       '.dsh-sel-action:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.16));opacity:1}',
       '.dsh-sel-action:disabled{opacity:.4;cursor:default}',
+      // 统一图标（头部 / 工具行）：尺寸由 SVG 的 width/height 属性给，这里只钉住显示方式
+      '.dsh-sel-ic{display:block;flex:none}',
+      // 带文字的图标键里的图标：和文字之间留一点呼吸，别贴在一起
+      '.dsh-sel-action .dsh-sel-ic{margin-right:1px}',
+      '.dsh-sel-icon .dsh-sel-ic{margin:0}',
       // 选中文字quote：左侧强调条 + 略暗底
       // 选中文字条：在滚动区里（跟着消息一起滚），左右边距交给 body 的 padding 所以与内容对齐。
       // 可以自动换行、超过 84px 内部滚动，但**不显示滚动条**。
@@ -748,6 +762,136 @@ window.__ModuleLoader__.load({
       '.dsh-sel-err{color:var(--dsw-alias-state-error-primary,#e5484d);font-size:12.5px;white-space:pre-wrap}',
       '@media (prefers-reduced-motion:reduce){.dsh-sel-sk{animation:none}.dsh-sel-dots i{animation:none;opacity:.6}',
       '.dsh-sel-btn{transition:none}.dsh-sel-btn[data-pop="1"]{animation:none}}',
+      // ────────────────────── 设置页（抽屉） ──────────────────────
+      // 一个抽屉，不另开窗口：小窗本身就是窄容器，再弹一个浮窗只会互相打架。
+      // 从面板右侧滑入、盖住正文，面板尺寸一个像素都不变。
+      '.dsh-sel-sheet{position:absolute;top:0;left:0;right:0;bottom:0;z-index:6;display:flex;flex-direction:column;',
+      'background:var(--dsw-alias-bg-layer-1,Canvas);color:var(--dsw-alias-label-primary,CanvasText);',
+      // ⚠️ 值必须带引号：[data-open=1] 是**非法选择器**（CSS 标识符不能以数字开头），
+      //    浏览器会整条丢弃 —— 表现为"属性明明设了、抽屉却纹丝不动"（实测踩过）。
+      'transform:translateX(100%);opacity:0;pointer-events:none;box-shadow:-14px 0 30px rgba(0,0,0,.16);',
+      'transition:transform .34s cubic-bezier(.22,.8,.3,1),opacity .22s ease}',
+      '.dsh-sel-sheet[data-open="1"]{transform:translateX(0);opacity:1;pointer-events:auto}',
+      // 抽屉后面压一层薄纱：不遮死正文（用户还得看得出上下文），只把层次分开
+      '.dsh-sel-scrim{position:absolute;top:0;left:0;right:0;bottom:0;z-index:5;background:rgba(0,0,0,.06);',
+      'opacity:0;pointer-events:none;transition:opacity .28s ease}',
+      '.dsh-sel-scrim[data-open="1"]{opacity:1}',
+      '.dsh-sel-layer[data-theme=dark] .dsh-sel-scrim{background:rgba(0,0,0,.32)}',
+      '@media (prefers-reduced-motion:reduce){.dsh-sel-sheet{transition:opacity .16s ease;transform:none}',
+      '.dsh-sel-scrim{transition:none}}',
+      '.dsh-sel-sheethead{display:flex;align-items:center;gap:8px;padding:10px 10px 10px 12px;flex:0 0 auto;',
+      'border-bottom:.5px solid var(--dsw-alias-border-l4,rgba(140,140,140,.22))}',
+      '.dsh-sel-sheetback{flex:0 0 auto;width:24px;height:24px;display:grid;place-items:center;border:0;border-radius:8px;',
+      'cursor:pointer;background:transparent;color:inherit;opacity:.75;padding:0}',
+      '.dsh-sel-sheetback:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.16));opacity:1}',
+      '.dsh-sel-sheettitle{font-weight:600;font-size:12.5px;letter-spacing:.2px}',
+      '.dsh-sel-sheetscope{margin-left:auto;font-size:11px;opacity:.5;padding-right:4px;white-space:nowrap}',
+      // 左栏分类 + 右栏内容
+      '.dsh-sel-sheetmain{flex:1 1 auto;display:flex;min-height:0}',
+      '.dsh-sel-rail{flex:0 0 96px;border-right:.5px solid var(--dsw-alias-border-l4,rgba(140,140,140,.22));',
+      'padding:8px 6px;display:flex;flex-direction:column;gap:2px;overflow:auto}',
+      '.dsh-sel-railbtn{border:0;background:transparent;text-align:left;padding:6px 8px;border-radius:8px;cursor:pointer;',
+      'font:inherit;font-size:12px;color:inherit;opacity:.72;white-space:nowrap}',
+      '.dsh-sel-railbtn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.12));opacity:1}',
+      '.dsh-sel-railbtn[aria-current="true"]{background:var(--sel-a1-soft,rgba(13,148,136,.12));color:var(--sel-a1-text,#0f766e);',
+      'font-weight:600;opacity:1}',
+      '.dsh-sel-sheetbody{flex:1 1 auto;overflow:auto;padding:2px 12px 14px;min-width:0;',
+      'scrollbar-width:thin;scrollbar-color:rgba(140,140,140,.35) transparent}',
+      '.dsh-sel-sheetbody::-webkit-scrollbar{width:9px;height:9px}',
+      '.dsh-sel-sheetbody::-webkit-scrollbar-thumb{background:rgba(140,140,140,.3);border-radius:9px;border:2px solid transparent;background-clip:content-box}',
+      '.dsh-sel-grp{padding:12px 0 4px;border-bottom:.5px solid var(--dsw-alias-border-l4,rgba(140,140,140,.16))}',
+      '.dsh-sel-grp:last-child{border-bottom:0;padding-bottom:0}',
+      '.dsh-sel-grph{font-size:11px;font-weight:600;opacity:.5;letter-spacing:.4px;margin-bottom:8px}',
+      '.dsh-sel-ssection+.dsh-sel-ssection{margin-top:16px;padding-top:16px;border-top:.5px solid var(--dsw-alias-border-l4,rgba(140,140,140,.16))}',
+      '.dsh-sel-ssectionh{font-size:14px;font-weight:600;line-height:1.5;margin:0 0 6px}',
+      '.dsh-sel-ssectionhint,.dsh-sel-ssectionnote{font-size:11.5px;opacity:.6;line-height:1.7;margin:3px 0 8px}',
+      '.dsh-sel-ssectionnote{margin:8px 0 0}',
+      '.dsh-sel-ssection>.dsh-sel-srow+.dsh-sel-srow{border-top:.5px solid var(--dsw-alias-border-l4,rgba(140,140,140,.16))}',
+      '.dsh-sel-srow[data-disabled="1"]{opacity:.5}',
+      '.dsh-sel-srow input:disabled,.dsh-sel-srow button:disabled{cursor:default}',
+      '.dsh-sel-sheet textarea.dsh-sel-stext{resize:vertical;line-height:1.6}',
+
+      '.dsh-sel-srow{display:flex;align-items:flex-start;gap:14px;padding:8px 0}',
+      '.dsh-sel-srowlab{flex:1 1 auto;min-width:0}',
+      '.dsh-sel-srowt{font-size:13px;line-height:1.5}',
+      '.dsh-sel-srowd{font-size:11.5px;opacity:.55;line-height:1.6;margin-top:3px;max-width:46ch}',
+      '.dsh-sel-srowctl{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding-top:2px;min-width:0}',
+      // 宽输入框（provider / model / 工具清单）所在行：说明在上、输入框独占一行。
+      // 抽屉是嵌在小窗里的窄容器，视口再宽也帮不上忙，所以按"行里有没有宽输入框"来判。
+      '.dsh-sel-srow[data-wide="1"]{flex-wrap:wrap}',
+      '.dsh-sel-srow[data-wide="1"] .dsh-sel-srowlab{flex:1 1 100%}',
+      '.dsh-sel-srow[data-wide="1"] .dsh-sel-srowctl{flex:1 1 100%;padding-top:6px}',
+      '.dsh-sel-srow[data-wide="1"] .dsh-sel-stext{width:100%;max-width:none}',
+      '.dsh-sel-srow[data-wide="1"] .dsh-sel-spick{width:100%;max-width:none}',
+      // 控件：开关（38×22，触屏也点得住）
+      '.dsh-sel-sws{flex:none;width:38px;height:22px;border-radius:11px;position:relative;cursor:pointer;padding:0;',
+      'border:.5px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));background:var(--dsw-alias-bg-layer-2,rgba(140,140,140,.12));',
+      'transition:background .18s ease}',
+      '.dsh-sel-sws:after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;',
+      'background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:0 1px 3px rgba(0,0,0,.28);',
+      'transition:transform .2s cubic-bezier(.34,1.4,.64,1)}',
+      '.dsh-sel-sws[aria-checked="true"]{background:var(--sel-fill,#0f766e);border-color:var(--sel-fill,#0f766e)}',
+      '.dsh-sel-sws[aria-checked="true"]:after{transform:translateX(16px);background:var(--sel-fill-fg,#fff)}',
+      // 控件：数字 / 文本
+      '.dsh-sel-snum{width:74px;border:.5px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));border-radius:8px;',
+      'padding:5px 8px;background:transparent;color:inherit;font:inherit;font-size:12.5px;text-align:right;',
+      'font-variant-numeric:tabular-nums;box-sizing:border-box}',
+      '.dsh-sel-stext{width:170px;border:.5px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));border-radius:8px;',
+      'padding:5px 8px;background:transparent;color:inherit;font:inherit;font-size:12px;box-sizing:border-box}',
+      '.dsh-sel-snum:focus-visible,.dsh-sel-stext:focus-visible,.dsh-sel-sws:focus-visible,.dsh-sel-segcell:focus-visible,',
+      '.dsh-sel-sheetback:focus-visible,.dsh-sel-railbtn:focus-visible,.dsh-sel-sbtn:focus-visible,',
+      '.dsh-sel-action:focus-visible,.dsh-sel-icon:focus-visible{outline:2px solid var(--sel-a1,#0d9488);outline-offset:2px}',
+      '.dsh-sel-sunit{font-size:11.5px;opacity:.5;white-space:nowrap}',
+      // 模型选择：**自绘下拉**，不用原生 <select>。
+      // 原生 select 的弹出层由浏览器画，42 个模型时会顶出可视区且拿不到滚动条（用户报的）。
+      // 自绘的列表自己带 max-height + overflow:auto，滚动条是确定的；样式也和 composer 那枚模型菜单一致。
+      '.dsh-sel-spick{width:100%;display:flex;align-items:center;gap:8px;border:.5px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));',
+      'border-radius:8px;padding:5px 8px;background:transparent;color:inherit;font:inherit;font-size:12.5px;',
+      'box-sizing:border-box;cursor:pointer;text-align:left}',
+      '.dsh-sel-spick:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.12))}',
+      '.dsh-sel-spickname{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dsh-sel-spickcaret{flex:none;font-size:9px;opacity:.6}',
+      // 菜单挂在**抽屉**上（不是行里）：行的祖先链上有 overflow:auto 的滚动区，浮层会被它裁掉
+      '.dsh-sel-spickmenu{position:absolute;z-index:30;display:none;flex-direction:column;padding:6px;border-radius:12px;',
+      'box-sizing:border-box;background:var(--dsw-alias-bg-layer-2,#232427);',
+      'border:.5px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));box-shadow:0 14px 34px rgba(0,0,0,.35)}',
+      '.dsh-sel-spickmenu[data-open="1"]{display:flex}',
+      '.dsh-sel-spickgroup{padding:2px 8px 5px;font-size:10.5px;opacity:.6;flex:none}',
+      // 列表自己滚：max-height 由 JS 按"抽屉底部还剩多少"给，这里只兜底
+      '.dsh-sel-spicklist{flex:1 1 auto;min-height:0;max-height:260px;overflow-y:auto;overflow-x:hidden;',
+      'display:flex;flex-direction:column;gap:1px;scrollbar-width:thin;scrollbar-color:rgba(140,140,140,.45) transparent}',
+      '.dsh-sel-spicklist::-webkit-scrollbar{width:9px}',
+      '.dsh-sel-spicklist::-webkit-scrollbar-thumb{background:rgba(140,140,140,.4);border-radius:9px;border:2px solid transparent;background-clip:content-box}',
+      '.dsh-sel-spickrow{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;cursor:pointer;',
+      'font:inherit;font-size:12px;text-align:left;border:0;background:transparent;color:inherit;flex:none}',
+      '.dsh-sel-spickrow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.12))}',
+      '.dsh-sel-spickrow[data-on="1"]{font-weight:600}',
+      '.dsh-sel-spickcheck{width:12px;flex:0 0 auto;color:var(--sel-a1-text,#0f766e);font-weight:700}',
+      '.dsh-sel-spickrowname{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dsh-sel-spickprov{flex:none;font-size:10.5px;opacity:.55;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dsh-sel-spickempty{padding:8px;font-size:11.5px;opacity:.55}',
+      // 控件：分段（档位）
+      '.dsh-sel-sheet .dsh-sel-seg{display:inline-flex;background:var(--dsw-alias-bg-layer-2,rgba(140,140,140,.1));',
+      'border:.5px solid var(--dsw-alias-border-l3,rgba(140,140,140,.3));border-radius:9px;padding:2px;position:relative}',
+      '.dsh-sel-sheet .dsh-sel-segcell{border:0;background:transparent;cursor:pointer;font:inherit;font-size:11.5px;width:auto;height:26px;min-width:34px;padding:4px 9px;',
+      'border-radius:7px;color:inherit;position:relative;z-index:1;white-space:nowrap;opacity:.8}',
+      '.dsh-sel-sheet .dsh-sel-segcell[aria-checked="true"]{color:var(--sel-fill-fg,#fff);font-weight:600;opacity:1}',
+      '.dsh-sel-sheet .dsh-sel-segpill{position:absolute;top:2px;bottom:2px;height:auto;border-radius:7px;background:var(--sel-fill,#0f766e);z-index:0;',
+      'transition:left .22s cubic-bezier(.34,1.3,.64,1),width .22s cubic-bezier(.34,1.3,.64,1)}',
+      // 底部动作栏：常驻；不脏时写"改动会自动保存"，脏了才报数
+      '.dsh-sel-sheetfoot{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:9px 12px;',
+      'border-top:.5px solid var(--dsw-alias-border-l4,rgba(140,140,140,.22));background:var(--dsw-alias-bg-layer-2,rgba(140,140,140,.05))}',
+      '.dsh-sel-sfootnote{font-size:11.5px;opacity:.55;margin-right:auto;display:flex;align-items:center;gap:6px}',
+      '.dsh-sel-sfootnote i{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-error-primary,#e5484d);display:none}',
+      '.dsh-sel-sfootnote[data-dirty="1"]{opacity:.9}',
+      '.dsh-sel-sfootnote[data-dirty="1"] i{display:block}',
+      '.dsh-sel-sbtn{border:.5px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));border-radius:8px;padding:5px 11px;',
+      'background:transparent;color:inherit;cursor:pointer;font:inherit;font-size:12px;white-space:nowrap}',
+      '.dsh-sel-sbtn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.12))}',
+      '.dsh-sel-sbtn:disabled{opacity:.4;cursor:default}',
+      '.dsh-sel-sbtn[data-danger="1"]{color:var(--dsw-alias-state-error-primary,#e5484d);',
+      'border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#e5484d) 45%,transparent)}',
+      '.dsh-sel-sempty{font-size:12px;opacity:.55;padding:14px 2px}',
     ].join('')
 
     // ────────────────────── Markdown 轻渲染（全 DOM，无 innerHTML） ──────────────────────
@@ -1635,7 +1779,8 @@ window.__ModuleLoader__.load({
       window.__dshSelBridge = 1
       var WINDOW_CHARS = 1500
       var KEY_CHARS = 300
-      var MAX_SELECTION = 4000
+      // 帧内只守设置允许的最高边界；父页面按当前设置决定是否显示入口。
+      var MAX_SELECTION = 20000
       /** 鼠标按着超过这么久还没等到 mouseup，就当松手落在帧外了（别永久卡住上报）。 */
       var STALE_PRESS_MS = 6000
       /** 轮询连续这么多拍都读不到选区，才认为选区真没了（约 1.5s；瞬时读不到不清）。 */
@@ -2138,15 +2283,17 @@ window.__ModuleLoader__.load({
       // 撑开用：把右侧三个按钮（最近/升格/✕）顶到最右。
       // 以前这一步是"模型名标签"的 margin-left:auto 兼任的，标签一删按钮就贴到标题后面了。
       head.appendChild(el('span', 'dsh-sel-headspace'))
-      var historyButton = el('button', 'dsh-sel-action', '🕘 最近')
-      historyButton.type = 'button'
-      historyButton.title = '最近聊过的划词（点一条把那段对话调回来）'
-      var promoteButton = el('button', 'dsh-sel-action', '↗ 升格')
-      promoteButton.type = 'button'
-      promoteButton.title = '升格为正式会话（建在同一个项目下，带着这段文字与上面的讨论）'
-      var closeButton = iconButton('关闭（Esc）', '✕')
+      var historyButton = actionButton('最近聊过的划词（点一条把那段对话调回来）', '最近', headerHistoryIcon)
+      var promoteButton = actionButton('升格为正式会话（建在同一个项目下，带着这段文字与上面的讨论）', '升格', headerPromoteIcon)
+      // 设置：与「最近 / 升格」**同款**（同边框、同高、同圆角、同 hover），图标 + 文字。
+      // 用户要求"图标旁加上设置两字" —— 一排文字键，视觉上才是同一套东西。
+      var settingsButton = actionButton('设置（模型 / 解读 / 背景 / 联网 / 界面 / 数据）', '设置', headerSettingsIcon)
+      settingsButton.setAttribute('aria-haspopup', 'dialog')
+      settingsButton.setAttribute('aria-pressed', 'false')
+      var closeButton = iconButton('关闭（Esc）', headerCloseIcon)
       head.appendChild(historyButton)
       head.appendChild(promoteButton)
+      head.appendChild(settingsButton)
       head.appendChild(closeButton)
       var quote = el('div', 'dsh-sel-quote')
       var body = el('div', 'dsh-sel-body')
@@ -2288,10 +2435,899 @@ window.__ModuleLoader__.load({
       var retryButton = el('button', 'dsh-sel-retry', '重新生成')
       retryButton.type = 'button'
       retryButton.style.display = 'none'
+      // ══════════════════ 设置页（抽屉） ══════════════════
+      // 挂在面板**内部**：面板是 position:fixed（也算定位祖先）且 overflow:hidden，
+      // 于是"从右侧滑入"的那一帧会被圆角裁掉，不会溢出到面板外面去。
+      var settingsScrim = el('div', 'dsh-sel-scrim')
+      settingsScrim.setAttribute('data-open', '0')
+      var settingsSheet = el('div', 'dsh-sel-sheet')
+      settingsSheet.setAttribute('data-open', '0')
+      settingsSheet.setAttribute('role', 'dialog')
+      settingsSheet.setAttribute('aria-label', '划词解读设置')
+      var settingsHead = el('div', 'dsh-sel-sheethead')
+      var settingsBack = el('button', 'dsh-sel-sheetback')
+      settingsBack.type = 'button'
+      settingsBack.title = '返回（Esc）'
+      settingsBack.setAttribute('aria-label', '返回')
+      settingsBack.appendChild(backIcon())
+      settingsHead.appendChild(settingsBack)
+      settingsHead.appendChild(el('span', 'dsh-sel-sheettitle', '设置'))
+      settingsHead.appendChild(el('span', 'dsh-sel-sheetscope', '仅本插件 · 即时生效'))
+      var settingsMain = el('div', 'dsh-sel-sheetmain')
+      var settingsRail = el('div', 'dsh-sel-rail')
+      settingsRail.setAttribute('role', 'tablist')
+      settingsRail.setAttribute('aria-orientation', 'vertical')
+      var settingsBody = el('div', 'dsh-sel-sheetbody')
+      settingsMain.appendChild(settingsRail)
+      settingsMain.appendChild(settingsBody)
+      var settingsFoot = el('div', 'dsh-sel-sheetfoot')
+      var settingsNote = el('span', 'dsh-sel-sfootnote')
+      settingsNote.setAttribute('data-dirty', '0')
+      settingsNote.appendChild(el('i'))
+      var settingsNoteText = el('span', null, '改动会自动保存')
+      settingsNote.appendChild(settingsNoteText)
+      var settingsReset = el('button', 'dsh-sel-sbtn', '恢复默认')
+      settingsReset.type = 'button'
+      settingsReset.title = '把所有设置写回 cordis.patch.yml / 出厂默认'
+      var settingsClose = el('button', 'dsh-sel-sbtn', '关闭')
+      settingsClose.type = 'button'
+      settingsFoot.appendChild(settingsNote)
+      settingsFoot.appendChild(settingsReset)
+      settingsFoot.appendChild(settingsClose)
+      settingsSheet.appendChild(settingsHead)
+      settingsSheet.appendChild(settingsMain)
+      settingsSheet.appendChild(settingsFoot)
+      panel.appendChild(settingsScrim)
+      panel.appendChild(settingsSheet)
+
+      /**
+       * 设置页状态。
+       *
+       * 刻意**不查 DOM**（不用 querySelectorAll / innerHTML）：插件通篇是"拿住节点引用"的写法，
+       * 而且单测的 DOM 桩也没有这两个接口。分组、行、分段格的节点都存下来，重绘时直接按引用操作。
+       *
+       *   spec      —— host 下发的字段声明（客户端不硬编码任何字段与边界）
+       *   saved     —— host 已落盘的值（算"改了几项"、也是「恢复默认」后的对照）
+       *   live      —— 控件上的当前值
+       *   byKey     —— key → 控件条目，保存时按 key 取值
+       */
+      var settingsOpen = false
+      var settingsSpec = null
+      var settingsSaved = {}
+      var settingsLive = {}
+      var settingsByKey = {}
+      var settingsRailButtons = []
+      var settingsPanes = []
+      var settingsSegs = []
+      /** 自绘下拉的菜单节点（挂在抽屉上，重渲染时要一起清掉，否则会叠出第二份浮层）。 */
+      var settingsMenus = []
+      var settingsFetching = false
+      var settingsSaveTimer = 0
+      var settingsSaveSeq = 0
+      var settingsSaving = false
+      var settingsSaveRequest = null
+      var settingsResetting = false
+
+      /** 清空一个节点的子元素（替代 innerHTML=''，两者在桩里都没有）。 */
+      function clearNode(node) {
+        while (node.firstChild) node.removeChild(node.firstChild)
+      }
+
+      /**
+       * 造一个 <option>（原生 select 用；设置页已改成自绘下拉，这里留给别处复用）。
+       */
+      function modelOption(value, label) {
+        var option = el('option', null, label)
+        option.value = value
+        return option
+      }
+
+      /**
+       * 一个模型下拉行"选中了什么"。
+       *
+       * 每个模型行管**两个**配置字段（spec.keys，如 ['provider','model'] 或 ['chatProvider','chatModel']）。
+       * 两个都有才算选定；否则这一行就是"跟随"状态。
+       */
+      function pairOf(entry) {
+        var keys = entry.spec.keys || []
+        var provider = settingsLive[keys[0]]
+        var model = settingsLive[keys[1]]
+        if (!provider || !model) return null
+        return { provider: String(provider), model: String(model) }
+      }
+
+      /** 一行"跟随"时该写什么字（两行语义不同：首轮/次轮跟主会话，追问跟首轮/次轮）。 */
+      function followLabelOf(entry) {
+        return '跟随主会话'
+      }
+
+      /**
+       * 下拉按钮上的文字。
+       *
+       *   · 选定过 → 显示模型名（确定无疑）
+       *   · 没选定 → 「跟随…（当前：X）」—— X 是本行**实际会用**的那个模型：
+       *     首轮/次轮行取 /route，追问行取 /route?chat=1。两个会话用不同模型时各报各的。
+       */
+      function paintModelPick(entry) {
+        if (!entry.label) return
+        var pair = pairOf(entry)
+        if (pair) {
+          entry.label.textContent = modelLabel(pair.provider, pair.model, entry.catalog)
+          return
+        }
+        var base = followLabelOf(entry)
+        var route = entry.route
+        entry.label.textContent = route && route.provider && route.model
+          ? base + '（当前：' + modelLabel(route.provider, route.model, entry.catalog) + '）'
+          : base
+      }
+
+      /** 关掉所有模型下拉（同一时刻只允许开一个）。 */
+      function closeModelPicks() {
+        Object.keys(settingsByKey).forEach(function (key) {
+          var entry = settingsByKey[key]
+          if (entry && entry.menu) {
+            entry.menu.setAttribute('data-open', '0')
+            if (entry.button) entry.button.setAttribute('aria-expanded', 'false')
+          }
+        })
+      }
+
+      /**
+       * 取"这一行现在实际会用哪个模型"（轻量端点，可高频轮询）。
+       *
+       * 用 /route 而不是 /models：后者要列 provider 与全部模型（42 个 + 端点发现），
+       * 按秒轮询太重。这里只做一次会话模型解析。
+       */
+      function fetchRoute(sessionId, isChat) {
+        var query = []
+        if (sessionId) query.push('sessionId=' + encodeURIComponent(sessionId))
+        if (isChat) query.push('chat=1')
+        return fetch(ROUTE + (query.length ? '?' + query.join('&') : ''), { headers: { accept: 'application/json' } })
+          .then(function (response) { return response.json() })
+          .then(function (data) {
+            if (!data || data.ok === false) return null
+            return { provider: String(data.provider || ''), model: String(data.model || '') }
+          })
+          .catch(function () { return null })
+      }
+
+      /**
+       * 刷新一个模型行：清单（带缓存）+ 本行当前值（每次都新取）→ 画按钮、必要时重建列表。
+       *
+       * `forceRoute` 为真时连清单也强制重取（开抽屉那一次用）。
+       */
+      function refreshModelRow(entry, forceRoute) {
+        if (!entry) return
+        var isChat = false
+        var sessionId = panelSessionId || currentSessionId()
+        loadModelCatalog(!!forceRoute, sessionId).then(function (catalog) {
+          // **快照**，不是直接拿 modelCatalog 那个单例：
+          // 另一行稍后会带着自己的会话再拉一次，那会把单例上的字段改掉。
+          entry.catalog = {
+            current: catalog.current,
+            items: catalog.items,
+            sessionId: sessionId,
+            error: catalog.error,
+          }
+          if (entry.filledSession !== sessionId) {
+            entry.filledSession = sessionId
+            entry.filled = false
+            entry.rows = []
+          }
+          if (forceRoute) entry.filled = false
+          fillModelMenu(entry, entry.catalog)
+          paintModelPick(entry)
+        })
+        fetchRoute(sessionId, isChat).then(function (route) {
+          if (!route) return
+          entry.route = route
+          if (!state.modelChoice) { modelCatalog.current = route; paintModelPill() }
+          paintModelPick(entry)
+        })
+      }
+
+      /** 按清单把下拉列表填好（清单是异步来的，可能晚于渲染）。 */
+      function fillModelMenu(entry, catalog) {
+        if (!entry.menu || entry.filled) return
+        entry.filled = true
+        var list = entry.list
+        clearNode(list)
+        entry.rows = []
+        var items = (catalog && catalog.items) || []
+        if (items.length === 0) {
+          list.appendChild(el('div', 'dsh-sel-spickempty',
+            catalog && catalog.error ? '读取失败：' + catalog.error : '没有取到可用模型清单'))
+          return
+        }
+        // 第一项永远是"跟随"：它不是一个模型，而是"清空这一行的两个字段"
+        list.appendChild(modelPickRow(entry, null))
+        for (var i = 0; i < items.length; i += 1) list.appendChild(modelPickRow(entry, items[i]))
+      }
+
+      /** 一行模型（item 为 null = 「跟随…」）。 */
+      function modelPickRow(entry, item) {
+        var row = el('button', 'dsh-sel-spickrow')
+        row.type = 'button'
+        row.setAttribute('role', 'option')
+        var pair = pairOf(entry)
+        var on = item
+          ? !!pair && pair.provider === item.provider && pair.model === item.model
+          : !pair
+        row.setAttribute('data-on', on ? '1' : '0')
+        row.setAttribute('aria-selected', on ? 'true' : 'false')
+        row.appendChild(el('span', 'dsh-sel-spickcheck', on ? '✓' : ''))
+        row.appendChild(el('span', 'dsh-sel-spickrowname', item ? String(item.name || item.model) : followLabelOf(entry)))
+        if (item) row.appendChild(el('span', 'dsh-sel-spickprov', String(item.providerName || item.provider || '')))
+        listen(row, 'click', function (event) {
+          event.preventDefault()
+          event.stopPropagation()
+          var keys = entry.spec.keys || []
+          if (item) {
+            settingsLive[keys[0]] = String(item.provider || '')
+            settingsLive[keys[1]] = String(item.model || '')
+          } else {
+            settingsLive[keys[0]] = ''
+            settingsLive[keys[1]] = ''
+          }
+          repaintModelMenu(entry)
+          paintModelPick(entry)
+          closeModelPicks()
+          syncComposerModel()
+          renderSettingsNote('')
+          scheduleSettingsSave()
+        })
+        if (item) entry.rows.push(item)
+        return row
+      }
+
+      /** 就地重画这一行列表的勾选（不重建节点，省得丢焦点/滚动位置）。 */
+      function repaintModelMenu(entry) {
+        if (!entry.list) return
+        var pair = pairOf(entry)
+        var rows = entry.list.children
+        for (var i = 0; i < rows.length; i += 1) {
+          var item = i === 0 ? null : (entry.rows[i - 1] || null)
+          var on = item
+            ? !!pair && pair.provider === item.provider && pair.model === item.model
+            : !pair
+          rows[i].setAttribute('data-on', on ? '1' : '0')
+          rows[i].setAttribute('aria-selected', on ? 'true' : 'false')
+          var check = rows[i].firstChild
+          if (check) check.textContent = on ? '✓' : ''
+        }
+      }
+
+      /**
+       * 开 / 关模型下拉。
+       *
+       * 菜单挂在**抽屉**上而不是行里：行的祖先链上有 `overflow:auto` 的滚动区，
+       * 浮层放在行里会被那个滚动区裁掉（这正是"看不到滚动条"的一种成因）。
+       * 位置按按钮的实测矩形算，高度按"抽屉底部还剩多少"给 —— 于是列表一定滚得动。
+       */
+      function toggleModelMenu(entry) {
+        if (!entry.menu) return
+        var wasOpen = entry.menu.getAttribute('data-open') === '1'
+        closeModelPicks()
+        if (wasOpen) return
+        var sheetRect = settingsSheet.getBoundingClientRect()
+        var btnRect = entry.button.getBoundingClientRect()
+        var left = btnRect.left - sheetRect.left
+        var width = btnRect.width
+        entry.menu.style.left = String(Math.max(6, left)) + 'px'
+        entry.menu.style.width = String(Math.max(140, width)) + 'px'
+        // 优先向下弹；下方放不下（窗口矮 / 行贴着底）就翻到按钮**上方** ——
+        // 否则浮层会被面板的 overflow:hidden 切掉一截，看起来又像"没有滚动条"。
+        var roomBelow = sheetRect.bottom - btnRect.bottom - 18
+        if (roomBelow >= 140) {
+          entry.menu.style.top = String(btnRect.bottom - sheetRect.top + 6) + 'px'
+          entry.menu.style.bottom = ''
+          entry.menu.style.maxHeight = String(roomBelow) + 'px'
+        } else {
+          var roomAbove = btnRect.top - sheetRect.top - 18
+          entry.menu.style.top = ''
+          entry.menu.style.bottom = String(sheetRect.bottom - btnRect.top + 6) + 'px'
+          entry.menu.style.maxHeight = String(Math.max(140, roomAbove)) + 'px'
+        }
+        entry.menu.setAttribute('data-open', '1')
+        entry.button.setAttribute('aria-expanded', 'true')
+      }
+
+      /**
+       * 模型在下拉里的显示名。
+       *
+       * 优先用 host 给的人类可读名（`name`），没有就退回 `provider / model` ——
+       * 清单里 42 个模型跨好几个 provider，只写模型名会分不清同名项。
+       */
+      function modelLabel(provider, model, catalog) {
+        var items = (catalog && catalog.items) || modelCatalog.items || []
+        for (var i = 0; i < items.length; i += 1) {
+          if (items[i].provider === provider && items[i].model === model) {
+            var name = String(items[i].name || items[i].model || '')
+            var pname = String(items[i].providerName || provider || '')
+            return items[i].providerName && items[i].providerName !== name ? pname + ' · ' + name : name
+          }
+        }
+        return (provider ? provider + ' / ' : '') + model
+      }
+
+      function settingsDirtyCount() {
+        var n = 0
+        Object.keys(settingsLive).forEach(function (key) {
+          if (settingsSaved[key] !== settingsLive[key]) n += 1
+        })
+        return n
+      }
+
+      function renderSettingsNote(state) {
+        var n = settingsDirtyCount()
+        settingsNote.setAttribute('data-dirty', state === 'error' || n > 0 ? '1' : '0')
+        if (state === 'saving') settingsNoteText.textContent = '保存中…'
+        else if (state === 'error') settingsNoteText.textContent = '保存失败，改动未生效'
+        else if (n > 0) settingsNoteText.textContent = '未保存 · ' + String(n) + ' 项'
+        else settingsNoteText.textContent = '改动会自动保存'
+      }
+
+      /**
+       * 把服务端返回的一组值铺到**所有**控件上（保存成功、恢复默认都走它）。
+       *
+       * 为什么不能只按返回的键逐个 setControlValue：模型行的条目 key 是虚拟的
+       * （modelChoice），而服务端返回的是它底下的 provider/model ——
+       * 按后者查条目**查不到**，于是"恢复默认"之后模型下拉纹丝不动（用户报的问题）。
+       * 所以这里先整体更新 settingsLive/settingsSaved，再按**条目**重画一遍。
+       */
+      function applyServerValues(values, sent) {
+        Object.keys(values || {}).forEach(function (key) {
+          settingsSaved[key] = values[key]
+          if (!sent || settingsLive[key] === sent[key]) settingsLive[key] = values[key]
+        })
+        Object.keys(settingsByKey).forEach(function (key) {
+          var entry = settingsByKey[key]
+          if (!entry) return
+          if (entry.spec.kind === 'model') {
+            paintModelPick(entry)
+            repaintModelMenu(entry)
+          } else {
+            setControlValue(key, settingsLive[key])
+          }
+        })
+        updateSettingDependencies()
+        syncComposerModel()
+        applySelectionLimit(settingsLive)
+        if (!state.modelChoice) refreshModelRow(settingsByKey.modelChoice, true)
+        bridgeOn = settingsLive.bridgeSidebarPreview !== false
+        if (bridgeOn) scheduleBridgeScan()
+      }
+
+      function applySelectionLimit(values) {
+        var max = Number(values && values.maxSelectionChars)
+        if (isFinite(max) && max > 0) MAX_SELECTION = max
+      }
+
+      function syncComposerModel() {
+        var provider = settingsLive.provider
+        var model = settingsLive.model
+        state.modelChoice = provider && model ? { provider: String(provider), model: String(model) } : null
+        paintModelPill()
+      }
+
+      function chooseSharedModel(choice) {
+        settingsLive.provider = choice ? String(choice.provider || '') : ''
+        settingsLive.model = choice ? String(choice.model || '') : ''
+        syncComposerModel()
+        var entry = settingsByKey.modelChoice
+        if (entry) { paintModelPick(entry); repaintModelMenu(entry) }
+        loadSettings(false)
+        renderSettingsNote('')
+        scheduleSettingsSave()
+      }
+
+      function updateSettingDependencies() {
+        Object.keys(settingsByKey).forEach(function (key) {
+          var entry = settingsByKey[key]
+          var disabled = !!entry.spec.enabledBy && settingsLive[entry.spec.enabledBy] === false
+          if (entry.row) entry.row.setAttribute('data-disabled', disabled ? '1' : '0')
+          if (entry.input) entry.input.disabled = disabled
+        })
+      }
+
+      /** 把一个值写进控件（首渲染与「恢复默认」共用）。 */
+      function setControlValue(key, value) {
+        var entry = settingsByKey[key]
+        if (!entry) return
+        if (entry.spec.kind === 'switch') {
+          entry.input.setAttribute('aria-checked', value === true ? 'true' : 'false')
+          return
+        }
+        if (entry.spec.kind === 'seg') {
+          entry.seg.setAttribute('data-value', value === undefined || value === null ? '' : String(value))
+          paintSegPill(entry)
+          return
+        }
+        if (entry.spec.kind === 'model') {
+          // 按钮文字与列表勾选都跟着 settingsLive 走
+          paintModelPick(entry)
+          repaintModelMenu(entry)
+          return
+        }
+        // 配置单位 → 显示单位（时间统一按秒显示，见 SettingSpec.scale）
+        var shown = value
+        var scale = entry.spec.scale || 1
+        if (scale !== 1 && typeof value === 'number' && isFinite(value)) shown = value / scale
+        entry.input.value = shown === undefined || shown === null ? '' : String(shown)
+      }
+
+
+
+      /**
+       * 分段控件的滑块：量当前选中格的位置再摆。
+       *
+       * 格子是**隐藏时量不到宽度**的（display:none 的父节点里 offsetWidth 是 0），
+       * 所以切页之后要重摆一次（见 showSettingsTab）。
+       */
+      function paintSegPill(entry) {
+        if (!entry.seg || !entry.pill) return
+        var value = entry.seg.getAttribute('data-value')
+        var on = null
+        for (var i = 0; i < entry.cells.length; i += 1) {
+          var picked = entry.cells[i].getAttribute('data-value') === value
+          entry.cells[i].setAttribute('aria-checked', picked ? 'true' : 'false')
+          if (picked) on = entry.cells[i]
+        }
+        if (!on) return
+        entry.pill.style.left = String(on.offsetLeft) + 'px'
+        entry.pill.style.width = String(on.offsetWidth) + 'px'
+      }
+
+      /** 一行设置（按 spec.kind 造对应控件）。 */
+      function buildSettingRow(spec) {
+        var row = el('div', 'dsh-sel-srow')
+        var lab = el('div', 'dsh-sel-srowlab')
+        lab.appendChild(el('div', 'dsh-sel-srowt', spec.label))
+        if (spec.hint) lab.appendChild(el('div', 'dsh-sel-srowd', spec.hint))
+        if (spec.kind === 'model') lab.style.display = 'none'
+        var ctl = el('div', 'dsh-sel-srowctl')
+        row.appendChild(lab)
+        row.appendChild(ctl)
+
+        if (spec.kind === 'model') {
+          // 模型选择：一个下拉同时定 provider + model（见 settings.ts 的 keys）。
+          // 直接列 host 已有的模型清单 —— 用户不必记住 provider id 与 model id 怎么拼。
+          row.setAttribute('data-wide', '1')
+          var pick = el('button', 'dsh-sel-spick')
+          pick.type = 'button'
+          pick.setAttribute('aria-label', spec.label)
+          pick.setAttribute('aria-haspopup', 'listbox')
+          pick.setAttribute('aria-expanded', 'false')
+          var pickName = el('span', 'dsh-sel-spickname', '跟随主会话')
+          pick.appendChild(pickName)
+          pick.appendChild(el('span', 'dsh-sel-spickcaret', '▾'))
+          // 菜单挂到**抽屉**上（不是行里）：行在 overflow:auto 的滚动区里，浮层会被裁掉
+          var pickMenu = el('div', 'dsh-sel-spickmenu')
+          pickMenu.setAttribute('data-open', '0')
+          pickMenu.setAttribute('role', 'listbox')
+          pickMenu.setAttribute('aria-label', spec.label)
+          var pickList = el('div', 'dsh-sel-spicklist')
+          pickMenu.appendChild(el('div', 'dsh-sel-spickgroup', '模型'))
+          pickMenu.appendChild(pickList)
+          settingsSheet.appendChild(pickMenu)
+          settingsMenus.push(pickMenu)
+          var entryModel = {
+            spec: spec, row: row, button: pick, label: pickName,
+            list: pickList, menu: pickMenu, filled: false, catalog: null, rows: [],
+          }
+          listen(pick, 'click', function (event) {
+            event.preventDefault()
+            event.stopPropagation()
+            toggleModelMenu(entryModel)
+          })
+          ctl.appendChild(pick)
+          settingsByKey[spec.key] = entryModel
+          // 拉清单 + 取本行当前值，并按**本小窗所属会话**画按钮文字。
+          // 开抽屉时还会再跑一遍（见 openSettings），轮询也会持续刷新。
+          refreshModelRow(entryModel, false)
+          return row
+        }
+
+        if (spec.kind === 'switch') {
+          var sw = el('button', 'dsh-sel-sws')
+          sw.type = 'button'
+          sw.setAttribute('role', 'switch')
+          sw.setAttribute('aria-label', spec.label)
+          sw.setAttribute('aria-checked', 'false')
+          listen(sw, 'click', function () {
+            var on = sw.getAttribute('aria-checked') === 'true'
+            sw.setAttribute('aria-checked', on ? 'false' : 'true')
+            settingsLive[spec.key] = !on
+            updateSettingDependencies()
+            renderSettingsNote('')
+            scheduleSettingsSave()
+          })
+          ctl.appendChild(sw)
+          settingsByKey[spec.key] = { spec: spec, row: row, input: sw }
+          return row
+        }
+
+        if (spec.kind === 'seg') {
+          var seg = el('span', 'dsh-sel-seg')
+          seg.setAttribute('role', 'radiogroup')
+          seg.setAttribute('aria-label', spec.label)
+          seg.setAttribute('data-value', '')
+          var pill = el('span', 'dsh-sel-segpill')
+          seg.appendChild(pill)
+          var entry = { spec: spec, row: row, seg: seg, pill: pill, cells: [] }
+          var options = spec.options || []
+          options.forEach(function (option) {
+            var cell = el('button', 'dsh-sel-segcell', { off: '关', low: '低', high: '高', max: '最高' }[option] || option)
+            cell.type = 'button'
+            cell.setAttribute('role', 'radio')
+            cell.setAttribute('data-value', option)
+            cell.setAttribute('aria-checked', 'false')
+            listen(cell, 'click', function () {
+              seg.setAttribute('data-value', option)
+              paintSegPill(entry)
+              settingsLive[spec.key] = option
+              if (spec.key === 'chatReasoningEffort') { state.effort = option; writeStore(EFFORT_KEY, option); paintModelPill() }
+              renderSettingsNote('')
+              scheduleSettingsSave()
+            })
+            seg.appendChild(cell)
+            entry.cells.push(cell)
+          })
+          ctl.appendChild(seg)
+          settingsByKey[spec.key] = entry
+          settingsSegs.push(entry)
+          return row
+        }
+
+        var input = el(spec.key === 'toolNames' ? 'textarea' : 'input', spec.kind === 'number' ? 'dsh-sel-snum' : 'dsh-sel-stext')
+        if (spec.key === 'toolNames') input.setAttribute('rows', '2')
+        var numScale = spec.scale || 1
+        if (spec.kind === 'number') {
+          input.type = 'number'
+          // 边界按**显示单位**给（配置里是毫秒，界面按秒），换算只在这一处做
+          if (spec.min !== undefined) input.setAttribute('min', String(spec.min / numScale))
+          if (spec.max !== undefined) input.setAttribute('max', String(spec.max / numScale))
+          if (spec.step !== undefined) input.setAttribute('step', String(spec.step / numScale))
+        } else {
+          input.type = 'text'
+          // 宽文本行必须让输入框独占一行，否则值会被裁掉（抽屉是嵌在小窗里的窄容器）
+          row.setAttribute('data-wide', '1')
+          if (spec.placeholder) input.setAttribute('placeholder', spec.placeholder)
+        }
+        input.setAttribute('aria-label', spec.label)
+        listen(input, 'input', function () {
+          if (spec.kind === 'number') {
+            // 空串（用户正在清空重打）先记成 undefined，别把 NaN 送去 host
+            var text = String(input.value || '').trim()
+            // 显示单位 → 配置单位（秒 → 毫秒）；取整避免 5.000000000001 这种浮点尾巴
+            settingsLive[spec.key] = text === '' ? undefined
+              : (numScale === 1 ? Number(text) : Math.round(Number(text) * numScale))
+          } else {
+            settingsLive[spec.key] = input.value
+          }
+          renderSettingsNote('')
+          scheduleSettingsSave()
+        })
+        // 数字框失焦时把值夹回边界再回显：否则界面上留着用户敲的越界数，
+        // 而真正生效的是 host 夹过的值，两边对不上（用户会以为没保存成功）
+        listen(input, 'blur', function () {
+          if (spec.kind !== 'number') return
+          var text = String(input.value || '').trim()
+          if (text === '') return
+          var num = Number(text)
+          if (!isFinite(num)) return
+          var min = spec.min === undefined ? -Infinity : spec.min / numScale
+          var max = spec.max === undefined ? Infinity : spec.max / numScale
+          var fixed = Math.min(max, Math.max(min, num))
+          input.value = String(fixed)
+          settingsLive[spec.key] = numScale === 1 ? fixed : Math.round(fixed * numScale)
+          renderSettingsNote('')
+          scheduleSettingsSave()
+        })
+        ctl.appendChild(input)
+        if (spec.unit) ctl.appendChild(el('span', 'dsh-sel-sunit', spec.unit))
+        settingsByKey[spec.key] = { spec: spec, row: row, input: input }
+        return row
+      }
+
+      /** 按 spec 画整页（拿到 spec 后调用一次）。 */
+      function renderSettings(spec, values) {
+        settingsSpec = spec
+        settingsByKey = {}
+        settingsRailButtons = []
+        settingsPanes = []
+        settingsSegs = []
+        for (var m = 0; m < settingsMenus.length; m += 1) {
+          if (settingsMenus[m].parentNode) settingsMenus[m].parentNode.removeChild(settingsMenus[m])
+        }
+        settingsMenus = []
+        clearNode(settingsRail)
+        clearNode(settingsBody)
+        var groups = spec.groups || []
+        groups.forEach(function (group, index) {
+          var railBtn = el('button', 'dsh-sel-railbtn', group.label)
+          railBtn.type = 'button'
+          railBtn.setAttribute('role', 'tab')
+          railBtn.setAttribute('data-tab', group.id)
+          railBtn.setAttribute('aria-current', index === 0 ? 'true' : 'false')
+          listen(railBtn, 'click', function () { showSettingsTab(group.id) })
+          settingsRail.appendChild(railBtn)
+          settingsRailButtons.push({ id: group.id, node: railBtn })
+
+          var section = el('section', 'dsh-sel-grp')
+          section.setAttribute('data-pane', group.id)
+          var parts = group.sections || [{ label: group.label, keys: group.items.map(function (item) { return item.key }) }]
+          parts.forEach(function (part) {
+            var block = el('section', 'dsh-sel-ssection')
+            block.appendChild(el('h3', 'dsh-sel-ssectionh', part.label))
+            if (part.hint) block.appendChild(el('p', 'dsh-sel-ssectionhint', part.hint))
+            part.keys.forEach(function (key) {
+              var item = group.items.find(function (candidate) { return candidate.key === key })
+              if (item) block.appendChild(buildSettingRow(item))
+            })
+            if (part.note) block.appendChild(el('p', 'dsh-sel-ssectionnote', part.note))
+            section.appendChild(block)
+          })
+          settingsBody.appendChild(section)
+          settingsPanes.push({ id: group.id, node: section })
+        })
+        Object.keys(values || {}).forEach(function (key) {
+          setControlValue(key, values[key])
+        })
+        updateSettingDependencies()
+        syncComposerModel()
+        applySelectionLimit(values)
+        showSettingsTab(groups.length ? groups[0].id : '')
+      }
+
+      function showSettingsTab(id) {
+        var i
+        for (i = 0; i < settingsRailButtons.length; i += 1) {
+          settingsRailButtons[i].node.setAttribute('aria-current', settingsRailButtons[i].id === id ? 'true' : 'false')
+        }
+        for (i = 0; i < settingsPanes.length; i += 1) {
+          settingsPanes[i].node.style.display = settingsPanes[i].id === id ? '' : 'none'
+        }
+        settingsBody.scrollTop = 0
+        closeModelPicks() // 切分类时把模型下拉收掉（浮层挂在抽屉上，不跟着分类走）
+        // 隐藏时量不到 offsetWidth，切页后重摆一次滑块（否则滑块停在 0 宽）
+        for (i = 0; i < settingsSegs.length; i += 1) {
+          if (settingsSegs[i].seg.offsetParent !== null) paintSegPill(settingsSegs[i])
+        }
+      }
+
+      /** 拉一次 spec + 当前值。失败就在正文里给出说明（重开抽屉即可重试）。 */
+      function loadSettings(force) {
+        if (settingsFetching) return
+        if (settingsSpec && !force) return
+        settingsFetching = true
+        fetch(SETTINGS, { headers: { accept: 'application/json' } })
+          .then(function (response) { return response.json() })
+          .then(function (payload) {
+            settingsFetching = false
+            if (!payload || payload.ok === false || !payload.groups) {
+              throw new Error((payload && payload.error) || '设置读取失败')
+            }
+            var pending = settingsSpec ? {} : Object.assign({}, settingsLive)
+            settingsSaved = Object.assign({}, payload.values || {})
+            settingsLive = Object.assign({}, payload.values || {}, pending)
+            renderSettings({ groups: payload.groups }, settingsLive)
+            renderSettingsNote('')
+            if (settingsDirtyCount() > 0) scheduleSettingsSave()
+          })
+          .catch(function (error) {
+            settingsFetching = false
+            clearNode(settingsBody)
+            settingsBody.appendChild(el('div', 'dsh-sel-sempty',
+              '设置读取失败：' + String((error && error.message) || error) + '（点「关闭」后重开可重试）'))
+          })
+      }
+
+      /**
+       * 保存（防抖 400ms）。
+       *
+       * 只发改过的键：补丁越小，越不容易和"另一个窗口同时改了别的项"撞车
+       * （host 侧是**合并**而不是覆盖，两者配合才不会互相抹掉）。
+       */
+      function scheduleSettingsSave() {
+        if (settingsSaveTimer) clearTimeout(settingsSaveTimer)
+        settingsSaveTimer = setTimeout(function () {
+          settingsSaveTimer = 0
+          flushSettingsSave()
+        }, 400)
+      }
+
+      function flushSettingsSave() {
+        if (settingsSaving || settingsResetting || !settingsSpec) return settingsSaveRequest
+        var patch = {}
+        Object.keys(settingsLive).forEach(function (key) {
+          var value = settingsLive[key]
+          if (value === undefined) return
+          if (settingsSaved[key] === value) return
+          patch[key] = value
+        })
+        if (Object.keys(patch).length === 0) {
+          renderSettingsNote('')
+          return
+        }
+        var seq = ++settingsSaveSeq
+        var sent = Object.assign({}, settingsLive)
+        var accepted = false
+        settingsSaving = true
+        renderSettingsNote('saving')
+        settingsSaveRequest = fetch(SETTINGS, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ values: patch }),
+        })
+          .then(function (response) { return response.json() })
+          .then(function (payload) {
+            if (seq !== settingsSaveSeq) return // 有更新的保存在路上，别用旧结果覆盖
+            if (!payload || payload.ok === false) throw new Error((payload && payload.error) || '保存失败')
+            // 以 host 归一后的值为准（clamp 过的数字要和界面显示一致）
+            applyServerValues(payload.values, sent)
+            // 胶囊偏好立刻生效（不等下次刷新）—— 设置页承诺"即时生效"
+            if (Object.prototype.hasOwnProperty.call(patch, 'pillEnabled') ||
+                Object.prototype.hasOwnProperty.call(patch, 'pillIdleMs')) {
+              applyPillPrefs({ enabled: settingsLive.pillEnabled, idleMs: settingsLive.pillIdleMs })
+            }
+            if (Array.isArray(payload.rejected) && payload.rejected.length > 0) {
+              // 有字段被拒：只提示、不回滚 —— 同一批里其它字段已经生效了
+              settingsNote.setAttribute('data-dirty', '1')
+              settingsNoteText.textContent = '有 ' + String(payload.rejected.length) + ' 项未接受'
+              return
+            }
+            accepted = true
+            renderSettingsNote('')
+          })
+          .catch(function () {
+            if (seq !== settingsSaveSeq) return
+            renderSettingsNote('error')
+          })
+          .finally(function () {
+            settingsSaving = false
+            if (accepted && !settingsResetting && settingsDirtyCount() > 0 && settingsSaveSeq === seq) scheduleSettingsSave()
+          })
+        return settingsSaveRequest
+      }
+
+      /**
+       * 把胶囊的两个偏好落到界面上。
+       *
+       * ping（启动时）与设置保存后**都走这里** —— 设置页写着"即时生效"，
+       * 如果只在启动时读一次，用户关掉胶囊后要刷新页面才见效，那就是假承诺。
+       */
+      function applyPillPrefs(prefs) {
+        if (!prefs) return
+        var idle = Number(prefs.idleMs)
+        if (isFinite(idle) && idle >= 2000) PILL_BALL_IDLE_MS = idle
+        if (prefs.enabled === false) {
+          pillHidden = true
+          pill.style.display = 'none'
+        } else if (prefs.enabled === true) {
+          pillHidden = false
+          pill.style.display = ''
+          placePill()
+        }
+        if (pillHidden) {
+          if (pillIdleId) clearTimeout(pillIdleId)
+          pillIdleId = 0
+        } else {
+          schedulePillIdle()
+        }
+      }
+
+      /** 轮询句柄（抽屉关掉必须清掉，不然会一直打接口）。 */
+      var routeWatchTimer = 0
+      /** 轮询间隔：够快看得出"实时"，又不至于把接口打爆（这条接口只做一次会话解析，很轻）。 */
+      var ROUTE_WATCH_MS = 2000
+
+      /**
+       * 盯着"当前会话在用的模型"。
+       *
+       * 主会话里随时可以换模型，而插件这边**没有**可订阅的变更事件（模型选择是会话侧的），
+       * 所以抽屉开着时轮询那条轻量 /route：值一变就把模型行的"（当前：…）"改掉。
+       * 关抽屉即停。
+       */
+      function startRouteWatch() {
+        stopRouteWatch()
+        routeWatchTimer = setInterval(function () {
+          if (!settingsOpen) { stopRouteWatch(); return }
+          var sessionId = panelSessionId || currentSessionId()
+          ;[
+            { entry: settingsByKey.modelChoice, chat: false },
+          ].forEach(function (item) {
+            if (!item.entry) return
+            fetchRoute(sessionId, item.chat).then(function (route) {
+              if (!route) return
+              var before = item.entry.route
+              // 只在真的变了才重画（每 2 秒无脑赋值会让浏览器反复标脏）
+              if (before && before.provider === route.provider && before.model === route.model) return
+              item.entry.route = route
+              if (!state.modelChoice) { modelCatalog.current = route; paintModelPill() }
+              paintModelPick(item.entry)
+            })
+          })
+        }, ROUTE_WATCH_MS)
+      }
+
+      function stopRouteWatch() {
+        if (routeWatchTimer) {
+          clearInterval(routeWatchTimer)
+          routeWatchTimer = 0
+        }
+      }
+
+      function openSettings() {
+        if (settingsOpen) return
+        settingsOpen = true
+        settingsSheet.setAttribute('data-open', '1')
+        settingsScrim.setAttribute('data-open', '1')
+        settingsButton.setAttribute('aria-pressed', 'true')
+        loadSettings(false)
+        settingsSegs.forEach(function (entry) { paintSegPill(entry) })
+        // 每次开抽屉都重取一次模型（强制，绕过缓存）：
+        // 会话换了、或主会话中途换了模型，括号里的名字都要跟着变。
+        refreshModelRow(settingsByKey.modelChoice, true)
+        startRouteWatch()
+      }
+
+      function closeSettings() {
+        if (!settingsOpen) return
+        settingsOpen = false
+        stopRouteWatch()
+        closeModelPicks()
+        settingsSheet.setAttribute('data-open', '0')
+        settingsScrim.setAttribute('data-open', '0')
+        settingsButton.setAttribute('aria-pressed', 'false')
+        // 关抽屉前把还没落盘的改动补发一次，别让"关掉就走"丢掉刚改的值
+        if (settingsSaveTimer) {
+          clearTimeout(settingsSaveTimer)
+          settingsSaveTimer = 0
+          flushSettingsSave()
+        }
+      }
+
+      function resetSettings() {
+        if (settingsResetting) return
+        settingsResetting = true
+        if (settingsSaveTimer) { clearTimeout(settingsSaveTimer); settingsSaveTimer = 0 }
+        var sent
+        renderSettingsNote('saving')
+        // 等正在保存的请求结束再恢复，避免晚到的保存把默认值覆盖掉。
+        Promise.resolve(settingsSaveRequest).then(function () {
+          sent = Object.assign({}, settingsLive)
+          return fetch(SETTINGS, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ reset: true }),
+          })
+        }).then(function (response) { return response.json() })
+          .then(function (payload) {
+            if (!payload || payload.ok === false) throw new Error('恢复默认失败')
+            applyServerValues(payload.values, sent)
+            state.effort = settingsLive.chatReasoningEffort || ''
+            writeStore(EFFORT_KEY, state.effort)
+            applyPillPrefs({ enabled: settingsLive.pillEnabled, idleMs: settingsLive.pillIdleMs })
+            bridgeOn = settingsLive.bridgeSidebarPreview !== false
+            if (bridgeOn) scheduleBridgeScan()
+            refreshModelRow(settingsByKey.modelChoice, true)
+            paintModelPill()
+            renderSettingsNote('')
+          })
+          .catch(function () { renderSettingsNote('error') })
+          .finally(function () {
+            settingsResetting = false
+            if (settingsDirtyCount() > 0 && settingsNoteText.textContent !== '保存失败，改动未生效') scheduleSettingsSave()
+          })
+      }
+
       panel.appendChild(head)
       panel.appendChild(body)
       panel.appendChild(askRow)
       layer.appendChild(panel)
+
       // 「最近聊过的」是**独立的浮层**（贴面板侧边），不和消息共用一个滚动区
       var historyList = el('div', 'dsh-sel-history')
       historyList.style.display = 'none'
@@ -2334,6 +3370,14 @@ window.__ModuleLoader__.load({
       }
 
       var panelOpen = false
+      /**
+       * **本小窗所属的会话**（划词那一刻所在的那个）。
+       *
+       * 不能直接用 currentSessionId()：那是"当前正在看的会话"，用户切走之后它立刻变了。
+       * 小窗的模型、背景、升格都该按**它自己那个会话**算 ——
+       * 否则切到别的会话再打开设置，括号里会报成另一个会话的模型（用户报的问题）。
+       */
+      var panelSessionId = ''
       var rafPending = false
       /** 流式重绘限速（毫秒）：见 scheduleTurnsRender / schedulePaint。 */
       var STREAM_RENDER_MS = 90
@@ -2355,6 +3399,8 @@ window.__ModuleLoader__.load({
        *   · pillAnchorWidth：本次量到的费用胶囊宽度（0 = 没量到）—— 决定"跟随"还是"兜底"，
        *     也是"能不能收球"的前提（用户定的：只有没有费用胶囊时才收成小球）。
        */
+      /** 胶囊总开关：host 的 pillEnabled 说关就关（见下面 ping 分支）。 */
+      var pillHidden = false
       var pillDock = 'anchor'
       var pillFreeRight = null
       var pillBall = false
@@ -3153,7 +4199,7 @@ window.__ModuleLoader__.load({
        */
       var offBridgeMessage = listen(window, 'message', function (event) {
         var data = event && event.data
-        if (!data || data.__dshSel !== 1) return
+        if (!bridgeOn || !data || data.__dshSel !== 1) return
         var frame = frameBySource(event.source)
         if (!frame) return
         if (data.kind === 'press') {
@@ -3234,13 +4280,34 @@ window.__ModuleLoader__.load({
       // —— 面板 ——
 
       /** 当前会话 id（客户端 sessions 快照；取不到就留空，host 会跳过会话背景）。 */
+      /**
+       * 小窗相关请求该带的会话 id。
+       *
+       * 用 `panelSessionId`（划词那一刻的会话）而不是 `currentSessionId()`（当前正在看的会话）：
+       * 小窗开着时用户可能切走，若还用后者，解读/追问/升格都会跑到**另一个会话**上 ——
+       * 背景取错、模型也跟着换成另一个会话的（设置页括号里显示的也会与实际用的对不上）。
+       * 还没划过词（panelSessionId 为空，比如启动时的 ping）自然落回当前会话。
+       */
+      function panelOrCurrentSessionId() {
+        return panelSessionId || currentSessionId()
+      }
+
       function currentSessionId() {
         try {
+          // 新版 DSH 的列表只保存目录；导航身份在 uiSession 的主视图绑定中。
+          var uiSession = ctx.get('uiSession')
+          var bindingSource = uiSession && uiSession.adapter && uiSession.adapter.current
+          if (bindingSource && typeof bindingSource.getSnapshot === 'function') {
+            var binding = bindingSource.getSnapshot()
+            var boundId = binding && binding.props && binding.props.sessionId
+            return typeof boundId === 'string' ? boundId : ''
+          }
+          // 兼容尚未提供主视图绑定的旧版 DSH。
           var sessions = ctx.get('sessions')
           var store = sessions && sessions.list
           var snapshot = store && typeof store.getSnapshot === 'function' ? store.getSnapshot() : null
           var id = snapshot && snapshot.current
-          return id ? String(id) : ''
+          return typeof id === 'string' ? id : ''
         } catch (error) {
           return ''
         }
@@ -3316,13 +4383,12 @@ window.__ModuleLoader__.load({
           label: label,
           title: document.title,
           url: location.href,
-          sessionId: currentSessionId(),
+          sessionId: panelOrCurrentSessionId(),
           kind: selectionKind(text, label),
           stage: stage === 'detail' ? 'detail' : 'translation',
           ...(refresh ? { refresh: true } : {}),
-          // 模型选择对整窗生效（首轮/详解也用它）；effort 只影响追问档，host 侧自己忽略
+          // 模型对三个阶段一致；此处不携带追问思考档位。
           ...(state.modelChoice ? { provider: state.modelChoice.provider, model: state.modelChoice.model } : {}),
-          ...(state.effort ? { effort: state.effort } : {}),
         }
       }
 
@@ -3372,6 +4438,8 @@ window.__ModuleLoader__.load({
        * 否则钩子会绕过缓存（缓存行为只能靠人工点选才能验证）。
        */
       function openPanelWith(text, context, label, anchor, keyContext) {
+        // 记下"这次划词发生在哪个会话"——小窗后续所有按会话解析的东西都用它
+        panelSessionId = currentSessionId()
         state.payload = buildPayload(text, context, label)
         state.kind = state.payload.kind
         hideButton()
@@ -3636,6 +4704,8 @@ window.__ModuleLoader__.load({
        * 宽度和上限三种处境都一样算（拖动不该顺手改宽度），只有位置分家。
        */
       function placePill() {
+        // 关掉胶囊时不做任何定位工作：它已经 display:none，量位置纯属白费（而且会一直轮询）
+        if (pillHidden) return
         var anchor = measurePillAnchor()
         pillAnchorWidth = anchor.width
         // 费用胶囊**出现**了：小球没有存在的意义（收球的前提就是"没有可跟随的胶囊"）→ 立刻展开
@@ -4152,6 +5222,10 @@ window.__ModuleLoader__.load({
 
       function closePanel() {
         closeModelMenu()
+        // 小窗关掉时设置抽屉也一起收：否则下次开窗会直接停在设置页上
+        // （用户上次是在关窗前改的设置，回来想看的是解读，不是设置）。
+        // closeSettings 顺手把还没落盘的改动补发掉，不会"关掉就走"丢改动。
+        closeSettings()
         panelOpen = false
         panel.style.display = 'none'
         hideHistoryList()
@@ -5704,7 +6778,7 @@ window.__ModuleLoader__.load({
             text: payload.text,
             context: payload.context,
             label: payload.label,
-            sessionId: currentSessionId(),
+            sessionId: panelOrCurrentSessionId(),
             question: sent,
             history: history,
             ...(state.webAnswer ? { webAnswer: true } : {}),
@@ -6191,7 +7265,7 @@ window.__ModuleLoader__.load({
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sessionId: currentSessionId(),
+            sessionId: panelOrCurrentSessionId(),
             text: payload.text,
             context: payload.context,
             label: payload.label,
@@ -6363,7 +7437,16 @@ window.__ModuleLoader__.load({
       var EFFORT_KEY = 'dsh-selection-explain:effort'
       var TIER_LABEL = { off: '关', low: '低', medium: '中', high: '高', max: '最大' }
       var FALLBACK_TIERS = ['off', 'low', 'high', 'max']
-      var modelCatalog = { at: 0, items: [], current: null, stages: null, loading: false, error: '', leakyOff: [] }
+      /**
+       * 模型清单缓存。
+       *
+       * `pending` 是**正在飞的那次请求**：并发调用必须共享它。
+       * 以前 loading=true 时直接 `Promise.resolve(modelCatalog)` 把**当前还空着的**缓存返回，
+       * 于是"菜单刚打开、设置页也来要清单"这种并发场景下，后到的那个拿到 0 个模型
+       * （实测：设置页的模型下拉空着，只有一行「跟随主会话」）。
+       */
+      var modelCatalog = { at: 0, items: [], current: null, stages: null, loading: false, pending: null, error: '', leakyOff: [], sessionId: null }
+      var modelCatalogRequestSeq = 0
       var modelPillClicks = 0
 
       var BAD_TIER_KEY = 'dsh-selection-explain:badTiers'
@@ -6480,35 +7563,57 @@ window.__ModuleLoader__.load({
         var tier = state.effort || (modelCatalog.stages && modelCatalog.stages.chat) || ''
         modelPillTier.textContent = tier ? '· ' + tierLabel(tier) : ''
         modelPill.title = (provider ? provider + ' · ' : '') + name + (tier ? ' · 推理等级 ' + tierLabel(tier) : '') +
-          '（点一下切换模型或追问档位）'
+          '（模型与追问思考强度）'
       }
 
       /** 拉模型清单（60 秒缓存；菜单打开时才拉，不进热路径）。 */
-      function loadModelCatalog(force) {
-        if (modelCatalog.loading) return Promise.resolve(modelCatalog)
-        if (!force && modelCatalog.items.length > 0 && Date.now() - modelCatalog.at < 60000) return Promise.resolve(modelCatalog)
+      function loadModelCatalog(force, sessionId) {
+        // 会话换了就得重取：`current` 是**按会话**解析的，沿用上一个会话的缓存
+        // 会让「跟随主会话（当前：…）」报出别的会话在用的模型。
+        // sessionId 由调用方给（小窗用它自己所属的会话，不是"当前正在看"的那个）。
+        var sessionNow = sessionId === undefined ? panelOrCurrentSessionId() : sessionId
+        var sameSession = modelCatalog.sessionId === sessionNow
+        // 只复用同一会话的请求；A 的响应不能冒充刚切到的 B。
+        if (sameSession && modelCatalog.loading && modelCatalog.pending) return modelCatalog.pending
+        if (sameSession && !force && modelCatalog.items.length > 0 && Date.now() - modelCatalog.at < 60000) return Promise.resolve(modelCatalog)
+        var requestSeq = ++modelCatalogRequestSeq
+        if (!sameSession) {
+          force = true
+          modelCatalog.current = null
+          modelCatalog.items = []
+          modelCatalog.at = 0
+        }
+        modelCatalog.sessionId = sessionNow
         modelCatalog.loading = true
-        return fetch(MODELS + (force ? '?refresh=1' : ''), { headers: { accept: 'application/json' } })
+        // 带 sessionId：`current` 要按**当前会话**解析（否则括号里报的是全局默认，跟会话对不上）
+        var modelQuery = []
+        if (force) modelQuery.push('refresh=1')
+        if (sessionNow) modelQuery.push('sessionId=' + encodeURIComponent(sessionNow))
+        modelCatalog.pending = fetch(MODELS + (modelQuery.length ? '?' + modelQuery.join('&') : ''), { headers: { accept: 'application/json' } })
           .then(function (response) {
             return response.json()
           })
           .then(function (data) {
-            modelCatalog.items = Array.isArray(data && data.models) ? data.models : []
-            modelCatalog.current = (data && data.current) || null
-            modelCatalog.stages = (data && data.stages) || null
-            modelCatalog.error = String((data && data.error) || '')
-            modelCatalog.leakyOff = Array.isArray(data && data.leakyOff) ? data.leakyOff : []
-            modelCatalog.at = Date.now()
-            return modelCatalog
+            return {
+              sessionId: sessionNow,
+              items: Array.isArray(data && data.models) ? data.models : [],
+              current: (data && data.current) || null,
+              stages: (data && data.stages) || null,
+              error: String((data && data.error) || ''),
+              leakyOff: Array.isArray(data && data.leakyOff) ? data.leakyOff : [],
+              at: Date.now(), loading: false, pending: null,
+            }
           })
           .catch(function (error) {
-            modelCatalog.error = String((error && error.message) || error)
-            return modelCatalog
+            return { sessionId: sessionNow, at: 0, items: [], current: null, stages: null,
+              error: String((error && error.message) || error), leakyOff: [], loading: false, pending: null }
           })
           .then(function (result) {
-            modelCatalog.loading = false
+            // 调用者得到自己的快照；较早的请求不得覆盖较新的会话缓存。
+            if (requestSeq === modelCatalogRequestSeq) modelCatalog = result
             return result
           })
+        return modelCatalog.pending
       }
 
       function renderModelMenu() {
@@ -6538,8 +7643,7 @@ window.__ModuleLoader__.load({
               listen(row, 'click', function (event) {
                 event.preventDefault()
                 event.stopPropagation()
-                state.modelChoice = { provider: item.provider, model: item.model }
-                writeStore(MODEL_KEY, item.provider + '\t' + item.model)
+                chooseSharedModel({ provider: item.provider, model: item.model })
                 paintModelPill()
                 renderModelMenu()
                 closeModelMenu()
@@ -6592,7 +7696,7 @@ window.__ModuleLoader__.load({
         }
         modelMenu.appendChild(tiers)
         modelMenu.appendChild(
-          el('div', 'dsh-sel-pickerhint', '模型对整窗生效；推理等级只管追问（首轮翻译仍走低档换速度）。'),
+          el('div', 'dsh-sel-pickerhint', '思考强度仅影响追问。'),
         )
       }
 
@@ -6663,11 +7767,8 @@ window.__ModuleLoader__.load({
       paintWebMode()
 
       // 模型/档位：从 localStorage 恢复；没存过就跟随"当前路由 + 配置档位"（ping 里就有）
-      var storedModel = readStore(MODEL_KEY, '')
-      if (storedModel && storedModel.indexOf('\t') > 0) {
-        var parts = storedModel.split('\t')
-        state.modelChoice = { provider: parts[0], model: parts[1] }
-      }
+      // 从 host 的统一设置恢复模型，不读取旧浏览器模型覆盖。
+      loadSettings(false)
       var storedEffort = readStore(EFFORT_KEY, '')
       if (storedEffort) state.effort = storedEffort
       paintModelPill()
@@ -6680,8 +7781,12 @@ window.__ModuleLoader__.load({
         .then(function (data) {
           modelCatalog.current = (data && data.route) || null
           modelCatalog.stages = { chat: (data && data.reasoningEffortByStage && data.reasoningEffortByStage.chat) || '' }
+          if (!settingsSpec && data && data.limits) applySelectionLimit(data.limits)
           // 侧边栏网页划词桥的总开关（host 配置 bridgeSidebarPreview，默认开）
           if (data && data.bridgeSidebarPreview === false) bridgeOn = false
+          // 悬浮胶囊的两个偏好跟着 ping 一起下发（省得为它单开一次请求）。
+          // 拿不到就保持默认（显示 + 10 秒收球）—— ping 失败不该让胶囊消失。
+          if (data && data.pill) applyPillPrefs(data.pill)
           paintModelPill()
           return null
         })
@@ -6800,10 +7905,23 @@ window.__ModuleLoader__.load({
 
       var offKeyDown = listen(document, 'keydown', function (event) {
         if (event.key !== 'Escape' || !panelOpen) return
-        // Esc 分两级，和主会话一致：**先退出正在进行的事，再关窗**。
-        //   ① 语音进行中（录音行还在）→ 只取消这一次语音（等价于点 ✕，已经说出来的字留着），面板留着；
-        //   ② 其余情况 → 关掉小窗（一次到位，不受"有没有追问过"限制）。
+        // Esc 分三级：**从最内层往外退**，一次只退一层（用户按一次不该连关两层）。
+        //   ① 设置抽屉开着 → 只收抽屉，小窗留着（用户多半只是改完想接着看解读）；
+        //   ② 语音进行中（录音行还在）→ 只取消这一次语音（等价于点 ✕，已经说出来的字留着）；
+        //   ③ 其余情况 → 关掉小窗（一次到位，不受"有没有追问过"限制）。
         // 以前是一律关窗：正在说一句话时按 Esc 想放弃这句话，结果整个小窗没了。
+        if (settingsOpen) {
+          event.preventDefault()
+          event.stopPropagation()
+          // 抽屉里还开着模型下拉时，Esc 先收下拉 —— 一次只退最内层
+          var anyPickOpen = Object.keys(settingsByKey).some(function (key) {
+            var entry = settingsByKey[key]
+            return !!(entry && entry.menu && entry.menu.getAttribute('data-open') === '1')
+          })
+          if (anyPickOpen) closeModelPicks()
+          else closeSettings()
+          return
+        }
         if (captureRow.getAttribute('data-show') === '1') {
           event.preventDefault()
           event.stopPropagation()
@@ -6814,6 +7932,36 @@ window.__ModuleLoader__.load({
         event.stopPropagation()
         closePanel()
       }, true)
+
+      var offSettingsOpen = listen(settingsButton, 'click', function (event) {
+        event.stopPropagation()
+        if (settingsOpen) closeSettings()
+        else openSettings()
+      })
+      var offSettingsBack = listen(settingsBack, 'click', function (event) {
+        event.stopPropagation()
+        closeSettings()
+      })
+      var offSettingsClose = listen(settingsClose, 'click', function (event) {
+        event.stopPropagation()
+        closeSettings()
+      })
+      var offSettingsReset = listen(settingsReset, 'click', function (event) {
+        event.stopPropagation()
+        resetSettings()
+      })
+      // 抽屉里不该触发起拖面板 / 划词：整个抽屉吞掉 mousedown 的冒泡
+      var offSettingsStop = listen(settingsSheet, 'mousedown', function (event) {
+        event.stopPropagation()
+      })
+      // 点抽屉里的空白处（正文 / 分类栏）把模型下拉收掉 —— 点菜单内部不会走到这里（行自己 stopPropagation）
+      var offSettingsPickAway = listen(settingsSheet, 'click', function () {
+        closeModelPicks()
+      })
+      var offSettingsScrim = listen(settingsScrim, 'click', function (event) {
+        event.stopPropagation()
+        closeSettings()
+      })
 
       var offHistory = listen(historyButton, 'click', function (event) {
         event.stopPropagation()
@@ -8615,6 +9763,14 @@ window.__ModuleLoader__.load({
           offResize()
           offKeyDown()
           offPromote()
+          // 设置抽屉：摘掉它自己那几条监听（抽屉 DOM 随面板一起销毁）
+          offSettingsOpen()
+          offSettingsBack()
+          offSettingsClose()
+          offSettingsReset()
+          offSettingsStop()
+          offSettingsPickAway()
+          offSettingsScrim()
           offRetry()
           offExpand()
           offAskKey()
@@ -8714,11 +9870,118 @@ window.__ModuleLoader__.load({
       return { root: root, content: content, hint: hint, title: titleNode }
     }
 
-    /** 面板头部的小图标按钮。 */
-    function iconButton(title, glyph) {
-      var node = el('button', 'dsh-sel-icon', glyph)
+    /**
+     * 统一的小图标画布：头部 / 工具行所有图标都从这里出。
+     *
+     * 规范（与既有 drawXxxIcon 一族逐条对齐，别在调用点另起一套）：
+     *   viewBox 0 0 16 16 · 渲染 14px · fill:none · stroke:currentColor
+     *   · stroke-width 1.5 · linecap/linejoin round
+     * 这样一排图标才有同一套笔画粗细与圆角；混用 Unicode 字形（🕘 ↗ ✕ 🎤）
+     * 会因字体不同而粗细、基线、视觉重量全不一样 —— 摆一排就是"割裂"。
+     */
+    function iconCanvas(size) {
+      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      svg.setAttribute('class', 'dsh-sel-ic')
+      svg.setAttribute('viewBox', '0 0 16 16')
+      svg.setAttribute('width', String(size || 14))
+      svg.setAttribute('height', String(size || 14))
+      svg.setAttribute('fill', 'none')
+      svg.setAttribute('stroke', 'currentColor')
+      svg.setAttribute('stroke-width', '1.5')
+      svg.setAttribute('stroke-linecap', 'round')
+      svg.setAttribute('stroke-linejoin', 'round')
+      svg.setAttribute('aria-hidden', 'true')
+      svg.setAttribute('focusable', 'false')
+      return svg
+    }
+
+    function iconPath(svg, d) {
+      var path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      path.setAttribute('d', d)
+      svg.appendChild(path)
+      return path
+    }
+
+    /** 关闭（✕）：两条斜线，照既有的 closeIcon 路径。 */
+    function headerCloseIcon() {
+      var svg = iconCanvas(14)
+      iconPath(svg, 'M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6')
+      return svg
+    }
+
+    /** 设置：两轨两把手滑杆。
+     *
+     *  为什么不是齿轮：多齿版在 14px 下齿牙糊成一团，少齿版**直接渲染成空白**（实测对照过）。
+     *  为什么只有两条轨：三条轨三个把手在 14px 下把手会连成一片。
+     *  把手画成实心：缩小后对比度更高，仍然认得出"这是滑杆"。 */
+    function headerSettingsIcon() {
+      var svg = iconCanvas(14)
+      iconPath(svg, 'M2.6 5.2h10.8M2.6 10.8h10.8')
+      var dots = [[6.2, 5.2], [10.4, 10.8]]
+      for (var i = 0; i < dots.length; i += 1) {
+        var dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+        dot.setAttribute('cx', String(dots[i][0]))
+        dot.setAttribute('cy', String(dots[i][1]))
+        dot.setAttribute('r', '1.7')
+        // 实心把手：fill 跟 currentColor，同时取消描边（否则 1.5 描边会把它胀大一圈）
+        dot.setAttribute('fill', 'currentColor')
+        dot.setAttribute('stroke', 'none')
+        svg.appendChild(dot)
+      }
+      return svg
+    }
+
+    /** 最近（时钟）：表盘 + 时针分针。外圈 6.1 让墨迹在 16 画布里有 1.9 的呼吸。 */
+    function headerHistoryIcon() {
+      var svg = iconCanvas(14)
+      var circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+      circle.setAttribute('cx', '8')
+      circle.setAttribute('cy', '8')
+      circle.setAttribute('r', '6.1')
+      svg.appendChild(circle)
+      iconPath(svg, 'M8 4.6V8l2.4 1.5')
+      return svg
+    }
+
+    /** 升格：右下角缺口的方框 + 甩向右上的箭头。 */
+    function headerPromoteIcon() {
+      var svg = iconCanvas(14)
+      iconPath(svg, 'M13.2 9.6v2.4a1.8 1.8 0 0 1-1.8 1.8H4a1.8 1.8 0 0 1-1.8-1.8V4.6A1.8 1.8 0 0 1 4 2.8h2.4')
+      iconPath(svg, 'M9.4 2.8h3.8v3.8')
+      iconPath(svg, 'M13.2 2.8 8.2 7.8')
+      return svg
+    }
+
+    /**
+     * 带文字的头部动作键（最近 / 升格 / 设置）。
+     *
+     * 三个键长得一样很重要：以前混着"文字 key（🕘 最近 / ↗ 升格）"和"纯图标 key（✕）"，
+     * 图标又都是 Unicode 字形，粗细与基线各不相同，一排看着像拼起来的。
+     * 现在统一成"同一套 SVG 图标 + 同一套边框"，只是有字没字的区别。
+     */
+    function actionButton(title, label, buildIcon) {
+      var node = el('button', 'dsh-sel-action')
       node.type = 'button'
       node.title = title
+      if (typeof buildIcon === 'function') node.appendChild(buildIcon())
+      node.appendChild(el('span', null, label))
+      return node
+    }
+
+    /** 返回（‹）：设置页头部左上的折角。 */
+    function backIcon() {
+      var svg = iconCanvas(14)
+      iconPath(svg, 'M9.8 3.4 5.2 8l4.6 4.6')
+      return svg
+    }
+
+    /** 面板头部的小图标按钮。glyph 传图标构造函数（不再是 Unicode 字形）。 */
+    function iconButton(title, buildIcon) {
+      var node = el('button', 'dsh-sel-icon')
+      node.type = 'button'
+      node.title = title
+      if (typeof buildIcon === 'function') node.appendChild(buildIcon())
+      else if (buildIcon) node.textContent = buildIcon
       return node
     }
 

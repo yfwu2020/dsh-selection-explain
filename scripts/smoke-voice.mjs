@@ -644,7 +644,9 @@ assert(
 )
 assert(
   '输入框里两句都在：第一句定稿 + 第二句半句预览（用户报的 bug 就是这里断的）',
-  /你好|语音|测试/.test(afterPause.value) && /帮我|解释|划词|画词/.test(afterPause.value),
+  realSpeech
+    ? /你好|语音|测试/.test(afterPause.value) && /帮我|解释|划词|画词/.test(afterPause.value)
+    : afterPause.value === '夹具转写的一段话 夹具转写的一段话',
   JSON.stringify(afterPause.value),
 )
 

@@ -274,6 +274,10 @@ function makeFrameEnv(htmlText, selected, rect, containerTag, muteDocListeners) 
 
 const FIXTURE = 'PM: 这周能发布吗？ Dev: the migration ran long, so we ship Wednesday.'
 const RECT = { left: 12, top: 34, right: 190, bottom: 52, width: 178, height: 18 }
+const longSelection = '长'.repeat(4500)
+const longFrame = makeFrameEnv(longSelection, longSelection, RECT)
+assert('帧内不以旧的 4000 字默认限制提前拦截（实际限额由父页面设置判断）',
+  longFrame.sent.some(m => m.kind === 'selection' && m.sel.text.length === 4500))
 const env = makeFrameEnv(FIXTURE, 'the migration ran long', RECT)
 const first = env.sent[env.sent.length - 1]
 assert('帧内脚本：注入后立刻上报一次', !!first && first.__dshSel === 1 && first.kind === 'selection')

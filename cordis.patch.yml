@@ -9,8 +9,7 @@
 # 可调参数（改 profile 的 cordis.patch.yml 里同 id 行即可覆盖）：
 #   provider / model      固定模型路由；留空 = 跟随「默认模型」设置
 #   reasoningEffort       详解阶段的推理档位：off / low / high / max
-#   translationReasoningEffort  首轮「翻译」单独一档（默认 low）；实测 low≈high 都要 8~11s，
-#                         只有 off 是 1.7s（不思考）——想秒出就改成 off
+#   translationReasoningEffort  首轮单独一档（默认 off）；需要思考时可改 low / high / max
 #   chatReasoningEffort   追问档位（默认 high；想更快就调 low）
 #   historyMaxEntries     小窗对话历史保留多少个「划词条目」（默认 20，0 = 关闭）；
 #                         每个条目内含它自己的全部追问轮次，升格过的不参与 LRU 淘汰
@@ -29,6 +28,7 @@
     - id: selection-explain
       name: '@yfwu2020/dsh-selection-explain'
       config:
+        translationReasoningEffort: off
         # 首字约 1.9s（实测，off 不思考）；要更深可改 low / high / max
         reasoningEffort: off
         # 想再快：把背景窗口调小（少 prefill）
