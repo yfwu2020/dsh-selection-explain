@@ -5249,6 +5249,8 @@ window.__ModuleLoader__.load({
         // 之后交给 2 秒的轮询（主会话里换了模型，这里自己就跟着变，不用等开一次设置页）。
         refreshFollowRoute()
         syncRouteWatch()
+        // 胶囊上的模型名要按 provider + model 从清单里换（否则显示裸 id），顺手拉一次清单
+        warmModelCatalog()
       }
 
       function closePanel() {
@@ -6271,7 +6273,7 @@ window.__ModuleLoader__.load({
             // 先画内容再摆位置：showPanel 要量面板高度才能决定放上面还是下面
             if (!fromList) showPanel(anchor || rectOfPill())
             // 从列表进入时**不走 showPanel**（面板不挪位置）—— 轮询与跟随值这里自己补上
-            else { refreshFollowRoute(); syncRouteWatch() }
+            else { refreshFollowRoute(); syncRouteWatch(); warmModelCatalog() }
             // 内容换了、面板高度可能变 → 列表跟着重摆（列表此时已被 applyHistoryEntry 收起，按需再开）
             if (historyList.style.display === 'flex') placeHistoryList()
           })
@@ -7571,6 +7573,21 @@ window.__ModuleLoader__.load({
         return TIER_LABEL[id] || id
       }
 
+      /**
+       * 清单里按 **provider + model 两个键**找那一项。
+       *
+       * 两个键缺一不可：同一个 model id 在多个 provider 下是**不同模型、不同名字** ——
+       * 实测 `deepseek-flash` 在 opencode-go 叫「DeepSeek Flash」、在 deepseek-official /
+       * deepseek-account 叫「DeepSeek-V41-Flash」。只按 model 查会张冠李戴。
+       */
+      function catalogItemOf(provider, model) {
+        var items = modelCatalog.items || []
+        for (var i = 0; i < items.length; i += 1) {
+          if (items[i].provider === provider && items[i].model === model) return items[i]
+        }
+        return null
+      }
+
       function currentChoiceOf(item) {
         if (!state.modelChoice || !item) return false
         return item.provider === state.modelChoice.provider && item.model === state.modelChoice.model
@@ -7580,17 +7597,20 @@ window.__ModuleLoader__.load({
       function paintModelPill() {
         var name = ''
         var provider = ''
-        var items = modelCatalog.items || []
-        for (var i = 0; i < items.length; i += 1) {
-          if (currentChoiceOf(items[i])) {
-            name = items[i].name || items[i].model
-            provider = items[i].providerName || items[i].provider
-          }
+        // 用户选定的那个模型：按 provider + model 换成清单里的显示名
+        var chosen = state.modelChoice ? catalogItemOf(state.modelChoice.provider, state.modelChoice.model) : null
+        if (chosen) {
+          name = chosen.name || chosen.model
+          provider = chosen.providerName || chosen.provider
         }
         if (!name && state.modelChoice) name = state.modelChoice.model
+        // 跟随主会话：`current` 报的是 { provider, model } 两个 id，同样要换成显示名 ——
+        // 直接显示裸 id 就会是 "deepseek-flash"，而主会话里那个模型叫「DeepSeek-V41-Flash」
+        // （用户报的）。清单没加载出来时只能先显示 id，加载完会重画（见 warmModelCatalog）。
         if (!name && modelCatalog.current) {
-          name = String(modelCatalog.current.model || '')
-          provider = String(modelCatalog.current.provider || '')
+          var followed = catalogItemOf(modelCatalog.current.provider, modelCatalog.current.model)
+          name = (followed && (followed.name || followed.model)) || String(modelCatalog.current.model || '')
+          provider = (followed && (followed.providerName || followed.provider)) || String(modelCatalog.current.provider || '')
         }
         if (!name) name = '模型'
         // 短名：去掉 provider 前缀那种很长的写法（"DeepSeek V4.1 Flash" → 保留原样，只截断）
@@ -7601,7 +7621,23 @@ window.__ModuleLoader__.load({
           '（模型与追问思考强度）'
       }
 
-      /** 拉模型清单（60 秒缓存；菜单打开时才拉，不进热路径）。 */
+      /**
+       * 顺手把模型清单拉起来（60 秒缓存）。
+       *
+       * 胶囊上的模型名要按 provider + model 从清单里换（见 paintModelPill）—— 清单没加载时
+       * 只能显示裸 id（"deepseek-flash"），跟主会话里那个名字对不上。
+       * 以前只有"打开模型菜单 / 开设置抽屉"才会拉清单，所以正常用下来胶囊一直是裸 id。
+       */
+      function warmModelCatalog() {
+        loadModelCatalog(false, panelSessionId || currentSessionId()).then(function () { paintModelPill() })
+      }
+
+      /**
+       * 拉模型清单（60 秒缓存）。
+       *
+       * 调用点：打开模型菜单 / 开设置抽屉（强制）/ **开窗（warmModelCatalog，为了胶囊上的显示名）**。
+       * 不进 ping / analyze 那种每轮都走的热路径。
+       */
       function loadModelCatalog(force, sessionId) {
         // 会话换了就得重取：`current` 是**按会话**解析的，沿用上一个会话的缓存
         // 会让「跟随主会话（当前：…）」报出别的会话在用的模型。

@@ -1022,7 +1022,8 @@ const ctx = {
   get(name) {
     if (name === 'uiSession') {
       return { adapter: { current: { getSnapshot: () => ({
-        key: 'session-stub-1', props: { sessionId: 'session-stub-1' },
+        key: globalThis.__sessionStubId || 'session-stub-1',
+        props: { sessionId: globalThis.__sessionStubId || 'session-stub-1' },
       }) } } }
     }
     if (name === 'sessions') {
@@ -1782,20 +1783,21 @@ assert(
 
     const fixture = globalThis.__modelCatalogFixture
     globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p1', model: 'm-fast' } }
-    for (let i = 0; i < 120 && hook.modelState().pill.indexOf('m-fast') < 0; i += 1) {
+    // 跟随态显示的是清单里的**显示名**（p1/m-fast → Fast Model），不是裸 id
+    for (let i = 0; i < 120 && hook.modelState().pill.indexOf('Fast Model') < 0; i += 1) {
       await new Promise((r) => setTimeout(r, 50))
     }
     assert('抽屉关着：胶囊报出跟随的模型（开窗即对齐，不等第一拍轮询）',
-      hook.modelState().pill.indexOf('m-fast') >= 0,
+      hook.modelState().pill.indexOf('Fast Model') >= 0,
       `pill="${hook.modelState().pill}"`)
 
     // 主会话换模型 —— 一次设置页都不用碰
     globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p2', model: 'm-other' } }
-    for (let i = 0; i < 120 && hook.modelState().pill.indexOf('m-other') < 0; i += 1) {
+    for (let i = 0; i < 120 && hook.modelState().pill.indexOf('Other Model') < 0; i += 1) {
       await new Promise((r) => setTimeout(r, 50))
     }
     assert('小窗开着、抽屉关着：主会话换模型后胶囊自己跟着变（轮询生效）',
-      hook.modelState().pill.indexOf('m-other') >= 0,
+      hook.modelState().pill.indexOf('Other Model') >= 0,
       `pill="${hook.modelState().pill}"`)
 
     // 小窗收起来 → 轮询停：夹具再换值，胶囊不该跟着动（不空转打接口）
@@ -1804,9 +1806,47 @@ assert(
     globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p1', model: 'm-fast' } }
     await new Promise((r) => setTimeout(r, 2600))
     assert('小窗与抽屉都收了：轮询停下（值不再跟着变）',
-      hook.modelState().pill.indexOf('m-other') >= 0,
+      hook.modelState().pill.indexOf('Other Model') >= 0,
       `pill="${hook.modelState().pill}"`)
     globalThis.__modelCatalogFixture = fixture
+  }
+
+  // 用户报的"为什么显示 deepseek-flash"：同一个 model id 在**多个 provider** 下名字不同
+  // （实测 deepseek-flash 在 opencode-go 叫「DeepSeek Flash」、在 deepseek-official 叫
+  //  「DeepSeek-V41-Flash」）—— 跟随态必须按 provider + model 两个键换成显示名：
+  // 既不能显示裸 id，也不能取到别的 provider 的名字。
+  // 这条同时验"开窗顺手拉清单"：切到另一个会话（清单缓存按会话隔离）后只开窗、不碰模型菜单，
+  // 胶囊也该自己变成显示名。
+  {
+    const fixture = globalThis.__modelCatalogFixture
+    globalThis.__modelCatalogFixture = {
+      ok: true,
+      current: { provider: 'p2', model: 'shared-id' },
+      stages: { chat: 'high' },
+      models: [
+        { provider: 'p1', providerName: 'P1', model: 'shared-id', name: 'P1 的那个名字', efforts: [], defaultEffort: null },
+        { provider: 'p2', providerName: 'DeepSeek', model: 'shared-id', name: 'DeepSeek-V41-Flash', efforts: [], defaultEffort: null },
+      ],
+    }
+    // 换个会话：清单缓存按会话隔离，这样开窗那一下必须真去拉一次（而不是复用旧缓存）
+    globalThis.__sessionStubId = 'session-stub-2'
+    hook.open('同名模型探测', '', '同名模型')
+    for (let i = 0; i < 120 && hook.modelState().pill.indexOf('DeepSeek-V41-Flash') < 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    assert('跟随态显示清单里的显示名，不再是裸 id',
+      hook.modelState().pill.indexOf('DeepSeek-V41-Flash') >= 0 && hook.modelState().pill.indexOf('shared-id') < 0,
+      `pill="${hook.modelState().pill}"`)
+    assert('同一个 model id 不会取到别的 provider 的名字（按 provider + model 查）',
+      hook.modelState().pill.indexOf('P1 的那个名字') < 0,
+      `pill="${hook.modelState().pill}"`)
+    assert('胶囊 tooltip 带上 provider（同名 id 靠它区分）',
+      String(hook.modelNodes().pill.title || '').indexOf('DeepSeek') >= 0,
+      `title="${hook.modelNodes().pill.title}"`)
+    globalThis.__sessionStubId = 'session-stub-1'
+    globalThis.__modelCatalogFixture = fixture
+    hook.close()
+    await new Promise((r) => setTimeout(r, 30))
   }
 
 
