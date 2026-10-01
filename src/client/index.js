@@ -570,7 +570,11 @@ window.__ModuleLoader__.load({
       '.dsh-sel-pickerrow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.12))}',
       '.dsh-sel-pickerrow[data-on="1"]{font-weight:600}',
       '.dsh-sel-pickerrow .dsh-sel-pickercheck{width:12px;flex:0 0 auto;color:var(--sel-a1-text,#0f766e);font-weight:700}',
-      '.dsh-sel-pickerrow .dsh-sel-pickerprov{margin-left:auto;font-size:10.5px;opacity:.55}',
+      // 名字占掉剩下的宽度、挤不下就省略号 —— 保证一行里塞得下 勾 + 名字 + 「跟随」小标 + provider
+      '.dsh-sel-pickerrow .dsh-sel-pickername{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dsh-sel-pickerrow .dsh-sel-pickerfollow{flex:0 0 auto;font-size:10px;line-height:14px;padding:0 5px;border-radius:6px;font-weight:600;opacity:.85;',
+      'background:color-mix(in srgb,var(--sel-a1,#0d9488) 16%,transparent)}',
+      '.dsh-sel-pickerrow .dsh-sel-pickerprov{flex:0 0 auto;margin-left:auto;font-size:10.5px;opacity:.55}',
       '.dsh-sel-pickersplit{height:1px;margin:6px 4px;background:var(--dsw-alias-border-l4,rgba(140,140,140,.22))}',
       '.dsh-sel-tiers{display:flex;gap:6px;padding:4px 6px 6px}',
       '.dsh-sel-tierbtn{flex:1 1 0;height:26px;padding:0;border-radius:9px;cursor:pointer;font:inherit;font-size:11.5px;',
@@ -7561,14 +7565,11 @@ window.__ModuleLoader__.load({
       /** 档位显示名：优先用目录里声明的名字（Off/Low/High/Max），否则退回中文映射。 */
       function tierLabel(id) {
         if (!id) return ''
-        var items = modelCatalog.items || []
-        for (var i = 0; i < items.length; i += 1) {
-          var choice = currentChoiceOf(items[i])
-          if (!choice) continue
-          var efforts = items[i].efforts || []
-          for (var j = 0; j < efforts.length; j += 1) {
-            if (efforts[j].id === id) return TIER_LABEL[id] || efforts[j].name || id
-          }
+        // 按**当前在用**那个模型声明的档位取名（跟随态也算，见 effectiveItem）
+        var item = effectiveItem()
+        var efforts = (item && item.efforts) || []
+        for (var j = 0; j < efforts.length; j += 1) {
+          if (efforts[j].id === id) return TIER_LABEL[id] || efforts[j].name || id
         }
         return TIER_LABEL[id] || id
       }
@@ -7588,9 +7589,26 @@ window.__ModuleLoader__.load({
         return null
       }
 
-      function currentChoiceOf(item) {
-        if (!state.modelChoice || !item) return false
-        return item.provider === state.modelChoice.provider && item.model === state.modelChoice.model
+      /**
+       * 现在**实际在用**的那个模型：显式选过就是那个；没选过（跟随主会话）就是会话解析出来的
+       * `modelCatalog.current`。
+       *
+       * 菜单里"哪一行打勾""档位按钮列哪几档""哪个模型关档会泄漏"都该按它算 ——
+       * 这几处以前只认 `state.modelChoice`，跟随态于是**一行都不打勾**（用户报的
+       * "模型列表上没有标示当前正在使用的模型"）。
+       */
+      function effectiveChoice() {
+        if (state.modelChoice) return state.modelChoice
+        if (modelCatalog.current && modelCatalog.current.provider && modelCatalog.current.model) {
+          return { provider: String(modelCatalog.current.provider), model: String(modelCatalog.current.model) }
+        }
+        return null
+      }
+
+      /** 清单里当前在用的那一项（显式选的 / 跟随会话的）；清单里没有就返回 null。 */
+      function effectiveItem() {
+        var choice = effectiveChoice()
+        return choice ? catalogItemOf(choice.provider, choice.model) : null
       }
 
       /** 胶囊文案：模型短名 + 当前档位。 */
@@ -7702,14 +7720,26 @@ window.__ModuleLoader__.load({
           )
         } else {
           var list = el('div', 'dsh-sel-pickerlist')
+          // 打勾的是**当前在用**那个：显式选过就是它，跟随主会话时就是会话在用的那个
+          var inUse = effectiveChoice()
           for (var i = 0; i < items.length; i += 1) {
             ;(function (item) {
+              var on = !!inUse && item.provider === inUse.provider && item.model === inUse.model
               var row = el('button', 'dsh-sel-pickerrow')
               row.type = 'button'
               row.setAttribute('role', 'menuitemradio')
-              row.setAttribute('data-on', currentChoiceOf(item) ? '1' : '0')
-              row.appendChild(el('span', 'dsh-sel-pickercheck', currentChoiceOf(item) ? '✓' : ''))
-              row.appendChild(el('span', null, item.name || item.model))
+              row.setAttribute('data-on', on ? '1' : '0')
+              row.title = (item.name || item.model) + ' · ' + (item.providerName || item.provider)
+              row.appendChild(el('span', 'dsh-sel-pickercheck', on ? '✓' : ''))
+              // 名字自己带省略号：一行里要塞下 勾 + 名字 + 「跟随」小标 + provider，
+              // 长名字（"DeepSeek V4.1 Flash"）挤不下时**收窄名字**，别让整行折成两行。
+              row.appendChild(el('span', 'dsh-sel-pickername', item.name || item.model))
+              // 跟随态补一枚「跟随」小标：这个勾不是你选过，而是主会话正在用它 ——
+              // 否则一个没点过的模型打着勾，会让人以为是自己选的。
+              if (on && !state.modelChoice) {
+                row.appendChild(el('span', 'dsh-sel-pickerfollow', '跟随'))
+                row.title = '跟随主会话：主会话正在用这个模型 · ' + (item.providerName || item.provider)
+              }
               row.appendChild(el('span', 'dsh-sel-pickerprov', item.providerName || item.provider))
               listen(row, 'click', function (event) {
                 event.preventDefault()
@@ -7729,15 +7759,17 @@ window.__ModuleLoader__.load({
         modelMenu.appendChild(el('div', 'dsh-sel-pickergroup', '推理等级（追问档）'))
         var tiers = el('div', 'dsh-sel-tiers')
         var effortIds = FALLBACK_TIERS
-        for (var k = 0; k < items.length; k += 1) {
-          if (currentChoiceOf(items[k]) && (items[k].efforts || []).length > 0) {
-            effortIds = []
-            for (var e = 0; e < items[k].efforts.length; e += 1) effortIds.push(items[k].efforts[e].id)
-          }
+        // 档位按钮列的是**当前在用那个模型**声明的档位（跟随态也照它列，否则列出来的档位
+        // 和实际发出去的模型对不上）
+        var inUseItem = effectiveItem()
+        if (inUseItem && (inUseItem.efforts || []).length > 0) {
+          effortIds = []
+          for (var e = 0; e < inUseItem.efforts.length; e += 1) effortIds.push(inUseItem.efforts[e].id)
         }
         var badTiers = badTiersOf()
         // host 在进程内学到的：这个模型"关"档会把思考写进正文
-        if (modelCatalog.leakyOff.indexOf((state.modelChoice ? state.modelChoice.provider : '') + '/' + (state.modelChoice ? state.modelChoice.model : '')) >= 0) {
+        var leaky = effectiveChoice()
+        if (leaky && modelCatalog.leakyOff.indexOf(leaky.provider + '/' + leaky.model) >= 0) {
           badTiers = { ...badTiers, off: 'leak' }
         }
         var active = state.effort || (modelCatalog.stages && modelCatalog.stages.chat) || ''

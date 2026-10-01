@@ -1975,11 +1975,70 @@ assert(
   )
 }
 
+// 用户报的"模型列表上没有标示当前正在使用的模型"：跟随态（没选过具体模型）下，输入框那枚
+// 模型菜单里**会话正在用的那个**也要打勾 —— 以前只认"自己选过的"，跟随态一行都不勾。
+// 放在这里是因为：再往后的用例只在"本机 DSH 跑在 3080"时才执行，而 test-settings-host.mjs
+// 会在下面那个 exit 处收工 —— 放这儿才进得了 `npm test`。
+{
+  const fixture = globalThis.__modelCatalogFixture
+  globalThis.__modelCatalogFixture = {
+    ok: true,
+    current: { provider: 'p1', model: 'm-fast' },
+    stages: { chat: 'high' },
+    models: [
+      { provider: 'p1', providerName: 'P1', model: 'm-fast', name: 'Fast Model', efforts: [{ id: 'off', name: 'Off' }, { id: 'low', name: 'Low' }, { id: 'high', name: 'High' }, { id: 'max', name: 'Max' }], defaultEffort: 'high' },
+      { provider: 'p1', providerName: 'P1', model: 'm-strong', name: 'Strong Model', efforts: [{ id: 'off', name: 'Off' }, { id: 'high', name: 'High' }], defaultEffort: 'high' },
+      { provider: 'p2', providerName: 'P2', model: 'm-other', name: 'Other Model', efforts: [], defaultEffort: null },
+    ],
+  }
+  hook.open('菜单勾选探测', '', '菜单勾选')
+  await new Promise((r) => setTimeout(r, 30))
+  await hook.loadModels(true)
+  const menu = hook.modelNodes().menu
+  const rowsIn = () => Array.from(walk(menu)).filter((n) => String(n.className) === 'dsh-sel-pickerrow')
+  const tiersIn = () => Array.from(walk(menu)).filter((n) => String(n.className) === 'dsh-sel-tierbtn')
+  assert('（前提）跟随态：没选过具体模型', hook.modelState().choice === null, JSON.stringify(hook.modelState().choice))
+  const on = rowsIn().filter((r) => r.getAttribute('data-on') === '1')
+  assert('跟随态：清单里当前在用的模型也打勾（不再是"一行都不勾"）',
+    on.length === 1 && textOf(on[0]).indexOf('Fast Model') >= 0,
+    on.map((r) => textOf(r)).join(' | ') || '没有任何一行打勾')
+  assert('跟随态那一行带「跟随」小标（这个勾来自主会话，不是自己选的）',
+    !!on[0] && !!Array.from(walk(on[0])).find((n) => String(n.className) === 'dsh-sel-pickerfollow' && textOf(n) === '跟随'),
+    on[0] ? Array.from(walk(on[0])).map((n) => String(n.className) + ':' + textOf(n)).join(', ') : '未找到')
+  assert('跟随态：档位按钮列的是**在用模型**声明的档位（m-fast 四档）',
+    tiersIn().map((b) => textOf(b)).join('/') === '关/低/高/最大', tiersIn().map((b) => textOf(b)).join('/'))
+
+  // 选一个具体模型：勾挪到那一行、「跟随」小标消失、档位收缩成它声明的那几档
+  const strong = rowsIn().find((r) => textOf(r).indexOf('Strong Model') >= 0)
+  strong.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+  await new Promise((r) => setTimeout(r, 30))
+  const on2 = rowsIn().filter((r) => r.getAttribute('data-on') === '1')
+  assert('选过之后：勾挪到选中的那一行',
+    on2.length === 1 && textOf(on2[0]).indexOf('Strong Model') >= 0,
+    on2.map((r) => textOf(r)).join(' | '))
+  assert('选过之后：「跟随」小标消失（这个勾是你自己选的）',
+    !Array.from(walk(menu)).some((n) => String(n.className) === 'dsh-sel-pickerfollow'), '')
+  assert('选过之后：档位收缩成该模型声明的 2 档',
+    tiersIn().map((b) => textOf(b)).join('/') === '关/高', tiersIn().map((b) => textOf(b)).join('/'))
+
+  // 还原：走抽屉里那颗「恢复默认」（客户端自己的路径，state 与 host 都回到跟随态）
+  await new Promise((r) => setTimeout(r, 700))
+  const resetBtn = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sbtn' && textOf(n).indexOf('恢复默认') >= 0)
+  resetBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 900))
+  const back = await (await fetch(ORIGIN + '/selection-explain/api/settings', { headers: { accept: 'application/json' } })).json()
+  assert('（还原）恢复默认：host 与客户端都回到跟随态',
+    back.values.provider === '' && back.values.model === '' && hook.modelState().choice === null,
+    JSON.stringify({ provider: back.values.provider, model: back.values.model, choice: hook.modelState().choice }))
+  globalThis.__modelCatalogFixture = fixture
+  hook.close()
+  await new Promise((r) => setTimeout(r, 30))
+}
+
 if (process.env.SEL_SETTINGS_ONLY === '1') {
   console.log('=== 设置与模型集成测试结束（真实 host，临时数据目录）===')
   process.exit(process.exitCode ?? 0)
 }
-
 // ───────────────────────── 升格为正式会话 ─────────────────────────
 // 先走一遍两阶段（翻译 → 展开详解），确保升格时取的是两个阶段的结果而不是最后一段流
 hook.open('stage-probe', '', '分阶段')

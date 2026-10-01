@@ -119,7 +119,18 @@ window.fetch = function (input, init) {
     return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'position 需要 { right, y }' }), { status: 400, headers: { 'content-type': 'application/json' } }))
   }
   if (url.indexOf('/selection-explain/api/models') >= 0) {
-    return Promise.resolve(new Response(JSON.stringify({ ok: true, current: null, stages: null, models: [] }), { headers: { 'content-type': 'application/json' } }))
+    // 三个模型：一个长名字、一个同名 id 挂在另一个 provider 下 —— 给"菜单里给当前在用的
+    // 那个打勾"那条用例用。current = 会话在用的那个（跟随态菜单要照它打勾）。
+    return Promise.resolve(new Response(JSON.stringify({
+      ok: true,
+      current: { provider: 'p1', model: 'm-fast' },
+      stages: { chat: 'high' },
+      models: [
+        { provider: 'p1', providerName: 'Provider One', model: 'm-fast', name: 'DeepSeek V4.1 Flash', efforts: [{ id: 'off', name: 'Off' }, { id: 'low', name: 'Low' }, { id: 'high', name: 'High' }, { id: 'max', name: 'Max' }], defaultEffort: 'high' },
+        { provider: 'p1', providerName: 'Provider One', model: 'm-strong', name: 'Strong Model With A Very Long Display Name', efforts: [{ id: 'off', name: 'Off' }, { id: 'high', name: 'High' }], defaultEffort: 'high' },
+        { provider: 'p2', providerName: 'DeepSeek Account', model: 'm-fast', name: 'Another Provider Same Id', efforts: [], defaultEffort: null },
+      ],
+    }), { headers: { 'content-type': 'application/json' } }))
   }
   if (url.indexOf('/selection-explain/api/analyze') >= 0) {
     if (body.question) return Promise.resolve(sse([{ type: 'start', provider: 'fixture', model: 'fixture', mode: 'chat' }, { type: 'delta', text: fixture.chat }, { type: 'done', chars: 8 }]))
@@ -1071,6 +1082,40 @@ async function main() {
     stage.appendChild(row2)
     document.body.appendChild(stage)
     await sleep(400)
+  }
+
+  // ⑮ 模型菜单：跟随态也要给"当前在用"那个打勾（真浏览器里量几何 —— 桩里量不出换行/溢出）
+  {
+    hook.open('模型菜单勾选', '', '菜单冒烟')
+    await waitFor(function () { return hook.state().phase === 'done' }, 8000)
+    await hook.loadModels(true)
+    hook.openModel()
+    await sleep(120)
+    var menu = hook.modelNodes().menu
+    var rows = Array.prototype.slice.call(menu.querySelectorAll('.dsh-sel-pickerrow'))
+    check('模型菜单列出 3 个模型（含同名 id 的另一 provider）', rows.length === 3, String(rows.length))
+    var onRows = rows.filter(function (r) { return r.getAttribute('data-on') === '1' })
+    check('跟随态：只有当前在用的那一行打勾',
+      onRows.length === 1 && onRows[0].textContent.indexOf('DeepSeek V4.1 Flash') >= 0,
+      onRows.map(function (r) { return r.textContent }).join(' | ') || '没有任何一行打勾')
+    var badge = onRows[0] && onRows[0].querySelector('.dsh-sel-pickerfollow')
+    check('跟随态那一行有「跟随」小标，且小标在菜单里可见（没被挤出边界）',
+      !!badge && badge.offsetWidth > 0 && badge.getBoundingClientRect().right <= menu.getBoundingClientRect().right + 1,
+      badge ? Math.round(badge.getBoundingClientRect().left) + '→' + Math.round(badge.getBoundingClientRect().right) + '（菜单右边界 ' + Math.round(menu.getBoundingClientRect().right) + '）' : '没有小标')
+    var nameSpan = onRows[0] && onRows[0].querySelector('.dsh-sel-pickername')
+    check('名字带省略号、不撑破一行（真实布局下 scrollWidth 不超）',
+      !!nameSpan && nameSpan.scrollWidth >= nameSpan.clientWidth && onRows[0].scrollWidth <= onRows[0].clientWidth + 1,
+      nameSpan ? nameSpan.clientWidth + ' 可见 / ' + nameSpan.scrollWidth + ' 全长；行 ' + onRows[0].clientWidth + '/' + onRows[0].scrollWidth : '没有名字节点')
+    // 长名字那行（没打勾、没小标）也不该被撑破
+    var longRow = rows.filter(function (r) { return r.textContent.indexOf('Strong Model With A Very Long') >= 0 })[0]
+    check('超长名字那一行同样不横向溢出（靠省略号收窄）',
+      !!longRow && longRow.scrollWidth <= longRow.clientWidth + 1,
+      longRow ? longRow.clientWidth + '/' + longRow.scrollWidth : '没找到那一行')
+    var rowBox = onRows[0] ? onRows[0].getBoundingClientRect() : null
+    check('打勾那一行仍是单行（高度不超过 30px，没折成两行）',
+      !!rowBox && rowBox.height <= 30, rowBox ? Math.round(rowBox.height) + 'px' : '没找到那一行')
+    hook.close() // 关窗会顺手收起模型菜单
+    await sleep(30)
   }
 
   finish()
