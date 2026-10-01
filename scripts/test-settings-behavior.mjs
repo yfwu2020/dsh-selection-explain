@@ -30,7 +30,8 @@ const llm={listProviders:()=>[{id:'fixture',name:'Fixture'}],listModels:async()=
       })
     }
     const tool=mode==='unexpected-tools'?(options.tools?.[0]??{name:'read'}):mode==='unlisted-tool'?{name:'grep'}:options.tools?.[0]
-    const hasResult=options.messages.some(m=>m.role==='tool')
+    // 工具结果消息的 shape 跟运行时版本有关，两种都要认（见下面 textOfBlocks 的注释）
+    const hasResult=options.messages.some(m=>m.role==='tool'||(m.content||[]).some(b=>b.type==='tool-result'))
     if(tool && (mode==='unexpected-tools' || mode==='unlisted-tool' || mode==='repeat-tools' || mode==='one-tool' && !hasResult)){
       yield {type:'block-start',index:0,blockType:'tool-call'}
       yield {type:'tool-call-delta',index:0,id:'call-'+calls.length,name:tool.name,argumentsDelta:JSON.stringify({file_path:toolPath})}
@@ -66,7 +67,18 @@ async function analyze(body={}){
   return {status:r.status,text,chunks,calls:calls.slice(start)}
 }
 function check(label,fn){try{fn();checks++;console.log('PASS '+label)}catch(error){console.error('FAIL '+label);throw error}}
-function prompt(call){return (call?.messages||[]).filter(m=>m.role!=='system').flatMap(m=>m.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n')}
+/**
+ * 取一段消息里的**全部文本**（含嵌在工具结果里的）。
+ *
+ * 工具结果消息的 shape 随运行时版本不同，两种都得认：
+ *   · `dsh-llm@0.1.7-rc.x`（本机运行时）：`role:'tool'`，`content` 就是 `[{type:'text',…}]`；
+ *   · `dsh-llm@0.1.5-rc.3`（`devDependencies` 里那份、也是 peer 范围的下界，**CI 装的就是它**）：
+ *     `role:'user'`，`content` 是 `[{type:'tool-result', content:[{type:'text',…}]}]` —— 嵌一层。
+ * 只认顶层 `type:'text'` 的话，在 CI 上"工具结果里有没有『已截断』"会**假失败**
+ * （v0.8.3 发布时实测踩到：截断标记明明在，只是藏在 tool-result 块里）。
+ */
+function textOfBlocks(blocks){return (blocks||[]).flatMap(b=>b.type==='text'?[String(b.text)]:(b.type==='tool-result'?textOfBlocks(b.content):[]))}
+function prompt(call){return (call?.messages||[]).filter(m=>m.role!=='system').flatMap(m=>textOfBlocks(m.content)).join('\n')}
 function background(call){const text=prompt(call);return text.includes('【会话背景】')?text.split('【会话背景】')[1].split('上面是会话背景')[0]:''}
 try{
   await json('history',{key:'startup',text:'启动时历史设置'})
