@@ -363,12 +363,10 @@ window.__ModuleLoader__.load({
       '.dsh-sel-grip-corner{right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize}',
       '.dsh-sel-grip-r{right:0;top:12px;bottom:16px;width:6px;cursor:ew-resize}',
       '.dsh-sel-grip-b{left:12px;right:16px;bottom:0;height:6px;cursor:ns-resize}',
-      // 角上那道小斜纹：平时淡，鼠标放上去 / 正在拖时变清楚（告诉用户"这里能拉"）
-      '.dsh-sel-grip-corner:after{content:"";position:absolute;right:3px;bottom:3px;width:7px;height:7px;',
-      'border-right:1.5px solid var(--dsw-alias-label-tertiary,#8c959f);border-bottom:1.5px solid var(--dsw-alias-label-tertiary,#8c959f);',
-      'border-radius:0 0 2px 0;opacity:.5;transition:opacity .15s ease}',
-      '.dsh-sel-grip-corner:hover:after,.dsh-sel-layer[data-resizing="1"] .dsh-sel-grip-corner:after{opacity:1}',
-      '.dsh-sel-grip-r:hover,.dsh-sel-grip-b:hover{background:color-mix(in srgb,var(--sel-a1,#0d9488) 22%,transparent)}',
+      // 手柄**不画任何常驻标识**：以前角上有一道小斜纹（两条 1.5px 边框拼的直角），
+      // 在浅色面板上看着像多出来的一笔，用户明确要求去掉。
+      // 保留 hover 时边缘的高亮（只在鼠标移上去时出现，不占视觉）——
+      // 加上 cursor: nwse-resize / ew-resize / ns-resize，可发现性还在。
       // 抽屉开着时收起手柄（页脚右侧是「关闭」按钮，别让角标压上去）
       '.dsh-sel-panel[data-settings="1"] .dsh-sel-grip{display:none}',
       '.dsh-sel-head{display:flex;align-items:center;gap:8px;padding:10px 10px 10px 14px;cursor:grab;user-select:none;',
@@ -5336,6 +5334,22 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /**
+       * 把面板夹回可视区。
+       *
+       * **每次尺寸变化之后都要调**：位置是当初按旧尺寸算好的，尺寸一变就可能把面板顶出屏幕。
+       * 用户报的就是这个 —— 小窗贴着屏幕边缘时双击角标恢复默认尺寸，一部分直接跑到屏幕外。
+       * 优先保住左上角（那是用户看到的锚点），右边/下边放不下才往回收。
+       */
+      function clampPanelPosition() {
+        var rect = panel.getBoundingClientRect()
+        var maxLeft = Math.max(4, window.innerWidth - rect.width - 4)
+        var maxTop = Math.max(4, window.innerHeight - rect.height - 4)
+        panel.style.left = Math.round(Math.min(Math.max(rect.left, 4), maxLeft)) + 'px'
+        panel.style.top = Math.round(Math.min(Math.max(rect.top, 4), maxTop)) + 'px'
+        if (historyList.style.display === 'flex') placeHistoryList()
+      }
+
       /** 存到 host（防抖：拖动过程中每帧都存会把接口打爆）。 */
       function savePanelSize() {
         if (panelSizeTimer) clearTimeout(panelSizeTimer)
@@ -5362,7 +5376,10 @@ window.__ModuleLoader__.load({
             if (!size || panelInteracting) return
             if (typeof size.w !== 'number' || typeof size.h !== 'number') return
             panelSize = clampPanelSize(size)
-            if (panelOpen) applyPanelSizeOnOpen()
+            if (panelOpen) {
+              applyPanelSizeOnOpen()
+              clampPanelPosition()
+            }
           })
           .catch(function () {})
       }
@@ -5378,6 +5395,9 @@ window.__ModuleLoader__.load({
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ clear: true }),
         }).catch(function () {})
+        // 宽度/高度都变了 → 位置得重夹，否则贴着屏幕边缘时会被顶出去
+        clampPanelPosition()
+        autoGrowAskBox()
       }
 
       /**
@@ -5419,8 +5439,11 @@ window.__ModuleLoader__.load({
             if (layer) layer.removeAttribute('data-resizing')
             // 尺寸定下来后，正文/输入框要按新高度重新分配（composer 自动撑高那套）
             autoGrowAskBox()
-            // 只在真变过时存：点一下角标（没拖动）不该被当成"用户改了大小"
-            if (changed >= 2) savePanelSize()
+            // 尺寸变了 → 位置重夹，别让面板被顶出屏幕
+            if (changed >= 2) {
+              clampPanelPosition()
+              savePanelSize()
+            }
           }
           window.addEventListener('pointermove', move, true)
           window.addEventListener('pointerup', up, true)
@@ -9619,6 +9642,7 @@ window.__ModuleLoader__.load({
         if (next.w === panelSize.w && next.h === panelSize.h) return
         panelSize = next
         applyPanelSizeOnOpen()
+        clampPanelPosition()
         savePanelSize()
       })
 

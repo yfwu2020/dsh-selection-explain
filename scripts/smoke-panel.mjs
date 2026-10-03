@@ -466,6 +466,42 @@ async function main() {
     check('宽度仍沿用存档的值（宽度固定、高度自适应）',
       Math.abs(fresh.w - 620) <= 1,
       'w=' + Math.round(fresh.w))
+
+    // ⑦ 手柄不该有常驻的视觉标识（用户要求去掉右下角那道小斜纹）
+    var cornerAfter = getComputedStyle(corner, '::after')
+    check('右下角手柄没有常驻标识（不再画小斜纹）',
+      !cornerAfter.content || cornerAfter.content === 'none' || cornerAfter.content === 'normal',
+      'content=' + cornerAfter.content)
+    check('手柄仍在（只是不可见，鼠标移上去光标会变）',
+      getComputedStyle(corner).cursor === 'nwse-resize',
+      'cursor=' + getComputedStyle(corner).cursor)
+
+    // ⑧ 贴着屏幕边缘时双击恢复默认尺寸 → 面板不能被顶出屏幕
+    //    复现：先拉宽到接近满屏并推到右边，再双击角标（宽度会跳回默认 540，位置是旧的）
+    var vw = window.innerWidth
+    var vh = window.innerHeight
+    pointerOn(corner, 'pointerdown', 0, 0)
+    pointerOn(window, 'pointermove', vw, vh) // 尽量拉大
+    pointerOn(window, 'pointerup', vw, vh)
+    await sleep(80)
+    // 推到右下角
+    var big = hook.panelGeom()
+    var headEl2 = panelEl2.querySelector('.dsh-sel-head')
+    pointerOn(headEl2, 'mousedown', big.x + 60, big.y + 12)
+    window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: vw + 500, clientY: vh + 500 }))
+    window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    await sleep(80)
+    var beforeReset = hook.panelGeom()
+    corner.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }))
+    await sleep(120)
+    var afterDbl = hook.panelGeom()
+    check('贴边双击恢复默认尺寸后，面板仍在屏幕内',
+      afterDbl.x >= 0 && afterDbl.y >= 0 &&
+        afterDbl.x + afterDbl.w <= vw + 1 && afterDbl.y + afterDbl.h <= vh + 1,
+      'x=' + Math.round(afterDbl.x) + ' y=' + Math.round(afterDbl.y) +
+        ' 右=' + Math.round(afterDbl.x + afterDbl.w) + '/' + vw +
+        ' 下=' + Math.round(afterDbl.y + afterDbl.h) + '/' + vh +
+        '（双击前 x=' + Math.round(beforeReset.x) + ' w=' + Math.round(beforeReset.w) + '）')
   }
 
   // ① 翻译节
