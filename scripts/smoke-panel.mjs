@@ -467,7 +467,35 @@ async function main() {
       Math.abs(fresh.w - 620) <= 1,
       'w=' + Math.round(fresh.w))
 
-    // ⑦ 手柄不该有常驻的视觉标识（用户要求去掉右下角那道小斜纹）
+    // ⑦ 双击 = 自适应 = 恢复默认尺寸（同一个动作）：把窗口**拉小**之后再双击，
+    //    高度不该还被旧的上限卡着 —— 那是"只清了 width/height、漏了 maxHeight"的症状。
+    panelSizeStore = { w: 340, h: 250, hadXY: false }
+    panelEl2.style.width = ''
+    panelEl2.style.height = ''
+    panelEl2.style.maxHeight = ''
+    panelEl2.removeAttribute('data-resized')
+    hook.loadPanelSize()
+    await sleep(80)
+    hook.close()
+    await sleep(40)
+    hook.open('拉小后双击探测', '上下文片段 ABC', '冒烟')
+    await sleep(120)
+    var shrunk = hook.panelGeom()
+    check('存档的小尺寸生效（宽度 340、高度被 250 卡住）',
+      Math.abs(shrunk.w - 340) <= 1,
+      'w=' + Math.round(shrunk.w) + ' h=' + Math.round(shrunk.h))
+    corner.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }))
+    await sleep(120)
+    var back = hook.panelGeom()
+    check('双击后宽度回到默认（不再被存档的 340 卡住）',
+      Math.abs(back.w - 340) > 40,
+      'w ' + Math.round(shrunk.w) + '→' + Math.round(back.w))
+    check('双击后高度上限也被清掉（不再被 250 卡住）',
+      panelEl2.style.maxHeight === '' && back.h > 260,
+      'maxHeight=' + JSON.stringify(panelEl2.style.maxHeight) + ' h=' + Math.round(back.h))
+    await sleep(420)
+
+    // ⑧ 手柄不该有常驻的视觉标识（用户要求去掉右下角那道小斜纹）
     var cornerAfter = getComputedStyle(corner, '::after')
     check('右下角手柄没有常驻标识（不再画小斜纹）',
       !cornerAfter.content || cornerAfter.content === 'none' || cornerAfter.content === 'normal',
@@ -476,7 +504,7 @@ async function main() {
       getComputedStyle(corner).cursor === 'nwse-resize',
       'cursor=' + getComputedStyle(corner).cursor)
 
-    // ⑧ 贴着屏幕边缘时双击恢复默认尺寸 → 面板不能被顶出屏幕
+    // ⑨ 贴着屏幕边缘时双击恢复默认尺寸 → 面板不能被顶出屏幕
     //    复现：先拉宽到接近满屏并推到右边，再双击角标（宽度会跳回默认 540，位置是旧的）
     var vw = window.innerWidth
     var vh = window.innerHeight

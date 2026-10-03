@@ -5384,12 +5384,19 @@ window.__ModuleLoader__.load({
           .catch(function () {})
       }
 
-      /** 恢复默认尺寸（双击角标）：清掉存档，回到 CSS 的默认尺寸。 */
+      /**
+       * 恢复默认尺寸（双击右下角）。
+       *
+       * 和"高度自适应"是**同一个动作**：把整份存档清掉 ——
+       * 宽度回到 CSS 默认（540 / 首轮阶段 440），高度清成 auto 由内容撑（也就是自适应）。
+       *
+       * ⚠️ 必须走 applyPanelSizeOnOpen() 来清，而不是手写两行 `style.width = ''`：
+       * 高度上限是写在 `style.maxHeight` 上的，只清 width/height 会把它留下 ——
+       * 用户先前把窗口**拉小**过的话，双击之后高度仍被旧上限卡着，看着就不像"恢复默认"。
+       */
       function resetPanelSize() {
         panelSize = null
-        panel.removeAttribute('data-resized')
-        panel.style.width = ''
-        panel.style.height = ''
+        applyPanelSizeOnOpen() // 宽度 / 高度 / 高度上限 一次全还原
         fetch(PANEL_SIZE, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
