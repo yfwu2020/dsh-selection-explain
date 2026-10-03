@@ -409,9 +409,13 @@ async function main() {
     hook.loadPanelSize()
     await sleep(80)
     var restored2 = hook.panelGeom()
-    check('尺寸能按存档恢复',
-      Math.abs(restored2.w - panelSizeStore.w) <= 1 && Math.abs(restored2.h - panelSizeStore.h) <= 1,
+    // 宽度按存档精确恢复；高度只作为天花板 —— 内容撑不到就自己短着（见 ⑥）
+    check('宽度能按存档恢复',
+      Math.abs(restored2.w - panelSizeStore.w) <= 1,
       'w=' + Math.round(restored2.w) + ' / 存档 ' + Math.round(panelSizeStore.w))
+    check('高度不超过存档的上限',
+      restored2.h <= panelSizeStore.h + 1,
+      'h=' + Math.round(restored2.h) + ' / 上限 ' + Math.round(panelSizeStore.h))
 
     // ④ 重新开窗 → 必须重新按选区锚定（这是"位置不记"的核心保证）
     //    先把窗口挪到一个明显偏离锚点的位置，再关掉重开。
@@ -436,6 +440,32 @@ async function main() {
         'resized=' + afterReset.resized + ' store=' + JSON.stringify(panelSizeStore))
       await sleep(420)
     }
+
+    // ⑥ 记住的高度只能当**天花板**：新会话内容短时面板必须缩回去，不能留一大片空白。
+    //    这条是用户报的回归 —— 高度被当成固定值写上去，新开一个会话（只有一小段翻译）
+    //    面板硬撑到上次那么高，下面全是空的。
+    panelSizeStore = { w: 620, h: 700, hadXY: false }
+    panelEl2.style.width = ''
+    panelEl2.style.height = ''
+    panelEl2.style.maxHeight = ''
+    panelEl2.removeAttribute('data-resized')
+    hook.loadPanelSize()
+    await sleep(80)
+    hook.close()
+    await sleep(40)
+    hook.open('自适应高度探测', '上下文片段 ABC', '冒烟')
+    await sleep(100)
+    var fresh = hook.panelGeom()
+    var blank = panelEl2.clientHeight - panelEl2.scrollHeight
+    check('新会话高度自适应：面板里没有大片空白',
+      blank <= 4,
+      'clientHeight=' + panelEl2.clientHeight + ' scrollHeight=' + panelEl2.scrollHeight + ' 空白=' + blank)
+    check('存档的高度只当天花板（没被当成固定高度）',
+      fresh.h < 680,
+      'h=' + Math.round(fresh.h) + '（存档上限 700，若被当固定值用就该是 700）')
+    check('宽度仍沿用存档的值（宽度固定、高度自适应）',
+      Math.abs(fresh.w - 620) <= 1,
+      'w=' + Math.round(fresh.w))
   }
 
   // ① 翻译节

@@ -5292,11 +5292,30 @@ window.__ModuleLoader__.load({
       var PANEL_MIN_W = 320
       var PANEL_MIN_H = 240
 
-      /** 把存档的尺寸写到面板上（inline 样式，压过 CSS 里的默认宽度与阶段收窄）。 */
-      function applyPanelSize() {
-        if (!panelSize) return
+      /**
+       * 开窗时应用"记住的尺寸"。
+       *
+       * ⚠️ 宽度是**固定值**，高度只能是**上限**（max-height）。
+       *
+       * 高度要是写成固定值，新开一个会话（内容只有一小段翻译）时面板会硬撑到上次那么大，
+       * 下面留一大片空白 —— 那是回退。以前高度一直是内容撑的（`max-height` 只是个天花板），
+       * 这个手感必须保住：内容短就短，内容长才长到上限、再滚动。
+       *
+       * 所以每次开窗都把 `height` **清掉**（回到自适应），只把用户调过的高度当作新的天花板。
+       * 用户当场拖出来的尺寸在**本次**打开里照旧生效（拖动时直接写 inline height），
+       * 只是下次开窗会重新按内容自适应 —— 既没有空白，拖动也看得见反馈。
+       */
+      function applyPanelSizeOnOpen() {
+        // 先还原成"内容撑高 + CSS 默认天花板"
+        panel.style.height = ''
+        panel.style.maxHeight = ''
+        if (!panelSize) {
+          panel.style.width = ''
+          panel.removeAttribute('data-resized')
+          return
+        }
         panel.style.width = Math.round(panelSize.w) + 'px'
-        panel.style.height = Math.round(panelSize.h) + 'px'
+        panel.style.maxHeight = Math.round(panelSize.h) + 'px'
         // 打过标记：设置页那条约 560 的 min-height 就别再插手了（用户已经自己定了高）
         panel.setAttribute('data-resized', '1')
       }
@@ -5343,7 +5362,7 @@ window.__ModuleLoader__.load({
             if (!size || panelInteracting) return
             if (typeof size.w !== 'number' || typeof size.h !== 'number') return
             panelSize = clampPanelSize(size)
-            if (panelOpen) applyPanelSize()
+            if (panelOpen) applyPanelSizeOnOpen()
           })
           .catch(function () {})
       }
@@ -5429,7 +5448,9 @@ window.__ModuleLoader__.load({
         panel.style.top = '0px'
         // 每次都按选区重新锚定 —— **不要**在这里插"用上次的位置"的分支：
         // 位置一旦被记住，开窗就不再跟着划词的地方走，这套锚定逻辑等于被架空。
-        // 尺寸是另一回事（用户拖角调过的），开窗前已经由 applyPanelSize 写好了。
+        // 尺寸是另一回事：宽度沿用用户调过的，高度**每次开窗都回到自适应**（只保留天花板），
+        // 否则新会话内容短、面板却硬撑成上次那么高，下面留一大片空白。
+        applyPanelSizeOnOpen()
         // 面板刚显示出来才量得到 scrollHeight：草稿里原来的几行要立刻撑开
         autoGrowAskBox()
         var width = panel.offsetWidth
@@ -9594,10 +9615,10 @@ window.__ModuleLoader__.load({
       // 窗口变小：把**尺寸**夹回可视区（位置不归这里管 —— 它由 showPanel 的锚定决定）
       var offPanelResize = listen(window, 'resize', function () {
         if (!panelSize || panelInteracting) return
-        var next = clampPanelSize(currentPanelSize())
+        var next = clampPanelSize({ w: panelSize.w, h: panelSize.h })
         if (next.w === panelSize.w && next.h === panelSize.h) return
         panelSize = next
-        applyPanelSize()
+        applyPanelSizeOnOpen()
         savePanelSize()
       })
 
