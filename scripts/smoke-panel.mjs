@@ -309,14 +309,16 @@ async function main() {
   check('首轮渲染完成', hook.state().phase === 'done', hook.state().phase)
 
   // ── 面板 / 设置抽屉的真实尺寸 ──
-  // 为什么要有这一段：单测的 DOM 桩**没有布局**，"面板首轮收窄到 440" 这条
-  // 以前因为 CSS 声明块漏了收尾花括号被整条丢弃，规则压根没生效 —— 而单测只断言了
-  // data-stage 这个**属性**，照样全绿。所以这里必须用真浏览器量 getBoundingClientRect。
+  // 为什么要有这一段：单测的 DOM 桩**没有布局**。这里曾经有条按阶段收窄到 440px 的规则，
+  // 因为 CSS 声明块漏了收尾花括号被整条丢弃（属性对、规则不生效，单测照样全绿）；
+  // 修好闭合后它又暴露了"追问一下宽度就从 440 跳到 540"的问题 —— 两件事都只有真浏览器量得出来。
+  // 现在宽度**不随阶段变**（恒 540），下面同时钉住"首轮就是 540"和"追问之后仍是 540"。
+  var WIDE_WIDTH = 540
   {
     var panelEl = document.querySelector('.dsh-sel-panel')
     var beforeRect = panelEl.getBoundingClientRect()
-    check('首轮阶段面板真的收窄到 440（CSS 规则生效，不只是属性对）',
-      panelEl.getAttribute('data-stage') === 'translation' && Math.abs(beforeRect.width - 440) <= 2,
+    check('首轮阶段宽度就是常规宽度（不再按阶段收窄到 440）',
+      Math.abs(beforeRect.width - WIDE_WIDTH) <= 2,
       'stage=' + panelEl.getAttribute('data-stage') + ' width=' + Math.round(beforeRect.width))
 
     var settingsBtn = Array.prototype.slice.call(panelEl.querySelectorAll('.dsh-sel-action'))
@@ -351,7 +353,7 @@ async function main() {
       await sleep(40)
       var restored = panelEl.getBoundingClientRect()
       check('关掉抽屉后：小窗宽度不变（开合抽屉不动宽度）',
-        Math.abs(restored.width - beforeRect.width) <= 0.5 && Math.abs(restored.width - 440) <= 2,
+        Math.abs(restored.width - beforeRect.width) <= 0.5 && Math.abs(restored.width - WIDE_WIDTH) <= 2,
         'width=' + Math.round(restored.width))
     }
   }
@@ -661,8 +663,13 @@ async function main() {
     hook.close()
     hook.open('冒烟探针', '上下文片段 ABC', '冒烟')
     await waitFor(function () { return hook.state().phase === 'done' }, 4000)
+    var widthBeforeAsk = Math.round(document.querySelector('.dsh-sel-panel').getBoundingClientRect().width)
     hook.ask('冒烟追问')
     await waitFor(function () { return hook.state().asking === false }, 4000)
+    var widthAfterAsk = Math.round(document.querySelector('.dsh-sel-panel').getBoundingClientRect().width)
+    check('追问前后宽度不变（不再从 440 跳到 540）',
+      widthBeforeAsk === widthAfterAsk && Math.abs(widthAfterAsk - WIDE_WIDTH) <= 2,
+      '追问前 ' + widthBeforeAsk + 'px → 追问后 ' + widthAfterAsk + 'px')
     var bubbles = document.querySelectorAll('.dsh-sel-chatlog .dsh-sel-bubble-bot')
     var bot = bubbles[bubbles.length - 1]
     check('追问气泡渲染出来了', !!bot && bot.textContent.indexOf('冒烟用例') >= 0, bot ? bot.textContent.slice(0, 24) : '未找到')

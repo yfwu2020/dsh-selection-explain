@@ -1255,7 +1255,7 @@ assert(
 
 // 只有翻译时的轻量形态：窄面板 / 无序号 / CTA 在内容流里（但**可以越过详解直接追问**）
 const translateCard = sections.find((node) => node.getAttribute('data-sec') === 'translation')
-assert('首轮面板标为 translation 阶段（宽度收窄）', panel.getAttribute('data-stage') === 'translation', String(panel.getAttribute('data-stage')))
+assert('首轮面板标为 translation 阶段（决定追问框显示，不决定宽度）', panel.getAttribute('data-stage') === 'translation', String(panel.getAttribute('data-stage')))
 assert(
   '两节标题都不带序号（①② 已去掉）',
   !Array.from(walk(panel)).some((n) => n.tagName === 'B' && /^[①②12]$/.test(textOf(n))),
@@ -1279,7 +1279,7 @@ assert(
   assert('前情只带翻译：不留空的「详解：」', seed.indexOf('前情') >= 0 && seed.indexOf('详解：') < 0, seed.slice(0, 70))
   for (let i = 0; i < 80 && textOf(chatLog).indexOf('这是对追问的回答') < 0; i += 1) await sleep(20)
   assert('回答渲染进小窗消息区', textOf(chatLog).indexOf('这是对追问的回答') >= 0, textOf(chatLog).slice(0, 60))
-  assert('一旦有对话，面板恢复宽版（消息区更好读）', panel.getAttribute('data-stage') === 'detail', String(panel.getAttribute('data-stage')))
+  assert('一旦有对话，面板切到 detail 阶段', panel.getAttribute('data-stage') === 'detail', String(panel.getAttribute('data-stage')))
   assert('发过追问后「展开详解」自动收起', expandBtn.style.display === 'none', String(expandBtn.style.display))
 
   // 换一段新的选中文字：状态重置，CTA 该回来（后面的"点展开"流程从这里接着走）。
@@ -1310,7 +1310,7 @@ for (let i = 0; i < 100 && !(hook.parts().detail || '').trim(); i += 1) await sl
 for (let i = 0; i < 100 && hook.state().phase !== 'done'; i += 1) await sleep(50)
 assert('第二阶段产出详解', (hook.parts().detail || '').trim().length > 0, (hook.parts().detail || '').trim().slice(0, 60).replace(/\n/g, ' '))
 assert('展开后按钮隐藏、详解卡片出现', expandBtn.style.display === 'none' && detailCard.style.display !== 'none', `btn=${expandBtn.style.display} card=${detailCard.style.display}`)
-assert('展开后面板切到 detail 阶段（恢复宽度）', panel.getAttribute('data-stage') === 'detail', String(panel.getAttribute('data-stage')))
+assert('展开后面板切到 detail 阶段', panel.getAttribute('data-stage') === 'detail', String(panel.getAttribute('data-stage')))
 assert(
   '展开后标题仍不带序号',
   !Array.from(walk(panel)).some((n) => n.tagName === 'B' && /^[①②12]$/.test(textOf(n))),

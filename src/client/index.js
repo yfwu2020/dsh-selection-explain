@@ -345,8 +345,12 @@ window.__ModuleLoader__.load({
       'border-radius:16px;overflow:hidden;background:var(--dsw-alias-bg-layer-1,Canvas);color:var(--dsw-alias-label-primary,CanvasText);',
       'border:.5px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));box-shadow:0 20px 52px rgba(0,0,0,.3);',
       'font:400 13.5px/1.7 ' + FONT + '}',
-      // 首轮只出翻译时把面板收窄（内容少，宽面板显得空）—— 修好闭合之后这条才真正生效
-      '.dsh-sel-panel[data-stage=translation]{width:min(440px,calc(100vw - 20px))}',
+      // 这里曾经有一条 `.dsh-sel-panel[data-stage=translation]{width:440px}`：
+      // "首轮只出翻译时收窄一点"。它因为上面那个漏掉的 `}` 一直是死代码，修好闭合之后才真正生效，
+      // 一生效就暴露了问题 —— 宽度会**在追问那一刻从 440 跳到 540**（见 syncPanelStage 的判定），
+      // 用户看到同一个窗口自己变宽，问"怎么有追问和没追问的宽度不一样"。
+      // 决定：**统一成 540，宽度不随阶段变**。少一档就没这档子事，也没有"什么时候会跳"的心智负担。
+      // （data-stage 本身保留 —— 它还决定追问输入框显不显示，见 renderPanel。）
       // 设置抽屉开着时只补**高度**下限，**不动宽度**。
       //
       // 抽屉是 inset:0 贴在面板上的：面板多宽，抽屉就多宽 —— 这是要的（设置窗口与小窗等宽，
@@ -5653,7 +5657,8 @@ window.__ModuleLoader__.load({
         }
 
         // —— 按阶段重排 ——
-        // 只有翻译时：更窄的面板、不显示小节序号（轻量卡片形态）
+        // 只有翻译时：不显示小节序号（轻量卡片形态）。宽度**不随阶段变**（恒 540）——
+        // 以前这里还顺手收窄到 440，追问一下又跳回 540，用户看着像窗口自己抖了一下。
         var hasDetail = !!(state.parts.detail || stage === 'detail')
         // 追问输入框：**翻译一出来就能问，不必先展开详解**
         var translationReady = state.phase === 'done' && !!state.parts.translation
