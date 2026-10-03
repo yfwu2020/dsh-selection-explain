@@ -5396,6 +5396,15 @@ window.__ModuleLoader__.load({
        */
       function resetPanelSize() {
         panelSize = null
+        // ⚠️ 先掐掉还没落盘的那次保存。
+        // savePanelSize 是防抖的，而且**在定时器触发时**才去读当前尺寸 ——
+        // 刚拖完角标马上双击还原时，这一次来不及取消的保存会在 300ms 后读到
+        // "已经还原好的默认尺寸"，又把它当成"用户选的尺寸"写回去：
+        // 还原被无声撤销，宽度还被钉死在那一刻（连带把按阶段收窄那套也废掉）。
+        if (panelSizeTimer) {
+          clearTimeout(panelSizeTimer)
+          panelSizeTimer = 0
+        }
         applyPanelSizeOnOpen() // 宽度 / 高度 / 高度上限 一次全还原
         fetch(PANEL_SIZE, {
           method: 'POST',

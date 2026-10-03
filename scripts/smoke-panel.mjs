@@ -495,6 +495,20 @@ async function main() {
       'maxHeight=' + JSON.stringify(panelEl2.style.maxHeight) + ' h=' + Math.round(back.h))
     await sleep(420)
 
+    // ⑦.5 刚拖完角标就双击还原：防抖里那次没落盘的保存**不能**把还原撤销掉。
+    //      savePanelSize 在定时器触发时才读当前尺寸 —— 不掐掉的话它 300ms 后会读到
+    //      "已还原的默认尺寸"，反过来当成用户选的尺寸存下来，宽度被钉死。
+    pointerOn(corner, 'pointerdown', 0, 0)
+    pointerOn(window, 'pointermove', 90, 60)
+    pointerOn(window, 'pointerup', 90, 60)
+    await sleep(40) // 远小于 300ms 防抖：保存还没落盘
+    corner.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }))
+    await sleep(500) // 跨过防抖窗口，看那次保存会不会"复活"
+    check('刚拖完就双击还原：待落的保存不会把还原撤销掉',
+      panelSizeStore === null && panelEl2.style.width === '' && panelEl2.getAttribute('data-resized') === null,
+      'store=' + JSON.stringify(panelSizeStore) + ' inline=' + JSON.stringify(panelEl2.style.width) +
+        ' resized=' + panelEl2.getAttribute('data-resized'))
+
     // ⑧ 恢复默认尺寸**不等于没有上限**：上限从"用户调过的"换回"CSS 默认的" min(78vh,720px)。
     //    清掉的是用户那条自定义上限，不是限制本身。
     {
