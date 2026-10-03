@@ -29,6 +29,8 @@ window.__ModuleLoader__.load({
     var PROMOTE = '/selection-explain/api/promote'
     /** 胶囊拖到别处后的位置（记在 host 上：拖到别处→存，吸附回右下角→清，挂载→读回来）。 */
     var PILL_POS = '/selection-explain/api/pill'
+    /** 小窗的**尺寸**（改过大小之后记在 host 上，刷新后回到那个大小）。位置不记。 */
+    var PANEL_SIZE = '/selection-explain/api/panel'
     var HISTORY = '/selection-explain/api/history'
     /** 模型清单（带每个模型支持的推理等级）。 */
     var MODELS = '/selection-explain/api/models'
@@ -330,11 +332,45 @@ window.__ModuleLoader__.load({
       '.dsh-sel-layer[data-theme=dark]{--sel-a1:#4ecdc4;--sel-a1-text:#6fe3d8;--sel-a2:#4ecdc4;--sel-a2-text:#6fe3d8;',
       '--sel-fill:#4ecdc4;--sel-fill-fg:#052b26;',
       '--sel-a2-soft:color-mix(in srgb,var(--sel-a2) 16%,transparent);--sel-a1-soft:color-mix(in srgb,var(--sel-a1) 16%,transparent)}',
-      '.dsh-sel-panel{position:fixed;display:none;flex-direction:column;width:min(540px,calc(100vw - 20px));max-height:min(78vh,720px);',
-      '.dsh-sel-panel[data-stage=translation]{width:min(440px,calc(100vw - 20px))}',
+      // ⚠️ 声明块必须在**同一段字符串里收尾**。
+      // 以前这里是 `...max-height:...;` 后面直接接了一条完整规则 `[data-stage=translation]{...}`，
+      // `.dsh-sel-panel{` 的 `}` 于是永远没出现 —— 那条阶段规则被当成块内的**非法声明**整条丢弃，
+      // "首轮收窄到 440" 从来没生效过（实测计算宽度一直是 540）。后面几段的 border-radius /
+      // overflow 之所以没事，是因为 CSS 出错恢复会跳过坏声明继续往下读。
+      // 单测只断言了 data-stage 这个**属性**，而桩 DOM 没有布局，所以一直没暴露。
+      // box-sizing:border-box 是**必须**的：拖角改大小时我们把 getBoundingClientRect()（含边框）
+      // 的宽高写回 style.width/height，而它们默认按 content-box 解释 —— 差一个边框宽（1px），
+      // 于是"存进去 → 读回来"每来一轮就胖 1px，拖几次就明显走形（实测 584 存进去、读回来 586）。
+      '.dsh-sel-panel{position:fixed;display:none;flex-direction:column;box-sizing:border-box;width:min(540px,calc(100vw - 20px));max-height:min(78vh,720px);',
       'border-radius:16px;overflow:hidden;background:var(--dsw-alias-bg-layer-1,Canvas);color:var(--dsw-alias-label-primary,CanvasText);',
       'border:.5px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));box-shadow:0 20px 52px rgba(0,0,0,.3);',
       'font:400 13.5px/1.7 ' + FONT + '}',
+      // 首轮只出翻译时把面板收窄（内容少，宽面板显得空）—— 修好闭合之后这条才真正生效
+      '.dsh-sel-panel[data-stage=translation]{width:min(440px,calc(100vw - 20px))}',
+      // 设置抽屉开着时只补**高度**下限，**不动宽度**。
+      //
+      // 抽屉是 inset:0 贴在面板上的：面板多宽，抽屉就多宽 —— 这是要的（设置窗口与小窗等宽，
+      // 开抽屉时小窗不该"胖一圈"）。但高度不能不管：面板高度是由"解读内容有多长"撑出来的，
+      // 刚开窗（只出了翻译）时面板才 ~115px 高，设置列表只剩 17px 可视高度（实测）。
+      // 所以只给 min-height；宽度交给面板自己的规则（首轮 440 / 其余 540），抽屉自动跟随。
+      // min-height 用 min() 与 max-height 同源，视口矮时两者相等，不会顶出屏幕。
+      // 只在**用户没自己改过尺寸**时才补这个下限：他拉过大小就按他的来（min-height 会压过 inline height）
+      '.dsh-sel-panel[data-settings="1"]:not([data-resized="1"]){min-height:min(560px,78vh)}',
+      // 改大小手柄：右下角一个角标 + 右边/下边各一条（细，不抢视线；hover/拖动时才明显）
+      // z-index 比设置抽屉(6)高 —— 但抽屉开着时整体隐藏（见下面的规则）：
+      // 抽屉页脚右侧就是「关闭」按钮，角标压上去会误点。
+      '.dsh-sel-grip{position:absolute;z-index:7;background:transparent;touch-action:none}',
+      '.dsh-sel-grip-corner{right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize}',
+      '.dsh-sel-grip-r{right:0;top:12px;bottom:16px;width:6px;cursor:ew-resize}',
+      '.dsh-sel-grip-b{left:12px;right:16px;bottom:0;height:6px;cursor:ns-resize}',
+      // 角上那道小斜纹：平时淡，鼠标放上去 / 正在拖时变清楚（告诉用户"这里能拉"）
+      '.dsh-sel-grip-corner:after{content:"";position:absolute;right:3px;bottom:3px;width:7px;height:7px;',
+      'border-right:1.5px solid var(--dsw-alias-label-tertiary,#8c959f);border-bottom:1.5px solid var(--dsw-alias-label-tertiary,#8c959f);',
+      'border-radius:0 0 2px 0;opacity:.5;transition:opacity .15s ease}',
+      '.dsh-sel-grip-corner:hover:after,.dsh-sel-layer[data-resizing="1"] .dsh-sel-grip-corner:after{opacity:1}',
+      '.dsh-sel-grip-r:hover,.dsh-sel-grip-b:hover{background:color-mix(in srgb,var(--sel-a1,#0d9488) 22%,transparent)}',
+      // 抽屉开着时收起手柄（页脚右侧是「关闭」按钮，别让角标压上去）
+      '.dsh-sel-panel[data-settings="1"] .dsh-sel-grip{display:none}',
       '.dsh-sel-head{display:flex;align-items:center;gap:8px;padding:10px 10px 10px 14px;cursor:grab;user-select:none;',
       'border-bottom:.5px solid var(--dsw-alias-border-l4,rgba(140,140,140,.22))}',
       '.dsh-sel-head:active{cursor:grabbing}',
@@ -2481,6 +2517,15 @@ window.__ModuleLoader__.load({
       settingsSheet.appendChild(settingsHead)
       settingsSheet.appendChild(settingsMain)
       settingsSheet.appendChild(settingsFoot)
+      // ── 改大小手柄（右下角 + 右边缘 + 下边缘）──
+      // 小窗的尺寸/位置都由这里驱动；拖完记在 host 上（见 savePanelBox）。
+      var gripCorner = el('div', 'dsh-sel-grip dsh-sel-grip-corner')
+      var gripRight = el('div', 'dsh-sel-grip dsh-sel-grip-r')
+      var gripBottom = el('div', 'dsh-sel-grip dsh-sel-grip-b')
+      gripCorner.title = '拖动改大小（双击恢复默认）'
+      panel.appendChild(gripCorner)
+      panel.appendChild(gripRight)
+      panel.appendChild(gripBottom)
       panel.appendChild(settingsScrim)
       panel.appendChild(settingsSheet)
 
@@ -3292,6 +3337,8 @@ window.__ModuleLoader__.load({
       function openSettings() {
         if (settingsOpen) return
         settingsOpen = true
+        // 抽屉贴着面板（inset:0），所以给面板一个合适的尺寸下限 —— 否则内容短时抽屉被压成一条
+        panel.setAttribute('data-settings', '1')
         settingsSheet.setAttribute('data-open', '1')
         settingsScrim.setAttribute('data-open', '1')
         settingsButton.setAttribute('aria-pressed', 'true')
@@ -3306,6 +3353,7 @@ window.__ModuleLoader__.load({
       function closeSettings() {
         if (!settingsOpen) return
         settingsOpen = false
+        panel.removeAttribute('data-settings')
         closeModelPicks()
         settingsSheet.setAttribute('data-open', '0')
         settingsScrim.setAttribute('data-open', '0')
@@ -5225,6 +5273,149 @@ window.__ModuleLoader__.load({
         return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height }
       }
 
+      /**
+       * 小窗的尺寸（用户拖角改过之后才有值；null = 用 CSS 里的默认尺寸）。
+       *
+       * **只记尺寸，不记位置**：小窗每次开窗都必须按选区重新锚定（见 showPanel），
+       * 这是既有的设计 —— 位置一旦被记住，开窗就不再跟着划词的地方走，等于把那套锚定架空了。
+       * 尺寸是用户明确调过的东西，跨开窗保留才合理。
+       */
+      var panelSize = null
+      var panelSizeAsked = false
+      var panelSizeTimer = 0
+      /** 正在拖手柄 / 拖标题栏时，别让 window resize 的夹取插一脚。 */
+      var panelInteracting = false
+      /**
+       * 尺寸下限：比"设置页要放得下"低一点就行。真实约束在 CSS/JS 里：
+       * 太窄了模型下拉和提示文案会挤成一团，太矮了正文没得看。
+       */
+      var PANEL_MIN_W = 320
+      var PANEL_MIN_H = 240
+
+      /** 把存档的尺寸写到面板上（inline 样式，压过 CSS 里的默认宽度与阶段收窄）。 */
+      function applyPanelSize() {
+        if (!panelSize) return
+        panel.style.width = Math.round(panelSize.w) + 'px'
+        panel.style.height = Math.round(panelSize.h) + 'px'
+        // 打过标记：设置页那条约 560 的 min-height 就别再插手了（用户已经自己定了高）
+        panel.setAttribute('data-resized', '1')
+      }
+
+      /** 当前尺寸（读实际渲染值，比拿变量算更稳 —— 拖拽过程中变量会漂）。 */
+      function currentPanelSize() {
+        var rect = panel.getBoundingClientRect()
+        return { w: rect.width, h: rect.height }
+      }
+
+      /** 夹进视口：改大小/窗口变化后都调，保证手柄还在屏幕里、小窗不会超出可视区。 */
+      function clampPanelSize(size) {
+        var maxW = Math.max(PANEL_MIN_W, window.innerWidth - 8)
+        var maxH = Math.max(PANEL_MIN_H, window.innerHeight - 8)
+        return {
+          w: Math.min(maxW, Math.max(PANEL_MIN_W, size.w)),
+          h: Math.min(maxH, Math.max(PANEL_MIN_H, size.h)),
+        }
+      }
+
+      /** 存到 host（防抖：拖动过程中每帧都存会把接口打爆）。 */
+      function savePanelSize() {
+        if (panelSizeTimer) clearTimeout(panelSizeTimer)
+        panelSizeTimer = setTimeout(function () {
+          panelSizeTimer = 0
+          var size = clampPanelSize(currentPanelSize())
+          panelSize = size
+          fetch(PANEL_SIZE, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ size: size }),
+          }).catch(function () { /* 存不上不影响使用，下次再改还会存 */ })
+        }, 300)
+      }
+
+      /** 挂载时问一次（异步，回来再摆；用户已经动过就以用户的为准）。 */
+      function loadPanelSize() {
+        if (panelSizeAsked) return
+        panelSizeAsked = true
+        fetch(PANEL_SIZE)
+          .then(function (res) { return res.json() })
+          .then(function (data) {
+            var size = data && data.size
+            if (!size || panelInteracting) return
+            if (typeof size.w !== 'number' || typeof size.h !== 'number') return
+            panelSize = clampPanelSize(size)
+            if (panelOpen) applyPanelSize()
+          })
+          .catch(function () {})
+      }
+
+      /** 恢复默认尺寸（双击角标）：清掉存档，回到 CSS 的默认尺寸。 */
+      function resetPanelSize() {
+        panelSize = null
+        panel.removeAttribute('data-resized')
+        panel.style.width = ''
+        panel.style.height = ''
+        fetch(PANEL_SIZE, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ clear: true }),
+        }).catch(function () {})
+      }
+
+      /**
+       * 拖手柄改大小。
+       *
+       * edge 决定这次动哪几个方向：'se' 角标两个方向都能动，'e' 只动宽，'s' 只动高。
+       * 用 pointer 事件（不是 mouse）：触控板/触屏一样能拖，而且能 setPointerCapture，
+       * 鼠标划出窗口也不会丢掉这一轮（mouse 版本会卡在中途）。
+       */
+      function bindResizeGrip(node, edge) {
+        listen(node, 'pointerdown', function (event) {
+          if (event.button !== undefined && event.button !== 0) return
+          event.preventDefault()
+          event.stopPropagation()
+          var startSize = currentPanelSize()
+          var startX = event.clientX
+          var startY = event.clientY
+          panelInteracting = true
+          var layer = panel.parentNode
+          if (layer) layer.setAttribute('data-resizing', '1')
+          try { node.setPointerCapture(event.pointerId) } catch (error) { /* 老浏览器没有就算了 */ }
+          var changed = 0
+          var move = function (moveEvent) {
+            var next = { w: startSize.w, h: startSize.h }
+            if (edge.indexOf('e') >= 0) next.w = startSize.w + (moveEvent.clientX - startX)
+            if (edge.indexOf('s') >= 0) next.h = startSize.h + (moveEvent.clientY - startY)
+            var clamped = clampPanelSize(next)
+            changed = Math.abs(clamped.w - startSize.w) + Math.abs(clamped.h - startSize.h)
+            panel.style.width = Math.round(clamped.w) + 'px'
+            panel.style.height = Math.round(clamped.h) + 'px'
+            panelSize = clamped
+            panel.setAttribute('data-resized', '1')
+            if (historyList.style.display === 'flex') placeHistoryList()
+          }
+          var up = function () {
+            window.removeEventListener('pointermove', move, true)
+            window.removeEventListener('pointerup', up, true)
+            panelInteracting = false
+            if (layer) layer.removeAttribute('data-resizing')
+            // 尺寸定下来后，正文/输入框要按新高度重新分配（composer 自动撑高那套）
+            autoGrowAskBox()
+            // 只在真变过时存：点一下角标（没拖动）不该被当成"用户改了大小"
+            if (changed >= 2) savePanelSize()
+          }
+          window.addEventListener('pointermove', move, true)
+          window.addEventListener('pointerup', up, true)
+        })
+        // 双击角标 = 恢复默认大小
+        if (edge === 'se') {
+          listen(node, 'dblclick', function (event) {
+            event.preventDefault()
+            event.stopPropagation()
+            resetPanelSize()
+          })
+        }
+      }
+
       function showPanel(anchor) {
         panelOpen = true
         // 键盘用户开窗即可打字：这一轮的输入框一旦可见就聚焦一次（见 focusComposerOnce）
@@ -5236,6 +5427,9 @@ window.__ModuleLoader__.load({
         panel.style.display = 'flex'
         panel.style.left = '0px'
         panel.style.top = '0px'
+        // 每次都按选区重新锚定 —— **不要**在这里插"用上次的位置"的分支：
+        // 位置一旦被记住，开窗就不再跟着划词的地方走，这套锚定逻辑等于被架空。
+        // 尺寸是另一回事（用户拖角调过的），开窗前已经由 applyPanelSize 写好了。
         // 面板刚显示出来才量得到 scrollHeight：草稿里原来的几行要立刻撑开
         autoGrowAskBox()
         var width = panel.offsetWidth
@@ -7979,6 +8173,7 @@ window.__ModuleLoader__.load({
 
       // 费用胶囊的位置/尺寸会变（展开、缩放、数字变长、插件迟到挂载）→ 自适应频率地贴上去
       loadPillPos() // 先问一句上次拖到哪儿（异步，回来再摆）
+      loadPanelSize() // 小窗的尺寸也问一句（拖角改过之后才有的值；位置不记）
       placePill()
       ensureResizeWatch()
       schedulePillPlacer()
@@ -9371,10 +9566,12 @@ window.__ModuleLoader__.load({
 
       var offDrag = listen(head, 'mousedown', function (event) {
         if (promoteButton.contains(event.target) || closeButton.contains(event.target)) return
+        if (settingsButton.contains(event.target) || historyButton.contains(event.target)) return
         event.preventDefault()
         var rect = panel.getBoundingClientRect()
         var offsetX = event.clientX - rect.left
         var offsetY = event.clientY - rect.top
+        panelInteracting = true
         var move = function (moveEvent) {
           panel.style.left = clamp(moveEvent.clientX - offsetX, 4, window.innerWidth - rect.width - 4) + 'px'
           panel.style.top = clamp(moveEvent.clientY - offsetY, 4, window.innerHeight - 40) + 'px'
@@ -9383,13 +9580,40 @@ window.__ModuleLoader__.load({
         var up = function () {
           window.removeEventListener('mousemove', move, true)
           window.removeEventListener('mouseup', up, true)
+          panelInteracting = false
+          // **不存位置**：拖动只对这一次有效；下次开窗仍按选区重新锚定。
         }
         window.addEventListener('mousemove', move, true)
         window.addEventListener('mouseup', up, true)
       })
 
+      bindResizeGrip(gripCorner, 'se')
+      bindResizeGrip(gripRight, 'e')
+      bindResizeGrip(gripBottom, 's')
+
+      // 窗口变小：把**尺寸**夹回可视区（位置不归这里管 —— 它由 showPanel 的锚定决定）
+      var offPanelResize = listen(window, 'resize', function () {
+        if (!panelSize || panelInteracting) return
+        var next = clampPanelSize(currentPanelSize())
+        if (next.w === panelSize.w && next.h === panelSize.h) return
+        panelSize = next
+        applyPanelSize()
+        savePanelSize()
+      })
+
       // —— 调试钩子（自动化验证用） ——
       window.__dshSelectionExplain = {
+        /** 重新读一次 host 上的小窗尺寸（测试用；正常路径只在挂载时读一次）。 */
+        loadPanelSize: function () {
+          panelSizeAsked = false
+          loadPanelSize()
+          return true
+        },
+        /** 当前小窗几何（测试用：直接读渲染值，不经过变量）。 */
+        panelGeom: function () {
+          var rect = panel.getBoundingClientRect()
+          return { x: rect.left, y: rect.top, w: rect.width, h: rect.height, resized: panel.getAttribute('data-resized') === '1' }
+        },
         /** 重新读一次 host 上的胶囊位置（测试用；正常路径只在挂载时读一次）。 */
         loadPillPos: function () {
           pillPosAsked = false
@@ -9887,6 +10111,7 @@ window.__ModuleLoader__.load({
           cancelVoice()
           offClose()
           offDrag()
+          offPanelResize()
           offPillDown()
           offPillClick()
           offPillEnter()

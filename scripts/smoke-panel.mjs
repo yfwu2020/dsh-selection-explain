@@ -92,6 +92,7 @@ function sse(events) {
   return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
 }
 var pillPosStore = null // 内存版 host 存储（/api/pill）
+var panelSizeStore = null // 内存版 host 存储（/api/panel，只存尺寸）
 window.fetch = function (input, init) {
   var url = String(input)
   var body = {}
@@ -104,6 +105,17 @@ window.fetch = function (input, init) {
   }
   if (url.indexOf('/selection-explain/api/history') >= 0) {
     return Promise.resolve(new Response(JSON.stringify({ ok: true, entry: null, entries: [] }), { headers: { 'content-type': 'application/json' } }))
+  }
+  if (url.indexOf('/selection-explain/api/panel') >= 0) {
+    var isGetPanel = !init || !init.method || String(init.method).toUpperCase() === 'GET'
+    if (isGetPanel) return Promise.resolve(new Response(JSON.stringify({ ok: true, size: panelSizeStore }), { headers: { 'content-type': 'application/json' } }))
+    if (body.clear === true) {
+      panelSizeStore = null
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, size: null }), { headers: { 'content-type': 'application/json' } }))
+    }
+    // 只认 w/h：位置不该出现在这个载荷里
+    panelSizeStore = body.size ? { w: body.size.w, h: body.size.h, hadXY: ('x' in body.size || 'y' in body.size) } : null
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, size: panelSizeStore }), { headers: { 'content-type': 'application/json' } }))
   }
   if (url.indexOf('/selection-explain/api/pill') >= 0) {
     var isGet = !init || !init.method || String(init.method).toUpperCase() === 'GET'
@@ -295,6 +307,136 @@ async function main() {
   hook.open('冒烟探针', '上下文片段 ABC', '冒烟')
   await waitFor(function () { return hook.state().phase === 'done' }, 4000)
   check('首轮渲染完成', hook.state().phase === 'done', hook.state().phase)
+
+  // ── 面板 / 设置抽屉的真实尺寸 ──
+  // 为什么要有这一段：单测的 DOM 桩**没有布局**，"面板首轮收窄到 440" 这条
+  // 以前因为 CSS 声明块漏了收尾花括号被整条丢弃，规则压根没生效 —— 而单测只断言了
+  // data-stage 这个**属性**，照样全绿。所以这里必须用真浏览器量 getBoundingClientRect。
+  {
+    var panelEl = document.querySelector('.dsh-sel-panel')
+    var beforeRect = panelEl.getBoundingClientRect()
+    check('首轮阶段面板真的收窄到 440（CSS 规则生效，不只是属性对）',
+      panelEl.getAttribute('data-stage') === 'translation' && Math.abs(beforeRect.width - 440) <= 2,
+      'stage=' + panelEl.getAttribute('data-stage') + ' width=' + Math.round(beforeRect.width))
+
+    var settingsBtn = Array.prototype.slice.call(panelEl.querySelectorAll('.dsh-sel-action'))
+      .filter(function (b) { return b.textContent.indexOf('设置') >= 0 })[0]
+    check('头部有「设置」键', !!settingsBtn, settingsBtn ? settingsBtn.textContent : '未找到')
+    if (settingsBtn) {
+      clickOn(settingsBtn)
+      await waitFor(function () { return panelEl.getAttribute('data-settings') === '1' }, 1200)
+      await sleep(60)
+      var openRect = panelEl.getBoundingClientRect()
+      var sheetEl = panelEl.querySelector('.dsh-sel-sheet')
+      var sheetBody = sheetEl && sheetEl.querySelector('.dsh-sel-sheetbody')
+      // 抽屉是 inset:0 贴在面板上的：面板多大多小，抽屉就多大多小。
+      // 而面板高度是"解读内容有多长"撑出来的 —— 刚开窗时内容很短，
+      // 不锁下限的话设置列表只剩十几个像素（实测 17px），等于没法用。
+      // 设置窗口是 inset:0 贴在面板上的：**宽度必须与小窗一致**，
+      // 开抽屉不该让面板自己"胖一圈"或"瘦一圈"（高度才需要补下限）。
+      check('开设置抽屉后：设置窗口宽度与小窗完全一致（不额外加宽）',
+        Math.abs(openRect.width - beforeRect.width) <= 0.5,
+        '抽屉=' + openRect.width.toFixed(1) + ' 小窗=' + beforeRect.width.toFixed(1))
+      check('开设置抽屉后：高度有下限（不再被内容长短绑架）',
+        openRect.height >= 500,
+        'height=' + Math.round(openRect.height) + '（首轮未开抽屉时 ' + Math.round(beforeRect.height) + '）')
+      var bodyH = sheetBody ? sheetBody.clientHeight : 0
+      check('设置列表可视高度够用（不是一条缝）',
+        bodyH >= 200,
+        'sheetBody.clientHeight=' + Math.round(bodyH))
+      // 关掉，别影响后面的用例
+      var backBtn = sheetEl && sheetEl.querySelector('.dsh-sel-sheetback')
+      if (backBtn) clickOn(backBtn)
+      await waitFor(function () { return panelEl.getAttribute('data-settings') !== '1' }, 1200)
+      await sleep(40)
+      var restored = panelEl.getBoundingClientRect()
+      check('关掉抽屉后：小窗宽度不变（开合抽屉不动宽度）',
+        Math.abs(restored.width - beforeRect.width) <= 0.5 && Math.abs(restored.width - 440) <= 2,
+        'width=' + Math.round(restored.width))
+    }
+  }
+
+  // ── 拖动 / 改大小 ──
+  // 规则：**尺寸**记住（用户拖角调过的），**位置不记**（每次开窗都按选区重新锚定）。
+  function pointerOn(node, type, x, y) {
+    node.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, pointerId: 1, button: 0, buttons: 1 }))
+  }
+  {
+    var panelEl2 = document.querySelector('.dsh-sel-panel')
+    var before = hook.panelGeom()
+
+    // ① 拖右下角 → 变宽变高，并且只有尺寸被存下来
+    var corner = panelEl2.querySelector('.dsh-sel-grip-corner')
+    check('有右下角改大小手柄', !!corner, corner ? corner.className : '未找到')
+    if (corner) {
+      pointerOn(corner, 'pointerdown', 0, 0)
+      pointerOn(window, 'pointermove', 140, 90)
+      pointerOn(window, 'pointerup', 140, 90)
+      await sleep(60)
+      var grown = hook.panelGeom()
+      check('拖角能让小窗变大',
+        Math.round(grown.w) > Math.round(before.w) + 100 && Math.round(grown.h) > Math.round(before.h) + 60,
+        'w ' + Math.round(before.w) + '→' + Math.round(grown.w) + '  h ' + Math.round(before.h) + '→' + Math.round(grown.h))
+      check('改过大小会打标记（设置页就不再插手高度）', grown.resized === true, String(grown.resized))
+      await sleep(420) // 防抖 300ms
+      check('尺寸存到了 host（下次开窗回到这个大小）',
+        !!panelSizeStore && Math.abs(panelSizeStore.w - grown.w) <= 1 && Math.abs(panelSizeStore.h - grown.h) <= 1,
+        JSON.stringify(panelSizeStore))
+      check('存档里**没有位置**（载荷只有 w/h）', !!panelSizeStore && panelSizeStore.hadXY === false,
+        JSON.stringify(panelSizeStore))
+    }
+
+    // ② 拖标题栏：这次能挪动，但**不该存位置**
+    var headEl = panelEl2.querySelector('.dsh-sel-head')
+    var posBefore = hook.panelGeom()
+    pointerOn(headEl, 'mousedown', posBefore.x + 60, posBefore.y + 12)
+    window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: posBefore.x + 60 + 70, clientY: posBefore.y + 12 + 44 }))
+    window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    await sleep(60)
+    var moved = hook.panelGeom()
+    check('拖标题栏能挪动小窗（本次有效）',
+      Math.abs(moved.x - posBefore.x) > 40 && Math.abs(moved.y - posBefore.y) > 20,
+      'x ' + Math.round(posBefore.x) + '→' + Math.round(moved.x) + '  y ' + Math.round(posBefore.y) + '→' + Math.round(moved.y))
+    await sleep(420)
+    check('拖动**不会**把位置存进 host（位置记忆已按要求去掉）',
+      !!panelSizeStore && panelSizeStore.hadXY === false,
+      JSON.stringify(panelSizeStore))
+
+    // ③ 尺寸能读回来（模拟刷新：清掉内联尺寸，再让客户端重读一次）
+    panelEl2.style.width = ''
+    panelEl2.style.height = ''
+    panelEl2.removeAttribute('data-resized')
+    hook.loadPanelSize()
+    await sleep(80)
+    var restored2 = hook.panelGeom()
+    check('尺寸能按存档恢复',
+      Math.abs(restored2.w - panelSizeStore.w) <= 1 && Math.abs(restored2.h - panelSizeStore.h) <= 1,
+      'w=' + Math.round(restored2.w) + ' / 存档 ' + Math.round(panelSizeStore.w))
+
+    // ④ 重新开窗 → 必须重新按选区锚定（这是"位置不记"的核心保证）
+    //    先把窗口挪到一个明显偏离锚点的位置，再关掉重开。
+    panelEl2.style.left = '7px'
+    panelEl2.style.top = '7px'
+    hook.close()
+    await sleep(40)
+    hook.open('重新锚定探测', '上下文片段 ABC', '冒烟')
+    await sleep(60)
+    var reopened = hook.panelGeom()
+    check('重新开窗会重新按选区锚定（位置没被记住）',
+      reopened.x > 20 && reopened.y > 20,
+      'x=' + Math.round(reopened.x) + ' y=' + Math.round(reopened.y) + '（若被记住应是 7,7）')
+
+    // ⑤ 双击角标 → 恢复默认尺寸
+    if (corner) {
+      corner.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }))
+      await sleep(80)
+      var afterReset = hook.panelGeom()
+      check('双击角标恢复默认尺寸（清掉存档）',
+        afterReset.resized === false && panelSizeStore === null,
+        'resized=' + afterReset.resized + ' store=' + JSON.stringify(panelSizeStore))
+      await sleep(420)
+    }
+  }
 
   // ① 翻译节
   var picked1 = await quoteOnce('翻译节划词', function () {

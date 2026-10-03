@@ -1321,6 +1321,14 @@ export function apply(ctx: Context, rawConfig: Config): void {
   let modelCache: { at: number; items: ModelChoice[] } = { at: 0, items: [] }
   /** 哪些 provider/model 在 "关" 档会把思考写进正文（实测过一次就记住，之后自动改用「低」）。 */
   const leakyOnOff = new Set<string>()
+  /**
+   * 哪些 provider/model **根本不接受 "关" 档**（上游直接 400 invalid_request_error）。
+   *
+   * 和 leakyOnOff 分开记：那个是"能发但会泄漏"，这个是"发了就报错"。
+   * 记下来之后不再发 off，直接改用 low —— 这是"最接近关"的可接受档位。
+   * 不记的话每次划词都要先失败一轮再重试：用户看到一次报错闪动 + 多一个来回的时延。
+   */
+  const noOffRoutes = new Set<string>()
   const leakyFile = (): string => join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain', 'leaky-off.json')
   let leakyLoaded = false
 
@@ -1330,9 +1338,12 @@ export function apply(ctx: Context, rawConfig: Config): void {
     leakyLoaded = true
     try {
       const raw = await readFile(leakyFile(), 'utf8')
-      const parsed = JSON.parse(raw) as { routes?: unknown }
+      const parsed = JSON.parse(raw) as { routes?: unknown; noOff?: unknown }
       if (Array.isArray(parsed?.routes)) {
         for (const item of parsed.routes) if (typeof item === 'string' && item) leakyOnOff.add(item)
+      }
+      if (Array.isArray(parsed?.noOff)) {
+        for (const item of parsed.noOff) if (typeof item === 'string' && item) noOffRoutes.add(item)
       }
     } catch {
       /* 没有这个文件是常态 */
@@ -1340,7 +1351,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
   }
 
   function saveLeaky(): void {
-    const body = JSON.stringify({ version: 1, routes: Array.from(leakyOnOff) }, null, 0)
+    const body = JSON.stringify({ version: 1, routes: Array.from(leakyOnOff), noOff: Array.from(noOffRoutes) }, null, 0)
     void writeFile(leakyFile(), body, 'utf8').catch((error: unknown) => {
       ctx.logger?.warn?.(`[${name}] 泄漏清单写盘失败：${String((error as Error)?.message ?? error)}`)
     })
@@ -1350,6 +1361,13 @@ export function apply(ctx: Context, rawConfig: Config): void {
   function markLeaky(route: string): void {
     if (leakyOnOff.has(route)) return
     leakyOnOff.add(route)
+    if (leakyLoaded) saveLeaky()
+  }
+
+  /** 记住一个"不接受关档"的模型（内存 + 落盘）：下次直接改用 low，不再先撞一次。 */
+  function markNoOff(route: string): void {
+    if (noOffRoutes.has(route)) return
+    noOffRoutes.add(route)
     if (leakyLoaded) saveLeaky()
   }
   const MODEL_CACHE_MS = 60_000
@@ -1722,6 +1740,105 @@ export function apply(ctx: Context, rawConfig: Config): void {
       })()
     }, 300)
     pillPosTimer.unref?.()
+  }
+
+  /**
+   * 小窗的**尺寸**（拖角改过大小之后记下来）。
+   *
+   * 只记尺寸，**不记位置**：小窗每次开窗都由 client 按选区重新锚定
+   * （落在选区下方，放不下就翻到上方，再夹进视口）—— 那套锚定逻辑是既有的设计，
+   * 位置一旦被"记住"就等于架空了它，开窗不再跟着划词的地方走。
+   * 尺寸则是用户明确调过的东西，值得跨开窗保留。
+   */
+  const panelSizeFile = (): string =>
+    join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain', 'panel.json')
+
+  let panelSize: { w: number; h: number } | null = null
+  let panelSizeLoaded = false
+  let panelSizeTimer: ReturnType<typeof setTimeout> | null = null
+
+  /**
+   * 尺寸校验：两个数都得是有限值，并夹到一个合理的区间。
+   *
+   * client 那边已经有 min/max 了，但文件是手工可编辑的（也可能被旧版本写坏），
+   * 不能让一个 5px 宽的小窗把界面弄成没法用。
+   */
+  function normalizePanelSize(input: unknown): { w: number; h: number } | null {
+    const value = input as { w?: unknown; h?: unknown } | null | undefined
+    const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : NaN)
+    const w = num(value?.w)
+    const h = num(value?.h)
+    if (!Number.isFinite(w) || !Number.isFinite(h)) return null
+    const clamp = (n: number, lo: number, hi: number): number => Math.round(Math.min(hi, Math.max(lo, n)))
+    return { w: clamp(w, 280, 4000), h: clamp(h, 200, 4000) }
+  }
+
+  async function loadPanelSize(): Promise<void> {
+    if (panelSizeLoaded) return
+    panelSizeLoaded = true
+    try {
+      const parsed = JSON.parse(await readFile(panelSizeFile(), 'utf8')) as { size?: unknown }
+      panelSize = normalizePanelSize(parsed?.size)
+    } catch {
+      panelSize = null // 没存过 / 坏了都当作"没调过"
+    }
+  }
+
+  function schedulePanelSizeWrite(): void {
+    if (panelSizeTimer) clearTimeout(panelSizeTimer)
+    panelSizeTimer = setTimeout(() => {
+      panelSizeTimer = null
+      void (async () => {
+        try {
+          await mkdir(join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain'), { recursive: true })
+          await writeFile(panelSizeFile(), JSON.stringify({ version: 1, size: panelSize }, null, 0), 'utf8')
+        } catch (error) {
+          ctx.logger?.warn?.(`[${name}] 写入小窗尺寸失败：${String((error as Error)?.message ?? error)}`)
+        }
+      })()
+    }, 300)
+    panelSizeTimer.unref?.()
+  }
+
+  /**
+   * 小窗尺寸：GET 读回来（挂载时恢复）、POST 存（{w,h}）或清（{clear:true}，回到默认尺寸）。
+   */
+  const handlePanelSize = (req: IncomingMessage, res: ServerResponse): void => {
+    void (async () => {
+      await loadPanelSize()
+      if (req.method === 'GET') {
+        sendJson(res, 200, { ok: true, size: panelSize })
+        return
+      }
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { ok: false, error: '只支持 GET / POST' })
+        return
+      }
+      const raw = await readBody(req, 4_000)
+      let body: { size?: unknown; clear?: unknown } = {}
+      try {
+        body = raw ? (JSON.parse(raw) as { size?: unknown; clear?: unknown }) : {}
+      } catch {
+        sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' })
+        return
+      }
+      if (body.clear === true) {
+        panelSize = null
+        schedulePanelSizeWrite()
+        sendJson(res, 200, { ok: true, size: null })
+        return
+      }
+      const next = normalizePanelSize(body.size ?? body)
+      if (!next) {
+        sendJson(res, 400, { ok: false, error: 'size 需要 { w, h } 两个有限数值' })
+        return
+      }
+      panelSize = next
+      schedulePanelSizeWrite()
+      sendJson(res, 200, { ok: true, size: panelSize })
+    })().catch((error: unknown) => {
+      sendJson(res, 500, { ok: false, error: String((error as Error)?.message ?? error) })
+    })
   }
 
   /**
@@ -3039,11 +3156,14 @@ export function apply(ctx: Context, rawConfig: Config): void {
         text: '该模型在「关」档会把思考写进正文，已自动改用「低」档',
       })
     }
-    const requestEffort = isChat
+    let requestEffort = isChat
       ? bodyEffort || config.chatReasoningEffort || effort
       : stage === 'detail'
         ? effort
         : config.translationReasoningEffort || effort
+    // 已知这个模型不接受"关"档（之前撞过一次并记下来了）：直接换 low，不再先失败一轮。
+    // 首轮默认就是 off，所以这条对"默认配置 + 不吃 off 的模型"是必经之路。
+    if (requestEffort === 'off' && noOffRoutes.has(routeKey)) requestEffort = 'low'
 
     sse(res, {
       type: 'start',
@@ -3113,9 +3233,13 @@ export function apply(ctx: Context, rawConfig: Config): void {
         error: '',
       }
       const toolRounds = config.maxToolRounds
-      // 档位被上游拒绝时（400/401/500）去掉档位重试一次：清单里声明的档位是**建议值**，
+      // 档位被上游拒绝时（400/401/500）重试一次：清单里声明的档位是**建议值**，
       // 实测很多模型并不接受 max（qwen3.7-max 直接 400、minimax-m2.7/gpt-5.6-luna 500）。
-      const canRetryEffort = isChat && bodyEffort.length > 0
+      //
+      // 以前这里限定了 `isChat && bodyEffort.length > 0` —— 只有追问、且客户端显式传了档位才重试。
+      // 于是**首轮**（档位来自配置、默认 off）撞上不吃 off 的模型时无人兜底，整个划词解读全挂。
+      // 现在按"这一轮实际在发显式档位"判，三种轮次一视同仁。
+      const canRetryEffort = requestEffort.length > 0
       let effortRetried = false
       let roundEffort = requestEffort
       for (let round = 0; round <= toolRounds; round += 1) {
@@ -3240,13 +3364,24 @@ export function apply(ctx: Context, rawConfig: Config): void {
           // （保守：已经吐出正文的失败不重试，避免把半截答案丢掉）
           if (canRetryEffort && !effortRetried && roundText.length === 0) {
             effortRetried = true
-            roundEffort = ''
+            const rejected = roundEffort
+            if (rejected === 'off') {
+              // "关"被拒：记下这个 route，改用 low（最接近关的可接受档位），并让重试也用 low。
+              // 只去掉档位（交给供应商默认）在有些模型上等于开了深度思考 —— 又慢又可能把思考写进正文。
+              markNoOff(routeKey)
+              requestEffort = 'low'
+              roundEffort = 'low'
+            } else {
+              roundEffort = ''
+            }
             errored = false
             sse(res, {
               type: 'notice',
               code: 'effort-rejected',
-              tier: bodyEffort,
-              text: `「${bodyEffort}」档位该模型不支持，已按默认档位重试`,
+              tier: rejected,
+              text: rejected === 'off'
+                ? '该模型不支持「关」档，已自动改用「低」档（以后不再尝试关档）'
+                : `「${rejected}」档位该模型不支持，已按默认档位重试`,
             })
             round -= 1
             continue
@@ -3494,6 +3629,10 @@ export function apply(ctx: Context, rawConfig: Config): void {
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/history`, handler: handleHistory }),
     `${name}: history route`,
+  )
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/panel`, handler: handlePanelSize }),
+    `${name}: panel box route`,
   )
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/pill`, handler: handlePillPos }),

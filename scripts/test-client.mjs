@@ -1104,6 +1104,21 @@ assert('选中文字后浮标出现', !!button && button.style.display === 'inli
 
 
 // ───────────────────────── 点击 → 弹窗 + 真实 host 流 ─────────────────────────
+// ⚠️ 开场先清一次设置覆盖。
+// 这套用例后面会把 provider/model 写成夹具里的假 provider（p1），而它落在**真实 host** 上；
+// 万一上一次跑崩在中途（没走到收尾的 reset），残留的 p1 会让接下来的真实解读全部 503 ——
+// 表现为"流式渲染失败"一大片，看起来像插件坏了，其实是脏状态。
+// 所以清理要放在**最前面**（收尾那次仍然保留，正常路径下不留痕迹）。
+try {
+  await fetch(ORIGIN + '/selection-explain/api/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ reset: true }),
+  })
+} catch (error) {
+  /* host 不可达时后面本来就会跳过在线断言 */
+}
+
 button.dispatch('click', { preventDefault() {}, stopPropagation() {} })
 const panel = mount.children[0].children.find((c) => c.className === 'dsh-sel-panel')
 // 面板内的固定引用点（后续断言共用）
