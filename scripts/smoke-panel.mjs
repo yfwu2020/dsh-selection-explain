@@ -495,7 +495,37 @@ async function main() {
       'maxHeight=' + JSON.stringify(panelEl2.style.maxHeight) + ' h=' + Math.round(back.h))
     await sleep(420)
 
-    // ⑧ 手柄不该有常驻的视觉标识（用户要求去掉右下角那道小斜纹）
+    // ⑧ 恢复默认尺寸**不等于没有上限**：上限从"用户调过的"换回"CSS 默认的" min(78vh,720px)。
+    //    清掉的是用户那条自定义上限，不是限制本身。
+    {
+      var cap = Math.min(window.innerHeight * 0.78, 720)
+      var computedMax = getComputedStyle(panelEl2).maxHeight
+      check('恢复默认后高度仍有上限（回到 CSS 默认 min(78vh,720px)）',
+        panelEl2.style.maxHeight === '' && computedMax !== 'none' &&
+          Math.abs(parseFloat(computedMax) - cap) <= 2,
+        'inline=' + JSON.stringify(panelEl2.style.maxHeight) + ' computed=' + computedMax +
+          ' 期望=' + Math.round(cap) + 'px')
+      // 塞一段超长内容：面板不该被撑破上限，多出来的部分在正文里滚动
+      // 塞一段超长内容量一次 —— 量完必须**收拾干净**：这一段动的是真面板，
+      // 面板高度会 423 → 634 → 423，滚动位置也会变；不还原就会影响后面那些
+      // 依赖坐标的划词用例（跑多次能撞见）。
+      var bodyEl = panelEl2.querySelector('.dsh-sel-body')
+      var savedScroll = bodyEl.scrollTop
+      var filler = document.createElement('div')
+      filler.style.cssText = 'height:3000px;flex:0 0 auto'
+      bodyEl.appendChild(filler)
+      await sleep(80)
+      var tall = panelEl2.getBoundingClientRect().height
+      check('内容超长时面板不越过上限（超出部分内部滚动）',
+        tall <= cap + 2,
+        'h=' + Math.round(tall) + ' 上限=' + Math.round(cap) + ' body 可滚=' + (bodyEl.scrollHeight > bodyEl.clientHeight))
+      filler.remove()
+      bodyEl.scrollTop = savedScroll
+      void panelEl2.offsetHeight // 强制回流，别让后面的用例量到中间态
+      await sleep(140)
+    }
+
+    // ⑨ 手柄不该有常驻的视觉标识（用户要求去掉右下角那道小斜纹）
     var cornerAfter = getComputedStyle(corner, '::after')
     check('右下角手柄没有常驻标识（不再画小斜纹）',
       !cornerAfter.content || cornerAfter.content === 'none' || cornerAfter.content === 'normal',
@@ -504,7 +534,7 @@ async function main() {
       getComputedStyle(corner).cursor === 'nwse-resize',
       'cursor=' + getComputedStyle(corner).cursor)
 
-    // ⑨ 贴着屏幕边缘时双击恢复默认尺寸 → 面板不能被顶出屏幕
+    // ⑩ 贴着屏幕边缘时双击恢复默认尺寸 → 面板不能被顶出屏幕
     //    复现：先拉宽到接近满屏并推到右边，再双击角标（宽度会跳回默认 540，位置是旧的）
     var vw = window.innerWidth
     var vh = window.innerHeight
