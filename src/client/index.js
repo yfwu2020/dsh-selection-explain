@@ -74,8 +74,11 @@ window.__ModuleLoader__.load({
     var VCARD_MAX_W = 560
     /** 正文最多 4 行（约 93px），再多内部滚动并停在最新一行（与追问框同一套）。 */
     var VCARD_TEXT_MAX = 96
-    /** 上下内边距合计（卡片高度 = 正文高度 + 这个）。 */
-    var VCARD_PAD_Y = 22
+    /**
+     * 卡片高度 = 正文高度 + 这个（border-box 下的纵向内边距 8+8 与边框 1+1）。
+     * 单行卡因此是 24 + 18 = 42px —— 而不是漏掉 box-sizing 时渲染出来的 70px。
+     */
+    var VCARD_PAD_Y = 18
     /** 兜底限制（host 的 limits 优先；拿不到目录时按这套走）。 */
     var VOICE_FALLBACK_SECONDS = 60
     var VOICE_MAX_BYTES = 4 * 1024 * 1024
@@ -977,8 +980,11 @@ window.__ModuleLoader__.load({
       '.dsh-sel-sempty{font-size:12px;opacity:.55;padding:14px 2px}',
       // ── 语音卡：选中文字 + 输入法正在语音输入时，就地弹出的临时输入框 ──
       // 它由浮标**形变**而来（同一格 → 下移展开），所以几何全部由 JS 给，这里只管长相。
+      // box-sizing 必须显式写：插件是按组件设的（panel/history/pill 各自写），没有全局重置。
+      // 漏了它时 style.height 只是"内容高"，加上内边距与边框真实高度会多出 24px ——
+      // 单行卡于是渲染成 70px（用户报的"heard 阶段框太大"就是这个）。
       '.dsh-sel-vcard{position:fixed;z-index:2147483000;display:none;align-items:stretch;gap:11px;',
-      'padding:11px 12px 11px 13px;background:var(--dsw-alias-bg-base,#fff);color:inherit;',
+      'box-sizing:border-box;padding:8px 12px 8px 13px;background:var(--dsw-alias-bg-base,#fff);color:inherit;',
       'border:1px solid var(--dsw-alias-border-l2,rgba(140,140,140,.28));border-radius:20px;',
       'box-shadow:0 10px 28px rgba(0,0,0,.18);overflow:hidden;',
       'transition:width .3s cubic-bezier(.2,.8,.2,1),height .3s cubic-bezier(.2,.8,.2,1),',
@@ -994,10 +1000,12 @@ window.__ModuleLoader__.load({
       // 正文右侧留 40px 给发送键（它是绝对定位的，不参与行高 —— 否则 30px 的按钮会把
       // 单行卡片顶到 52px，用户看到的就是"临时框太高"）
       '.dsh-sel-vcard-box{flex:1;min-width:0;align-self:center;display:block;margin:0;',
-      'padding:0 40px 0 0;border:0;outline:0;background:transparent;color:inherit;',
+      'box-sizing:border-box;padding:0 40px 0 0;border:0;outline:0;background:transparent;color:inherit;',
       'resize:none;overflow-y:hidden;font:400 15.5px/1.5 ' + FONT + ';max-height:96px}',
       '.dsh-sel-vcard-box::placeholder{color:var(--dsw-alias-label-tertiary,rgba(140,140,140,.9))}',
-      '.dsh-sel-vcard-send{position:absolute;right:12px;bottom:11px;width:28px;height:28px;border:0;',
+      // 尺寸≈一行行高（23.25px）：单行卡里它和文字同一条中线；多行时贴底=跟着最后一行走。
+      // 比一行高太多（比如 30px）会让它在单行卡里"看起来掉到文字下面去了"。
+      '.dsh-sel-vcard-send{position:absolute;right:12px;bottom:8px;width:26px;height:26px;border:0;',
       'border-radius:50%;background:var(--sel-a1);color:#fff;font:400 14px/1 ' + FONT + ';',
       'cursor:pointer;opacity:0;pointer-events:none;transition:opacity .16s ease}',
       // 还什么都没说时不摆出发送键（先只显示"正在听…"）
