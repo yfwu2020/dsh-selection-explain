@@ -1012,12 +1012,6 @@ window.__ModuleLoader__.load({
       'cursor:pointer;opacity:0;pointer-events:none;transition:opacity .16s ease}',
       // 还什么都没说时不摆出发送键（先只显示"正在听…"）
       '.dsh-sel-vcard[data-text="1"] .dsh-sel-vcard-send{opacity:1;pointer-events:auto}',
-      // 选中文字的底纹：抢焦点（IME 上屏必须）会清掉原生选区，所以用 Custom Highlight
-      // 把那段 range 单独画一层 —— 不碰 DOM、不影响焦点，关卡片时整层撤掉。
-      // 选中文字的底纹层：按选区的逐行矩形自绘色块（**不用** CSS Custom Highlight）。
-      // 整层 pointer-events:none，绝不挡住页面交互。
-      '.dsh-sel-vhl-layer{position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:0}',
-      '.dsh-sel-vhl{position:absolute;border-radius:2px}',
       '@media (prefers-reduced-motion:reduce){',
       '.dsh-sel-vcard{transition:none}.dsh-sel-vcard[data-voiced="1"]{animation:none}}',
     ].join('')
@@ -3902,8 +3896,6 @@ window.__ModuleLoader__.load({
       var vcard = null
       var vcardBox = null
       var vcardSend = null
-      /** 兜底色块层（懒建；Custom Highlight 可用时根本不会建）。 */
-      var vcardHighlightLayer = null
       var vcardState = {
         open: false,
         /** 打开时的选区快照（滚动 / 改窗口大小时按它重算位置）。 */
@@ -3917,8 +3909,6 @@ window.__ModuleLoader__.load({
          * Esc 看起来像失灵（实测就是这么暴露出来的）。等 !capturing 才解除。
          */
         suppress: false,
-        /** 底纹状态：rects / none（自检钩子读它，排查"看不到底纹"用）。 */
-        highlight: 'none',
       }
 
       function ensureVCard() {
@@ -4047,8 +4037,6 @@ window.__ModuleLoader__.load({
         applyVCardGeometry(geo)
         void vcard.offsetWidth
         vcard.style.transition = ''
-        // 兜底色块是按视口坐标摆的，滚动 / 改窗口必须跟着重画（API 那条路由浏览器自己跟）
-        if (vcardState.highlight === 'rects') paintVCardHighlight()
       }
 
       /**
@@ -4091,79 +4079,9 @@ window.__ModuleLoader__.load({
         startMicWatch()
         // 关键一步：输入法上屏只认焦点元素，焦点必须在我们这个框里
         focusVCard()
-        // 焦点一转移原生选区就没了 —— 把底纹补回来（用户明确要求"选中效果不要去掉"）
-        paintVCardHighlight()
-      }
-
-      /**
-       * 把选中文字的底纹画回来。
-       *
-       * 为什么需要它：输入法上屏只认焦点元素，所以卡片一开就得把焦点抢进 textarea ——
-       * 而浏览器在焦点转移时会把文档选区清掉（底纹跟着没了，用户报的就是这个）。
-       * 用 CSS Custom Highlight 单独画一层：不碰 DOM、不碰焦点，关掉时整层撤走。
-       * 不支持的环境（老浏览器）就没有底纹 —— 功能不受影响，只是少个视觉。
-       */
-      /** 底纹色块那一层（懒建）。 */
-      function ensureVCardHighlightLayer() {
-        if (vcardHighlightLayer) return vcardHighlightLayer
-        vcardHighlightLayer = el('div', 'dsh-sel-vhl-layer')
-        layer.appendChild(vcardHighlightLayer)
-        return vcardHighlightLayer
-      }
-
-      /**
-       * 画选中文字的底纹：按选区的**逐行矩形**自绘色块。
-       *
-       * 为什么不用 CSS Custom Highlight（`::highlight()` + `CSS.highlights`）：
-       * 它只有 Chromium 系支持，Safari 上连构造函数都不存在 —— 插件又没法知道用户在哪个浏览器里，
-       * 于是"静默画不出来"就成了默认结果（用户实测"根本看不到"）。自绘色块不挑浏览器，
-       * 而且位置本来就是按 range 的矩形算的，和浮标/卡片用的是同一套坐标，好排查。
-       *
-       * 代价：色块是**盖**在字上的（API 是画在字形背后），文字会被轻微染色 ——
-       * 用 0.22 的透明度时观感和原生选区几乎一样，可以接受。
-       */
-      function paintVCardHighlight() {
-        clearVCardHighlight()
-        var range = vcardState.range
-        if (!range) return
-        // 跨文档选区（侧边栏 iframe 里选的）：矩形是那个文档的视口坐标，摆到本文档会错位 ——
-        // 宁可不画，也不画错地方。
-        // 注意判断写成"**确定**是别的文档才跳过"：取不到 ownerDocument 时（无浏览器测试的桩 DOM）
-        // 要照画，否则这条兜底在测试里永远跑不到，等于没被验证过。
-        var owner = range.startContainer && range.startContainer.ownerDocument
-        if (owner && owner !== document) return
-        var tint = 'rgba(59,110,245,.22)'
-        try {
-          tint = isDarkSurface(document.body) ? 'rgba(110,168,254,.32)' : 'rgba(59,110,245,.22)'
-        } catch (error) {
-          /* 判不出明暗就用浅色那套 */
-        }
-        try {
-          var rects = range.getClientRects ? range.getClientRects() : null
-          if (!rects || !rects.length) return
-          var box = ensureVCardHighlightLayer()
-          for (var i = 0; i < rects.length; i += 1) {
-            var rect = rects[i]
-            if (!rect || (!rect.width && !rect.height)) continue
-            var block = el('div', 'dsh-sel-vhl')
-            block.style.left = Math.round(rect.left) + 'px'
-            block.style.top = Math.round(rect.top) + 'px'
-            block.style.width = Math.round(rect.width) + 'px'
-            block.style.height = Math.round(rect.height) + 'px'
-            block.style.background = tint
-            box.appendChild(block)
-          }
-          if (box.children.length) vcardState.highlight = 'rects'
-        } catch (error) {
-          /* 画不出来就算了：底纹是锦上添花，不能因为它影响主流程 */
-        }
-      }
-
-      function clearVCardHighlight() {
-        vcardState.highlight = 'none'
-        if (vcardHighlightLayer && vcardHighlightLayer.children.length) {
-          vcardHighlightLayer.textContent = ''
-        }
+        // 注意：焦点一转移，原生选区就被浏览器清掉了，于是**卡片开着时看不到选中底纹**。
+        // 这是已知取舍：补底纹的两条路（CSS Custom Highlight / 自绘色块）都被否掉了 ——
+        // 前者只有 Chromium 系支持，后者是盖在字上的色块。要恢复就从这里接回去。
       }
 
       /**
@@ -4216,7 +4134,6 @@ window.__ModuleLoader__.load({
           vcardBox.style.height = ''
           vcardBox.style.overflowY = 'hidden'
         }
-        clearVCardHighlight()
         stopMicWatch()
       }
 
@@ -10352,7 +10269,6 @@ window.__ModuleLoader__.load({
             open: vcardState.open,
             watching: !!vcardState.timer,
             voiced: !!(vcard && vcard.getAttribute('data-voiced') === '1'),
-            highlight: vcardState.highlight,
             hasText: !!(vcard && vcard.getAttribute('data-text') === '1'),
             text: vcardBox ? vcardBox.value : '',
             focused: !!(vcardBox && document.activeElement === vcardBox),
