@@ -4848,6 +4848,8 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
   const box = find('dsh-sel-vcard-box')
   const sendBtn = find('dsh-sel-vcard-send')
   assert('卡片里有输入框（IME 上屏要落在它身上）', !!box && !!sendBtn, String(!!box) + '/' + String(!!sendBtn))
+  // 底纹：桩环境没有 Custom Highlight，应当走兜底色块那条路（真实浏览器里优先走 API）
+  assert('选中文字的底纹画上了（这里走兜底色块）', opened.highlight === 'rects', String(opened.highlight))
 
   // 焦点：桩 DOM 的 focus() 是空实现，这里换成可观测的再重开一次
   let focused = false
