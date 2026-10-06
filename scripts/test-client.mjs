@@ -1091,6 +1091,62 @@ assert('选中文字后浮标出现', !!button && button.style.display === 'inli
 
 }
 
+// ───────────────────────── 选中的文字被删掉 → 浮标必须消失 ─────────────────────────
+// 用户报的：划词浮标出来之后，把那段文字删了（Backspace / 打字覆盖 / 内容刷新把节点换掉），
+// 浮标还赖在屏幕上不走，点下去解读的是一段**屏幕上已经不存在**的文字。
+{
+  const rect = { left: 40, top: 100, right: 200, bottom: 118, width: 160, height: 18 }
+  /** 造一段"落在 node 上"的选区（锚点就是 node —— isConnected 那条判定要用它）。 */
+  const selectOn = (node, text) => {
+    const range = {
+      startContainer: node,
+      endContainer: node,
+      cloneRange: () => range,
+      getClientRects: () => [rect],
+      getBoundingClientRect: () => rect,
+    }
+    windowStub.getSelection = () => ({
+      isCollapsed: false,
+      rangeCount: 1,
+      toString: () => text,
+      getRangeAt: () => range,
+    })
+  }
+
+  // ① 拖拽划词进行中（鼠标按着）：不弹浮标 —— 时机要和"松手才弹"一致
+  selectOn(textEl, 'the migration ran long')
+  documentStub.dispatch('mousedown', { target: container })
+  documentStub.dispatch('selectionchange', {})
+  await sleep(20)
+  assert('拖拽中（鼠标按着）不弹浮标', button.style.display === 'none', String(button.style.display))
+  documentStub.dispatch('mouseup', { target: container })
+  await sleep(20)
+  assert('松手后照常弹浮标', button.style.display === 'inline-flex', String(button.style.display))
+
+  // ② 选区塌陷（Backspace / Delete / 打字覆盖 / 剪切走的都是这条）：浏览器发 selectionchange
+  windowStub.getSelection = () => ({ isCollapsed: true, rangeCount: 0, toString: () => '' })
+  documentStub.dispatch('selectionchange', {})
+  await sleep(20)
+  assert('选中的文字被删掉（选区塌陷）→ 浮标消失', button.style.display === 'none', String(button.style.display))
+
+  // ③ 选区**没塌陷**、锚点节点却已经被摘掉（Firefox 的行为）：靠 isConnected 判死
+  selectOn(textEl, 'the migration ran long')
+  documentStub.dispatch('mouseup', { target: container })
+  await sleep(20)
+  assert('（准备）浮标重新亮着', button.style.display === 'inline-flex', String(button.style.display))
+  textEl.isConnected = false
+  documentStub.dispatch('selectionchange', {})
+  await sleep(20)
+  assert('选中的节点被摘掉（选区没塌陷）→ 浮标也消失', button.style.display === 'none', String(button.style.display))
+  delete textEl.isConnected
+
+  // 还原成开头那段选区：后面的用例还要点这个浮标开小窗
+  windowStub.getSelection = () => selection
+  documentStub.dispatch('mouseup', { target: body })
+  await sleep(20)
+  assert('（还原）浮标回到可见', button.style.display === 'inline-flex', String(button.style.display))
+}
+
 // 引用（❝）的**离线**契约：浮标进了浮层、CSS 规则齐全（真实交互在宿主可达时另有一段）
 {
   const css = readFileSync(BUNDLE, 'utf8')

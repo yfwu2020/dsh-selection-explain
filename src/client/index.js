@@ -217,6 +217,22 @@ window.__ModuleLoader__.load({
       return value < min ? min : value > max ? max : value
     }
 
+    /**
+     * 选区是不是"指着一段已经不在文档里的文字"。
+     *
+     * 这是"选中的文字被删掉"的第二种形态，跟塌陷（`isCollapsed`）**不是**一回事：
+     * 节点被整个摘掉时（流式回答重渲染 / 消息被替换 / 内容区刷新），Firefox 里选区并不塌陷 ——
+     * `isCollapsed` 仍是 false、`toString()` 还吐得出那段旧文字，可那段文字屏幕上已经没有了。
+     * 只认塌陷的话浮标会赖着不走，点下去解读的是一段**不存在的文字**。
+     *
+     * 取不到 `isConnected`（老环境 / 无浏览器测试的桩 DOM）时一律当"还在"：
+     * 宁可多留一会儿，也不误收一个正常选区。
+     */
+    function selectionDetached(range) {
+      var node = range && range.startContainer
+      return !!node && node.isConnected === false
+    }
+
     /** 选区是否落在输入框里（那里不该弹按钮，避免干扰输入）。 */
     function insideEditable(node) {
       var element = node && node.nodeType === 1 ? node : node && node.parentElement
@@ -3513,8 +3529,23 @@ window.__ModuleLoader__.load({
 
       // —— 选区 → 浮标 ——
 
+      /**
+       * 排一次选区检查（下一拍执行）。
+       *
+       * 同一拍里的多次请求**合并成一次**：`selectionchange` 在打字 / 流式重绘时会连发很多下，
+       * 每下都排一个计时器的话 `timers` 数组会一直长（文件里别处也刻意避开这种写法，
+       * 见 schedulePillIdle 的注释）。合并是安全的 —— 检查读的是"当下"的选区，
+       * 而不是排队那一刻的快照。
+       */
+      var checkPending = false
+
       function scheduleCheck() {
-        later(checkSelection, 0)
+        if (checkPending) return
+        checkPending = true
+        later(function () {
+          checkPending = false
+          checkSelection()
+        }, 0)
       }
 
       /**
@@ -3614,6 +3645,12 @@ window.__ModuleLoader__.load({
         } catch (error) {
           return
         }
+        // 选中的节点被整个摘掉了（流式回答重渲染 / 消息换掉）：那段文字已经不在屏幕上
+        if (selectionDetached(range)) {
+          state.quoteSelection = null
+          hideQuoteButton()
+          return
+        }
         var text = String(selection.toString() || '')
         if (!text.trim() || text.length > MAX_QUOTE_SELECTION) {
           state.quoteSelection = null
@@ -3698,6 +3735,12 @@ window.__ModuleLoader__.load({
           return
         }
         var range = selection.getRangeAt(0)
+        // 选中的节点被整个摘掉了（流式回答重渲染 / 消息换掉）：那段文字已经不在屏幕上，
+        // 浮标不该留着（否则点下去解读的是一段不存在的文字）
+        if (selectionDetached(range)) {
+          hideButton()
+          return
+        }
         if (insideEditable(range.startContainer)) {
           hideButton()
           return
@@ -7653,7 +7696,25 @@ window.__ModuleLoader__.load({
         setQuotePop(false)
       })
 
+      /**
+       * 鼠标是不是按着（拖拽划词进行中）—— 记的是"按下那一刻"。
+       *
+       * 为什么记时刻而不是记一个布尔：松手落在浏览器窗口外时**不会补发 mouseup**，
+       * 布尔一旦卡在 true，`selectionchange` 就被永久忽略 —— 浮标从此再也不会自己收了。
+       * 超过 SELECT_PRESS_STALE_MS 就当已经松开（帧内那条桥用的是同一个兜底，见 bridgeBody）。
+       *
+       * 拖拽期间一律不查选区：时机要和"松手才弹浮标"一致，否则拖到一半浮标就冒出来，
+       * 还跟着手指跑。
+       */
+      var SELECT_PRESS_STALE_MS = 6000
+      var selectPressedAt = 0
+
+      function selectPressing() {
+        return selectPressedAt > 0 && Date.now() - selectPressedAt < SELECT_PRESS_STALE_MS
+      }
+
       var offMouseUp = listen(document, 'mouseup', function (event) {
+        selectPressedAt = 0
         // 面板里的 mouseup **也要走一次检查**：小窗开着时"划小窗正文"正是「引用」的主入口
         // （早先这里对面板直接 return —— 那是"面板里划词一律不管"年代的写法，
         //  结果就是小窗里划词毫无反应，只有气泡末尾的「引用整条」能用）。
@@ -7667,7 +7728,62 @@ window.__ModuleLoader__.load({
         }
       }, true)
 
+      /**
+       * 选中的文字**没了** → 浮标跟着消失。
+       *
+       * 为什么非要有这一条：浮标只在 mouseup 和少数几个键的 keyup 之后被检查，
+       * 而"把选中的字删掉"这两种动作都不在那条路径上 ——
+       *   · Backspace / Delete / 直接打字覆盖 / 剪切 / 撤回（⌘Z）；
+       *   · 内容刷新把选中的节点整个换掉（流式回答重渲染、消息重画）。
+       * 于是浮标赖在屏幕上不走，点下去还会解读一段**屏幕上已经不存在**的文字（用户报的正是这个）。
+       *
+       * `selectionchange` 是浏览器对"选区变了"最权威的信号（塌陷 / 被删 / 被程序改动都会发），
+       * 用它兜住所有非鼠标路径；节点被摘掉但选区没塌陷那种（Firefox）另有 selectionDetached 判死。
+       */
+      var offSelectionChange = listen(document, 'selectionchange', function () {
+        if (selectPressing()) return
+        scheduleCheck()
+      }, true)
+
+      /**
+       * 浮标亮着的时候，隔几拍确认一次"那段文字还在不在"。
+       *
+       * 为什么光有事件还不够：**Chrome 把选中的节点整个摘掉时会悄悄把选区塌陷，却不发
+       * `selectionchange`**（真浏览器实测：替换 textContent 后 `rangeCount` 仍是 1、
+       * `isCollapsed` 变成 true，而事件计数一个都不涨）。流式回答重渲染 / 消息重画走的正是这条路 ——
+       * 只靠事件的话，浮标会一直亮着，点下去解读的是一段屏幕上已经没有的文字。
+       *
+       * 代价是可控的：**只在浮标可见的那几拍里干活**（它不可见时这一拍立刻返回，
+       * 连选区都不读），而且只有发现选区没了/锚点被摘掉时才去排一次检查 ——
+       * 正常亮着的那几拍不做任何 DOM 写。
+       */
+      var FLOAT_WATCH_MS = 400
+
+      function watchFloatLiveness() {
+        // 拖拽划词进行中不查：浮标要等松手才出现（与 mouseup 那条路径同一套时机）
+        if (selectPressing()) return
+        if (button.style.display !== 'inline-flex' && quoteButton.style.display !== 'inline-flex') return
+        var selection = window.getSelection && window.getSelection()
+        if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+          // 帧内那条选区**不在本文档**：点浮标会让本文档的选区塌掉，别把它误当成"文字没了"
+          if (state.bridgeActive && state.selection && state.selection.source === 'iframe') return
+          scheduleCheck()
+          return
+        }
+        var range = null
+        try {
+          range = selection.getRangeAt(0)
+        } catch (error) {
+          return
+        }
+        // 选区没塌陷、锚点却被摘掉了（Firefox 的行为）：也当"文字没了"
+        if (selectionDetached(range)) scheduleCheck()
+      }
+
+      var floatWatchId = setInterval(watchFloatLiveness, FLOAT_WATCH_MS)
+
       var offMouseDown = listen(document, 'mousedown', function (event) {
+        selectPressedAt = Date.now()
         var target = event.target
         // 模型菜单：点它自己和胶囊之外**任何地方**都收起。
         // 必须放在最前面 —— 下面的 historyButton / pill / panel 分支都会 return，
@@ -10156,6 +10272,8 @@ window.__ModuleLoader__.load({
           offQuotePopEnd()
           offMouseUp()
           offKeyUp()
+          offSelectionChange()
+          if (floatWatchId) clearInterval(floatWatchId)
           offMouseDown()
           offButtonDown()
           offButtonClick()

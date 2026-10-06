@@ -734,6 +734,42 @@ async function main() {
     }
   }
 
+  // ⑨-b 选中的文字被删掉 → 浮标跟着消失（用户报的：文字没了，浮标还赖在屏幕上）
+  {
+    hook.close()
+    await sleep(80)
+    var planBtn2 = document.querySelector('.dsh-sel-btn:not(.dsh-sel-quotebtn)')
+    var docp3 = document.getElementById('docp')
+    selectIn(docp3, 'the migration ran long')
+    mouseUpOn(docp3)
+    var lit = await waitFor(function () {
+      return planBtn2 && planBtn2.style.display !== 'none' && planBtn2.getBoundingClientRect().width > 0
+    }, 1500)
+    check('（准备）主界面划词浮出「✦ 解读」', lit === true, planBtn2 ? planBtn2.style.display : '未找到按钮')
+
+    // ① 选区塌陷（Backspace / Delete / 打字覆盖 / 剪切走的都是这条）：浏览器会发 selectionchange
+    window.getSelection().removeAllRanges()
+    var gone = await waitFor(function () { return planBtn2.style.display === 'none' }, 800)
+    check('选中的文字被删掉（选区塌陷）→ 浮标消失', gone === true, planBtn2 ? planBtn2.style.display : '未找到按钮')
+
+    // ② 选中的节点被整个换掉（流式回答重渲染就是这条）：那段文字没了，浮标也不该留着。
+    //    ⚠️ 先确认浮标**真的收掉了**再往下走：不然 ① 漏掉时浮标一直亮着，
+    //      下面的"再次亮着"会白捡一个 PASS（这条用例就测不出东西了）。
+    var settled = await waitFor(function () { return planBtn2.style.display === 'none' }, 800)
+    check('（准备 ②）① 之后浮标确实是收着的', settled === true, planBtn2 ? planBtn2.style.display : '未找到按钮')
+    selectIn(docp3, 'the migration ran long')
+    mouseUpOn(docp3)
+    var lit2 = await waitFor(function () {
+      return planBtn2 && planBtn2.style.display !== 'none' && planBtn2.getBoundingClientRect().width > 0
+    }, 1500)
+    check('（准备 ②）浮标再次亮着', lit2 === true, planBtn2 ? planBtn2.style.display : '未找到按钮')
+    docp3.textContent = '（这段文字已经被换掉了）'
+    var gone2 = await waitFor(function () { return planBtn2.style.display === 'none' }, 800)
+    check('选中的节点被摘掉（文字被换掉）→ 浮标也消失', gone2 === true, planBtn2 ? planBtn2.style.display : '未找到按钮')
+    docp3.textContent = 'Dev: the migration ran long, so we ship Wednesday.'
+    await sleep(30)
+  }
+
   // ⑩ 浮标图标的**墨迹**要在画布里居中（用户报的："✦ 和 解读 好像没对齐，也没在按钮里居中"）
   //    为什么量 getBBox 而不是截图：浮动按钮是 align-items:center 的 flex，居中的是**画布盒子**，
   //    图形在画布里偏一点，图标就整体偏一点 —— 老星形路径 y 占 1.2~12.4（中心 6.8，不是 8），
