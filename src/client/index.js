@@ -1012,8 +1012,32 @@ window.__ModuleLoader__.load({
       'cursor:pointer;opacity:0;pointer-events:none;transition:opacity .16s ease}',
       // 还什么都没说时不摆出发送键（先只显示"正在听…"）
       '.dsh-sel-vcard[data-text="1"] .dsh-sel-vcard-send{opacity:1;pointer-events:auto}',
+      // ── 消失：老式电视机关机（A 方案）────────────────────────────────
+      // 卡片塌成一条线，亮线再横缩成一个点。两件事分开做：
+      //   · 卡片：transform 压缩（走合成器）
+      //   · 亮线：**独立元素**，不能做成卡片的 box-shadow ——
+      //     box-shadow 会跟着 transform 一起被压扁，塌到 5% 时连光晕都成一条（实测踩过）
+      // 颜色由 JS 按明暗写进内联样式：浅色底上白线看不见（只差 ~15/255），深色底上深带子会消失。
+      '.dsh-sel-crtline{position:fixed;height:3px;border-radius:2px;opacity:0;pointer-events:none;',
+      'z-index:2147483001;transform-origin:50% 50%}',
+      '.dsh-sel-vcard[data-off="a"]{transform-origin:50% 50%;animation:dsh-sel-crt-card-a 420ms cubic-bezier(.3,0,.2,1) forwards}',
+      '.dsh-sel-crtline[data-off="a"]{animation:dsh-sel-crt-line-a 420ms cubic-bezier(.35,0,.25,1) forwards}',
+      // opacity 必须在前面显式写 1：只在 100% 写 0 的话，CSS 会从 0% 起就线性插值，
+      // 整段塌缩都在同时淡出（实测 160ms 时 opacity 已经掉到 0.365），
+      // 而显像管是"一直亮着、最后一下才没"。
+      '@keyframes dsh-sel-crt-card-a{',
+      '0%{transform:scale(1,1);filter:brightness(1);opacity:1}',
+      '38%{transform:scale(1,1.06);filter:brightness(1.35);opacity:1}',
+      '62%{transform:scale(1,.055);filter:brightness(2.2);opacity:1}',
+      '88%{opacity:1}',
+      '100%{transform:scale(.5,.05);filter:brightness(2.4);opacity:0}}',
+      '@keyframes dsh-sel-crt-line-a{',
+      '0%,52%{opacity:0;transform:scaleX(1)}',
+      '60%{opacity:1;transform:scaleX(1)}',
+      '100%{opacity:0;transform:scaleX(.02)}}',
       '@media (prefers-reduced-motion:reduce){',
-      '.dsh-sel-vcard{transition:none}.dsh-sel-vcard[data-voiced="1"]{animation:none}}',
+      '.dsh-sel-vcard{transition:none}.dsh-sel-vcard[data-voiced="1"]{animation:none}',
+      '.dsh-sel-vcard[data-off="a"],.dsh-sel-crtline[data-off="a"]{animation:none!important;opacity:0}}',
     ].join('')
 
     // ────────────────────── Markdown 轻渲染（全 DOM，无 innerHTML） ──────────────────────
@@ -3896,6 +3920,8 @@ window.__ModuleLoader__.load({
       var vcard = null
       var vcardBox = null
       var vcardSend = null
+      /** 关机动画那条亮线（懒建）。 */
+      var crtLine = null
       var vcardState = {
         open: false,
         /** 打开时的选区快照（滚动 / 改窗口大小时按它重算位置）。 */
@@ -3912,6 +3938,11 @@ window.__ModuleLoader__.load({
         /** 形变期间钉住正文宽度用的兜底定时器 / transitionend 句柄。 */
         unpinTimer: null,
         unpinHandler: null,
+        /** 正在播关机动画（这段时间内卡片还没真正隐藏）。 */
+        closing: false,
+        /** 关机动画的兜底定时器 / animationend 句柄。 */
+        crtTimer: null,
+        crtHandler: null,
       }
 
       function ensureVCard() {
@@ -3957,7 +3988,7 @@ window.__ModuleLoader__.load({
           var target = event.target
           if (target && (target === vcard || (vcard.contains && vcard.contains(target)))) return
           vcardState.suppress = true
-          closeVCard()
+          closeVCard(true)
         }, true)
         listen(window, 'scroll', function () {
           if (vcardState.open) repositionVCard()
@@ -4096,6 +4127,8 @@ window.__ModuleLoader__.load({
         if (typeof document.hasFocus === 'function' && !document.hasFocus()) return
         if (isTypingTarget(document.activeElement)) return
         ensureVCard()
+        // 上一轮的关机动画可能还没收尾（用户马上又划了新文字、又开麦）：先收干净再开
+        if (vcardState.closing || vcardState.crtTimer) finishCrtOff()
         vcardState.range = state.selection.range
         var geo = vcardGeometry()
         if (!geo) return
@@ -4183,24 +4216,133 @@ window.__ModuleLoader__.load({
        * "要不要解读"，而用户刚表达的是"这次算了"。要解读就重新划一次。
        * 发送那条路也不还（它直接开面板了）。
        */
-      function closeVCard() {
-        if (!vcardState.open) return
-        vcardState.open = false
-        vcardState.range = null
+      /** 关机动画那条亮线（懒建）。 */
+      function ensureCrtLine() {
+        if (crtLine) return crtLine
+        crtLine = el('div', 'dsh-sel-crtline')
+        layer.appendChild(crtLine)
+        return crtLine
+      }
+
+      /** 系统是否要求减少动效。 */
+      function prefersReducedMotion() {
+        try {
+          return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+        } catch (error) {
+          return false
+        }
+      }
+
+      /**
+       * 播"老式电视机关机"：卡片塌成一条线，亮线再横缩成一个点（A 方案，420ms）。
+       *
+       * 只在**取消**时播 —— 发送那条要立刻开面板，动画会和面板叠在一起。
+       *
+       * 亮线是**独立元素**，不是卡片的 box-shadow：box-shadow 会跟着 transform 一起被压扁，
+       * 塌到 5% 时连光晕都成一条（实测踩过）。颜色也按明暗给两套 ——
+       * 浅色底上白线看不见（实测只差 ~15/255），深色底上反过来，白线才亮得起来。
+       *
+       * 返回 false 表示没播（系统要求减少动效 / 卡片量不出尺寸），调用方直接收掉。
+       */
+      function playCrtOff() {
+        if (!vcard || prefersReducedMotion()) return false
+        var rect = vcard.getBoundingClientRect()
+        if (!rect.width || !rect.height) return false
+        var line = ensureCrtLine()
+        var dark = false
+        try {
+          dark = isDarkSurface(document.body)
+        } catch (error) {
+          dark = false
+        }
+        // 亮线摆在卡片正中、宽度跟着卡片（都是 fixed 定位，同一套视口坐标）
+        line.style.left = Math.round(rect.left) + 'px'
+        line.style.top = Math.round(rect.top + rect.height / 2 - 1.5) + 'px'
+        line.style.width = Math.round(rect.width) + 'px'
+        line.style.background = dark ? '#FFFFFF' : 'var(--sel-a1)'
+        line.style.boxShadow = dark
+          ? '0 0 12px 2px rgba(190,245,255,.8)'
+          : '0 0 12px 2px rgba(13,148,136,.55)'
+        vcardState.closing = true
+        // 摘掉再挂上：让动画能重播（同一元素上连续两次收卡片）
+        vcard.removeAttribute('data-off')
+        line.removeAttribute('data-off')
+        void vcard.offsetWidth
+        vcard.setAttribute('data-off', 'a')
+        line.setAttribute('data-off', 'a')
+        var done = function () {
+          if (vcardState.crtTimer) {
+            clearTimeout(vcardState.crtTimer)
+            vcardState.crtTimer = null
+          }
+          if (vcard && vcardState.crtHandler) {
+            vcard.removeEventListener('animationend', vcardState.crtHandler)
+            vcardState.crtHandler = null
+          }
+          finishCrtOff()
+        }
+        // animationend 是主路径；另挂兜底 —— 标签页在后台时动画根本不跑，事件也就不会来
+        vcardState.crtHandler = function (event) {
+          if (event.target === vcard) done()
+        }
+        vcard.addEventListener('animationend', vcardState.crtHandler)
+        vcardState.crtTimer = later(done, 640)
+        return true
+      }
+
+      /**
+       * 关机动画收尾：真正把卡片和亮线藏掉。
+       *
+       * 幂等 —— 不播动画时 closeVCard 直接调它，顺便清掉上一轮动画的残留。
+       */
+      function finishCrtOff() {
+        vcardState.closing = false
+        if (vcardState.crtTimer) {
+          clearTimeout(vcardState.crtTimer)
+          vcardState.crtTimer = null
+        }
+        if (vcard && vcardState.crtHandler) {
+          vcard.removeEventListener('animationend', vcardState.crtHandler)
+          vcardState.crtHandler = null
+        }
         if (vcard) {
+          vcard.removeAttribute('data-off')
           vcard.style.display = 'none'
+          vcard.style.opacity = ''
+          vcard.style.filter = ''
+          vcard.style.transform = ''
+          vcard.style.borderRadius = ''
           vcard.setAttribute('data-voiced', '0')
           vcard.setAttribute('data-text', '0')
-          vcard.style.borderRadius = ''
         }
         if (vcardBox) {
           vcardBox.value = ''
           vcardBox.style.height = ''
           vcardBox.style.overflowY = 'hidden'
         }
+        if (crtLine) {
+          crtLine.removeAttribute('data-off')
+          crtLine.style.opacity = ''
+        }
+      }
+
+      /**
+       * 收起卡片。
+       *
+       * animate=true（取消：Esc / 点空白）时先播关机动画，动画结束再真正隐藏；
+       * 其余路径（发送 / 调试钩子）立刻收掉。
+       * **不还回「✦ 解读」浮标**：取消就是取消，要解读就重新划一次。
+       */
+      function closeVCard(animate) {
+        if (!vcardState.open) return
+        vcardState.open = false
+        vcardState.range = null
         stopMicWatch()
         // 形变还没结束就被关掉时，正文宽度可能还钉着 —— 一并解开
         unpinVCardBox()
+        // 动画期间正文/占位都留着（要塌的就是它），收尾时才清
+        if (animate && playCrtOff()) return
+        finishCrtOff()
       }
 
       /** 发送：跳过翻译与详解，把说的话当作第一条追问直接发出去。 */
@@ -8270,7 +8412,7 @@ window.__ModuleLoader__.load({
         event.preventDefault()
         event.stopPropagation()
         vcardState.suppress = true
-        closeVCard()
+        closeVCard(true)
       }, true)
 
       /**
@@ -10333,6 +10475,7 @@ window.__ModuleLoader__.load({
         voiceCard: function () {
           return {
             open: vcardState.open,
+            closing: vcardState.closing,
             watching: !!vcardState.timer,
             voiced: !!(vcard && vcard.getAttribute('data-voiced') === '1'),
             hasText: !!(vcard && vcard.getAttribute('data-text') === '1'),

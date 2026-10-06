@@ -4915,6 +4915,30 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       button.style.display === 'none',
       '浮标 display=' + String(button.style.display),
     )
+    // 取消时播"老式电视机关机"（A 方案）：卡片先留在画面上塌缩，动画结束才真正隐藏
+    const closingState = hook.voiceCard()
+    const cardEl = find('dsh-sel-vcard')
+    const crtLine = find('dsh-sel-crtline')
+    assert('取消时先播关机动画（卡片还在画面上）', closingState.closing === true, JSON.stringify(closingState))
+    assert(
+      '关机动画挂在卡片上（data-off=a）',
+      !!cardEl && cardEl.getAttribute('data-off') === 'a',
+      cardEl ? String(cardEl.getAttribute('data-off')) : 'no card',
+    )
+    assert(
+      '亮线是独立元素，宽度跟着卡片、颜色按明暗给',
+      !!crtLine && crtLine.style.width === '460px' && !!crtLine.style.background,
+      crtLine ? crtLine.style.width + ' / ' + String(crtLine.style.background) : 'no line',
+    )
+    // 桩环境没有 animationend，走 640ms 兜底
+    await sleep(780)
+    const closed = hook.voiceCard()
+    assert(
+      '关机动画结束后卡片才真正隐藏',
+      closed.closing === false && !!cardEl && cardEl.style.display === 'none' && !cardEl.getAttribute('data-off'),
+      JSON.stringify(closed) + ' / display=' + (cardEl ? String(cardEl.style.display) : '?'),
+    )
+    assert('亮线也一并收掉', !!crtLine && !crtLine.getAttribute('data-off'), crtLine ? String(crtLine.getAttribute('data-off')) : 'no line')
   } else {
     assert('Esc 收起语音卡', false, '卡片没能再次打开：' + JSON.stringify(reopened))
   }
