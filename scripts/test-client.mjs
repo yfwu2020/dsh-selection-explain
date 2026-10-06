@@ -4853,9 +4853,15 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
   documentStub.createRange = () => {
     const r = realCreateRange()
     r.startContainer = blockEl
+    // 真实浏览器实测的形状（选区跨整段时）：一个**块级盒子**（h=53，盖住两行）
+    // + 每行两个片段（行内 code 会给出外盒/内盒）。
+    // 块盒不丢掉的话会把两行吞成一组 → 只有一条下划线（用户报的"有些行没有划线"）。
     r.getClientRects = () => [
-      { left: 40, top: 100, right: 120, bottom: 118, width: 80, height: 18 },
-      { left: 120, top: 100, right: 200, bottom: 121, width: 80, height: 21 },
+      { left: 20, top: 100, right: 580, bottom: 153, width: 560, height: 53 },
+      { left: 20, top: 102, right: 187, bottom: 123, width: 167, height: 21 },
+      { left: 187, top: 105, right: 346, bottom: 122, width: 159, height: 17 },
+      { left: 20, top: 128, right: 83, bottom: 149, width: 63, height: 21 },
+      { left: 83, top: 128, right: 533, bottom: 149, width: 450, height: 21 },
     ]
     // 选区本体很大（跨到 200），起点块只到 110
     r.getBoundingClientRect = () => ({ left: 40, top: 100, right: 200, bottom: 200, width: 160, height: 100 })
@@ -4889,7 +4895,7 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
   const thread = find('dsh-sel-thread')
   assert(
     '卡片打开后画了下划线（按选区逐行矩形）',
-    !!uline && uline.style.width === '160px',
+    !!uline && /px$/.test(String(uline.style.width)),
     uline ? String(uline.style.width) : 'none',
   )
   assert(
@@ -4911,11 +4917,20 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
   )
 
   const merged = Array.from(walk(mount)).filter((n) => n.className === 'dsh-sel-uline')
-  assert('同一行的多个矩形归并成一条下划线（不再"划两层"）', merged.length === 1, '下划线条数=' + merged.length)
   assert(
-    '归并后覆盖整行（80+80=160），且取最低的那条底边（121+3=124）',
-    !!merged[0] && merged[0].style.width === '160px' && merged[0].style.top === '124px',
+    '块级盒子被丢掉，两行各有一条下划线（不再整段只剩一条）',
+    merged.length === 2,
+    '下划线条数=' + merged.length + '（应为 2；不丢块盒会是 1）',
+  )
+  assert(
+    '第一行：归并成一条（20..346），取最低底边 123+3',
+    !!merged[0] && merged[0].style.width === '326px' && merged[0].style.top === '126px',
     merged[0] ? String(merged[0].style.width) + ' / top=' + String(merged[0].style.top) : 'none',
+  )
+  assert(
+    '第二行也有自己的下划线（20..533）',
+    !!merged[1] && merged[1].style.width === '513px' && merged[1].style.top === '152px',
+    merged[1] ? String(merged[1].style.width) + ' / top=' + String(merged[1].style.top) : 'none',
   )
 
   documentStub.createRange = realCreateRange

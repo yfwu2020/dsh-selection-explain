@@ -4326,16 +4326,39 @@ window.__ModuleLoader__.load({
         // 一行里如果有行内元素（<code>、粗体、链接），getClientRects() 会给出**多个矩形**，
         // 而且它们的高度 / 底边各不相同 —— 按矩形各画一条就会"划两层"，
         // 渐隐也会出现在行中间（用户实测的两个问题，同一个根因）。
+        // ⚠️ 第一步：丢掉"容器矩形"。
+        // 选区跨**整块**时，getClientRects() 会把块级盒子也返回 —— 一个覆盖整段的高矩形
+        // （实测：一段两行会额外给出 h=53 的块盒，一个代码块给出 h=80 的块盒）。
+        // 它会把段内所有行吞进一组，结果整段只画一条下划线、很多行没线（用户实测）。
+        // 判据用高度中位数：行片段的高度都接近行高，块盒是它的数倍。
+        var heights = []
+        for (var h = 0; h < rects.length; h += 1) {
+          var probe = rects[h]
+          if (probe && probe.width) heights.push(probe.bottom - probe.top)
+        }
+        heights.sort(function (a, b) {
+          return a - b
+        })
+        var median = heights.length ? heights[Math.floor(heights.length / 2)] : 0
+        var maxLineHeight = median > 0 ? median * 1.8 : Infinity
         var lines = []
         for (var i = 0; i < rects.length; i += 1) {
           var rect = rects[i]
           if (!rect || !rect.width) continue
+          if (rect.bottom - rect.top > maxLineHeight) continue
+          var height = rect.bottom - rect.top
+          var center = rect.top + height / 2
           var line = null
           for (var j = 0; j < lines.length; j += 1) {
             var group = lines[j]
-            var overlap = Math.min(group.bottom, rect.bottom) - Math.max(group.top, rect.top)
-            var smaller = Math.min(group.bottom - group.top, rect.bottom - rect.top)
-            if (smaller > 0 && overlap > smaller * 0.5) {
+            var groupHeight = group.bottom - group.top
+            var groupCenter = group.top + groupHeight / 2
+            // ⚠️ 判"同一行"必须看**垂直中心**，不能看重叠面积：
+            // 行内 code 的盒子可能比整行还高（行高 1.8 时尤其明显），
+            // 按重叠判会把**下一行**也吞进同一组 → 那几行就没有下划线了（用户实测）。
+            // 中心距的容差取"较矮者的一半"：同一行的元素中心几乎重合，
+            // 相邻行的中心差至少一个行高，两者区分得很干净。
+            if (height > 0 && groupHeight > 0 && Math.abs(groupCenter - center) <= Math.min(groupHeight, height) * 0.5) {
               line = group
               break
             }
