@@ -1014,9 +1014,8 @@ window.__ModuleLoader__.load({
       '.dsh-sel-vcard[data-text="1"] .dsh-sel-vcard-send{opacity:1;pointer-events:auto}',
       // 选中文字的底纹：抢焦点（IME 上屏必须）会清掉原生选区，所以用 Custom Highlight
       // 把那段 range 单独画一层 —— 不碰 DOM、不影响焦点，关卡片时整层撤掉。
-      '::highlight(dsh-sel-voice){background:var(--dsh-sel-hl,rgba(59,110,245,.22))}',
-      // 兜底用的自绘色块层（Safari 等没有 Custom Highlight 的浏览器走这条）：
-      // 整层 pointer-events:none，绝不挡住页面交互；色块按选区的逐行矩形摆。
+      // 选中文字的底纹层：按选区的逐行矩形自绘色块（**不用** CSS Custom Highlight）。
+      // 整层 pointer-events:none，绝不挡住页面交互。
       '.dsh-sel-vhl-layer{position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:0}',
       '.dsh-sel-vhl{position:absolute;border-radius:2px}',
       '@media (prefers-reduced-motion:reduce){',
@@ -3832,18 +3831,11 @@ window.__ModuleLoader__.load({
         else button.removeAttribute('data-pop')
       }
 
-      /**
-       * 显示浮标。
-       *
-       * silent：**静默放回**，不播"浮现"动效。给"取消语音卡、把浮标还回来"那条路用 ——
-       * 浮现动效是给"新划了一段文字、浮标第一次出现"的；把还回来的浮标也弹一下，
-       * 用户看到的就是"取消之后小按钮闪了一下"（实测报的就是这个）。
-       */
-      function showButton(rect, silent) {
+      function showButton(rect) {
         // 浮标也在同一套配色下：它的底色是"页面背景"（浮层自身透明），按它判深浅
         if (!panelOpen) layer.setAttribute('data-theme', isDarkSurface(layer) ? 'dark' : 'light')
         // 只在"浮现"那一次播动效；已经可见时（划选范围被拖动、键盘调整）只平移，避免一直闪
-        if (placeFloat(button, rect) && !silent) {
+        if (placeFloat(button, rect)) {
           setButtonPop(false)
           void button.offsetWidth // 强制重排，让动画能重播
           setButtonPop(true)
@@ -3925,7 +3917,7 @@ window.__ModuleLoader__.load({
          * Esc 看起来像失灵（实测就是这么暴露出来的）。等 !capturing 才解除。
          */
         suppress: false,
-        /** 底纹走的哪条路：api / rects / none（自检钩子读它，排查"看不到底纹"用）。 */
+        /** 底纹状态：rects / none（自检钩子读它，排查"看不到底纹"用）。 */
         highlight: 'none',
       }
 
@@ -3972,7 +3964,7 @@ window.__ModuleLoader__.load({
           var target = event.target
           if (target && (target === vcard || (vcard.contains && vcard.contains(target)))) return
           vcardState.suppress = true
-          closeVCard(true)
+          closeVCard()
         }, true)
         listen(window, 'scroll', function () {
           if (vcardState.open) repositionVCard()
@@ -4111,9 +4103,7 @@ window.__ModuleLoader__.load({
        * 用 CSS Custom Highlight 单独画一层：不碰 DOM、不碰焦点，关掉时整层撤走。
        * 不支持的环境（老浏览器）就没有底纹 —— 功能不受影响，只是少个视觉。
        */
-      var HIGHLIGHT_NAME = 'dsh-sel-voice'
-
-      /** 兜底色块那一层（懒建）。 */
+      /** 底纹色块那一层（懒建）。 */
       function ensureVCardHighlightLayer() {
         if (vcardHighlightLayer) return vcardHighlightLayer
         vcardHighlightLayer = el('div', 'dsh-sel-vhl-layer')
@@ -4121,37 +4111,33 @@ window.__ModuleLoader__.load({
         return vcardHighlightLayer
       }
 
+      /**
+       * 画选中文字的底纹：按选区的**逐行矩形**自绘色块。
+       *
+       * 为什么不用 CSS Custom Highlight（`::highlight()` + `CSS.highlights`）：
+       * 它只有 Chromium 系支持，Safari 上连构造函数都不存在 —— 插件又没法知道用户在哪个浏览器里，
+       * 于是"静默画不出来"就成了默认结果（用户实测"根本看不到"）。自绘色块不挑浏览器，
+       * 而且位置本来就是按 range 的矩形算的，和浮标/卡片用的是同一套坐标，好排查。
+       *
+       * 代价：色块是**盖**在字上的（API 是画在字形背后），文字会被轻微染色 ——
+       * 用 0.22 的透明度时观感和原生选区几乎一样，可以接受。
+       */
       function paintVCardHighlight() {
         clearVCardHighlight()
         var range = vcardState.range
         if (!range) return
+        // 跨文档选区（侧边栏 iframe 里选的）：矩形是那个文档的视口坐标，摆到本文档会错位 ——
+        // 宁可不画，也不画错地方。
+        // 注意判断写成"**确定**是别的文档才跳过"：取不到 ownerDocument 时（无浏览器测试的桩 DOM）
+        // 要照画，否则这条兜底在测试里永远跑不到，等于没被验证过。
+        var owner = range.startContainer && range.startContainer.ownerDocument
+        if (owner && owner !== document) return
         var tint = 'rgba(59,110,245,.22)'
         try {
           tint = isDarkSurface(document.body) ? 'rgba(110,168,254,.32)' : 'rgba(59,110,245,.22)'
         } catch (error) {
           /* 判不出明暗就用浅色那套 */
         }
-        // ① 首选 Custom Highlight：画在字形背后，和原生选区最像，而且完全不碰页面 DOM。
-        //    注意它目前只有 Chromium 系支持 —— Safari 上这条路直接不成立，
-        //    所以**不能**只靠它（用户实测"根本看不到"就是这个原因）。
-        try {
-          var sameDoc = range.startContainer && range.startContainer.ownerDocument === document
-          if (
-            typeof Highlight === 'function' &&
-            typeof CSS !== 'undefined' &&
-            CSS.highlights &&
-            sameDoc
-          ) {
-            document.documentElement.style.setProperty('--dsh-sel-hl', tint)
-            CSS.highlights.set(HIGHLIGHT_NAME, new Highlight(range))
-            vcardState.highlight = 'api'
-            return
-          }
-        } catch (error) {
-          /* 掉到兜底 */
-        }
-        // ② 兜底：按选区的**逐行矩形**自绘色块。用我们自己的层，pointer-events:none，
-        //    不碰页面 DOM；滚动 / 改窗口时跟着重排（见 repositionVCard）。
         try {
           var rects = range.getClientRects ? range.getClientRects() : null
           if (!rects || !rects.length) return
@@ -4175,12 +4161,6 @@ window.__ModuleLoader__.load({
 
       function clearVCardHighlight() {
         vcardState.highlight = 'none'
-        try {
-          if (typeof CSS !== 'undefined' && CSS.highlights) CSS.highlights.delete(HIGHLIGHT_NAME)
-          document.documentElement.style.removeProperty('--dsh-sel-hl')
-        } catch (error) {
-          /* noop */
-        }
         if (vcardHighlightLayer && vcardHighlightLayer.children.length) {
           vcardHighlightLayer.textContent = ''
         }
@@ -4214,7 +4194,14 @@ window.__ModuleLoader__.load({
         }
       }
 
-      function closeVCard(restorePill) {
+      /**
+       * 收起卡片。
+       *
+       * **不还回「✦ 解读」浮标**（用户要求）：取消就是取消 —— 浮标再冒出来，等于在问
+       * "要不要解读"，而用户刚表达的是"这次算了"。要解读就重新划一次。
+       * 发送那条路也不还（它直接开面板了）。
+       */
+      function closeVCard() {
         if (!vcardState.open) return
         vcardState.open = false
         vcardState.range = null
@@ -4231,8 +4218,6 @@ window.__ModuleLoader__.load({
         }
         clearVCardHighlight()
         stopMicWatch()
-        // 静默还回浮标（silent=true）：只是"放回原位"，不是"新出现"，不该播浮现动效
-        if (restorePill && state.selection && !panelOpen) showButton(state.selection.rect, true)
       }
 
       /** 发送：跳过翻译与详解，把说的话当作第一条追问直接发出去。 */
@@ -4244,11 +4229,11 @@ window.__ModuleLoader__.load({
         }
         var selection = state.selection
         if (!selection || !selection.range) {
-          closeVCard(false)
+          closeVCard()
           return
         }
         var contextInfo = collectContext(rangeSelection(selection.range))
-        closeVCard(false)
+        closeVCard()
         openPanelWith(
           selection.text,
           contextInfo.context,
@@ -8302,7 +8287,7 @@ window.__ModuleLoader__.load({
         event.preventDefault()
         event.stopPropagation()
         vcardState.suppress = true
-        closeVCard(true)
+        closeVCard()
       }, true)
 
       /**
@@ -10387,7 +10372,7 @@ window.__ModuleLoader__.load({
           return window.__dshSelectionExplain.voiceCard()
         },
         voiceCardClose: function () {
-          closeVCard(false)
+          closeVCard()
           return window.__dshSelectionExplain.voiceCard()
         },
         voiceCardSend: function (text) {
