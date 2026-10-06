@@ -8267,7 +8267,10 @@ window.__ModuleLoader__.load({
       })
 
       var offKeyDown = listen(document, 'keydown', function (event) {
-        if (event.key !== 'Escape' || !panelOpen) return
+        if (event.key !== 'Escape' || !panelOpen || event.defaultPrevented || event.isComposing || event.keyCode === 229) return
+        // 完整视图中的并列小窗各自处理焦点内的 Esc，不能抢走聊天窗口的退出。
+        // 历史列表挂在 panel 的同级，仍属于本解读窗口。
+        if (document.querySelector('[data-dsh-full-view]') && !panel.contains(event.target) && !historyList.contains(event.target)) return
         // Esc 分三级：**从最内层往外退**，一次只退一层（用户按一次不该连关两层）。
         //   ① 设置抽屉开着 → 只收抽屉，小窗留着（用户多半只是改完想接着看解读）；
         //   ② 语音进行中（录音行还在）→ 只取消这一次语音（等价于点 ✕，已经说出来的字留着）；
