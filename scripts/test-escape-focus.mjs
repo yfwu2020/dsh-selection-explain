@@ -6,7 +6,7 @@ const source = readFileSync(new URL('../src/client/index.js', import.meta.url), 
 const start = source.indexOf('      var offKeyDown = listen(document,')
 const end = source.indexOf('\n\n      var offSettingsOpen', start)
 assert.ok(start >= 0 && end > start)
-const ask = {}, historyInput = {}, outside = {}
+const ask = {}, historyInput = {}, outside = {}, expandedChat = { closest: () => ({}) }, compactChat = { closest: () => null }, nativeMenu = { closest: selector => selector.startsWith('[role=') ? {} : null }
 let handler, fullView = true, calls = []
 const context = vm.createContext({
   panelOpen: true, settingsOpen: false,
@@ -27,8 +27,14 @@ function escape(target, extra = {}) {
 }
 function reset() { calls = []; context.panelOpen = true; context.settingsOpen = false; context.settingsByKey = {}; context.captureRow.getAttribute = () => '0' }
 escape(outside)
-assert.deepEqual(calls, [], '完整视图中其他窗口的 Esc 不关闭解读、不拦截事件')
+assert.equal(context.panelOpen, false, '焦点在两窗之外时优先关闭解读')
+reset(); escape(expandedChat)
+assert.deepEqual(calls, [], '展开聊天的 Esc 交给聊天，不关闭解读')
 assert.equal(context.panelOpen, true)
+reset(); escape(compactChat)
+assert.equal(context.panelOpen, false, '聊天收起后焦点留在紧凑条，再按 Esc 仍能关闭解读')
+reset(); escape(nativeMenu)
+assert.deepEqual(calls, [], '原生菜单先处理自身 Esc，不连带关闭解读')
 for (const extra of [{ isComposing: true }, { keyCode: 229 }, { defaultPrevented: true }]) {
   reset(); escape(ask, extra); assert.deepEqual(calls, [], '输入法或已处理的 Esc 不关闭解读')
 }
