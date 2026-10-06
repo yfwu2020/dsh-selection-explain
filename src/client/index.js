@@ -8273,7 +8273,15 @@ window.__ModuleLoader__.load({
         if (document.querySelector('[data-dsh-full-view]')) {
           var escapeTarget = event.target
           var canFindEscapeOwner = escapeTarget && typeof escapeTarget.closest === 'function'
-          if (canFindEscapeOwner && escapeTarget.closest('[data-dsh-floating-chat]:not([data-dsh-chat-minimized]):not([data-dsh-chat-hidden])')) return
+          var expandedChatSelector = '[data-dsh-floating-chat]:not([data-dsh-chat-minimized]):not([data-dsh-chat-hidden])'
+          var chatOwnsEscape = canFindEscapeOwner && escapeTarget.closest(expandedChatSelector)
+          // closest() stops at Shadow DOM boundaries; the composed path still contains the chat host.
+          if (!chatOwnsEscape && typeof event.composedPath === 'function') {
+            chatOwnsEscape = event.composedPath().some(function (node) {
+              return node && node.nodeType === 1 && node.matches && node.matches(expandedChatSelector)
+            })
+          }
+          if (chatOwnsEscape) return
           // 宿主菜单可能挂在聊天外；让它先消费 Esc，不连带关闭解读。
           if (!panel.contains(escapeTarget) && !historyList.contains(escapeTarget) && canFindEscapeOwner && escapeTarget.closest('[role="menu"], [role="listbox"], [data-trigger-menu]')) return
         }
