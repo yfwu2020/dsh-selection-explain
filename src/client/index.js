@@ -8384,12 +8384,16 @@ window.__ModuleLoader__.load({
 
       var offKeyDown = listen(document, 'keydown', function (event) {
         if (event.key !== 'Escape' || !panelOpen || event.defaultPrevented || event.isComposing || event.keyCode === 229) return
-        // 展开的聊天小窗先处理自己的 Esc；焦点在两窗外时优先退出解读。
-        // 聊天已收成紧凑条后，下一次 Esc 可以退出仍打开的解读窗口。
-        if (document.querySelector('[data-dsh-full-view]')) {
+        // 完整视图记录最后点击/操作的小窗；不能只看可能停在另一窗的键盘焦点。
+        var fullViewFrame = document.querySelector('[data-dsh-full-view]')
+        if (fullViewFrame) {
           var escapeTarget = event.target
           var canFindEscapeOwner = escapeTarget && typeof escapeTarget.closest === 'function'
-          if (canFindEscapeOwner && escapeTarget.closest('[data-dsh-floating-chat]:not([data-dsh-chat-minimized]):not([data-dsh-chat-hidden])')) return
+          var expandedChatSelector = '[data-dsh-floating-chat]:not([data-dsh-chat-minimized]):not([data-dsh-chat-hidden])'
+          var activeFloatingWindow = fullViewFrame.getAttribute('data-dsh-active-floating-window')
+          if (activeFloatingWindow === 'chat' && document.querySelector(expandedChatSelector)) return
+          // 与旧版完整视图共存时仍保留原来的键盘焦点判断。
+          if (activeFloatingWindow === null && canFindEscapeOwner && escapeTarget.closest(expandedChatSelector)) return
           // 宿主菜单可能挂在聊天外；让它先消费 Esc，不连带关闭解读。
           if (!panel.contains(escapeTarget) && !historyList.contains(escapeTarget) && canFindEscapeOwner && escapeTarget.closest('[role="menu"], [role="listbox"], [data-trigger-menu]')) return
         }

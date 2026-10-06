@@ -6,13 +6,15 @@ const source = readFileSync(new URL('../src/client/index.js', import.meta.url), 
 const start = source.indexOf('      var offKeyDown = listen(document,')
 const end = source.indexOf('\n\n      var offSettingsOpen', start)
 assert.ok(start >= 0 && end > start)
-const ask = {}, historyInput = {}, outside = {}, expandedChat = { closest: () => ({}) }, compactChat = { closest: () => null }, nativeMenu = { closest: selector => selector.startsWith('[role=') ? {} : null }
-let handler, fullView = true, calls = []
+const ask = {}, historyInput = {}, outside = {}, expandedChat = { closest: selector => selector.startsWith('[data-dsh-floating-chat]') ? {} : null }, compactChat = { closest: () => null }, nativeMenu = { closest: selector => selector.startsWith('[role=') ? {} : null }
+let handler, fullView = true, calls = [], activeWindow = null, chatExpanded = true
 const context = vm.createContext({
   panelOpen: true, settingsOpen: false,
   panel: { contains: node => node === ask },
   historyList: { contains: node => node === historyInput },
-  document: { querySelector: selector => selector === '[data-dsh-full-view]' && fullView ? {} : null },
+  document: { querySelector: selector => selector === '[data-dsh-full-view]' && fullView
+    ? { getAttribute: () => activeWindow }
+    : selector.startsWith('[data-dsh-floating-chat]') && chatExpanded ? {} : null },
   listen(target, type, callback, capture) { assert.equal(type, 'keydown'); assert.equal(capture, true); handler = callback },
   captureRow: { getAttribute: () => '0' }, settingsByKey: {},
   closeModelPicks() { calls.push('menu') },
@@ -25,7 +27,16 @@ function escape(target, extra = {}) {
   const event = { key: 'Escape', target, ...extra, preventDefault() { calls.push('prevent') }, stopPropagation() { calls.push('stop') } }
   handler(event)
 }
-function reset() { calls = []; context.panelOpen = true; context.settingsOpen = false; context.settingsByKey = {}; context.captureRow.getAttribute = () => '0' }
+function reset() { calls = []; activeWindow = null; chatExpanded = true; context.panelOpen = true; context.settingsOpen = false; context.settingsByKey = {}; context.captureRow.getAttribute = () => '0' }
+reset(); activeWindow = 'chat'; escape(ask)
+assert.deepEqual(calls, [], '最后点击聊天后，即使键盘仍在解读输入框，也让聊天先退出')
+reset(); activeWindow = 'explanation'; escape(expandedChat)
+assert.equal(context.panelOpen, false, '最后点击解读消息后，即使键盘仍在聊天，也先退解读')
+reset(); activeWindow = 'none'; escape(expandedChat)
+assert.equal(context.panelOpen, false, '点击两窗外后不使用旧键盘焦点，优先退解读')
+reset(); activeWindow = 'chat'; chatExpanded = false; escape(compactChat)
+assert.equal(context.panelOpen, false, '已收起的聊天不占下一次退出顺序')
+reset()
 escape(outside)
 assert.equal(context.panelOpen, false, '焦点在两窗之外时优先关闭解读')
 reset(); escape(expandedChat)
