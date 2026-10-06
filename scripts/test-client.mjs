@@ -4831,6 +4831,37 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
     processes: [{ pid: 513, bundleId: 'com.bytedance.inputmethod.doubaoime', name: 'DoubaoIme' }],
     reason: '',
   }
+  // 同一行里如果有行内元素（<code>/粗体），getClientRects() 会给多个矩形且底边不等高 ——
+  // 必须归并成一条，否则会"划两层"、渐隐还会出现在行中间（用户实测的两个问题，同一根因）。
+  // 注意：插件在 checkSelection 时就把 range **存下来了**，所以补丁必须打在捕获之前；
+  // 而且桩的 getRangeAt() 每次返回新对象（createRange()），所以补丁要打在 createRange 上。
+  const realCreateRange = documentStub.createRange.bind(documentStub)
+  // 起点所在的"块"：底边 110 —— 落在下面那段大选区（100..200）**中间**。
+  // 老代码只按这个块算，卡片就会压在剩下的选中文字上（用户报的"大段文字时卡片遮住文字"）。
+  const blockEl = {
+    nodeType: 1,
+    parentElement: null,
+    getBoundingClientRect: () => ({ left: 40, top: 100, right: 500, bottom: 110, width: 460, height: 10 }),
+  }
+  const realGCS = windowStub.getComputedStyle
+  windowStub.getComputedStyle = (el) =>
+    el === blockEl
+      ? { display: 'block', backgroundColor: 'rgba(0,0,0,0)' }
+      : realGCS
+        ? realGCS(el)
+        : { display: '', backgroundColor: 'rgba(0,0,0,0)' }
+  documentStub.createRange = () => {
+    const r = realCreateRange()
+    r.startContainer = blockEl
+    r.getClientRects = () => [
+      { left: 40, top: 100, right: 120, bottom: 118, width: 80, height: 18 },
+      { left: 120, top: 100, right: 200, bottom: 121, width: 80, height: 21 },
+    ]
+    // 选区本体很大（跨到 200），起点块只到 110
+    r.getBoundingClientRect = () => ({ left: 40, top: 100, right: 200, bottom: 200, width: 160, height: 100 })
+    return r
+  }
+
   // 造一次真选区（走 mouseup 那条路）：浮标一出现就开始看麦克风
   windowStub.getSelection = () => selection
   documentStub.dispatch('mouseup', { target: body })
@@ -4839,6 +4870,11 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
   const opened = hook.voiceCard()
   assert('检测到输入法开麦 → 语音卡自己弹出来', opened.open === true, JSON.stringify(opened))
   assert('卡片处于"在听"（边缘呼吸）状态', opened.voiced === true, JSON.stringify(opened))
+  assert(
+    '大段选区：卡片按**整个选区**的底边落位（不压在选中的文字上）',
+    !!opened.geometry && opened.geometry.top === '222px',
+    'top=' + String(opened.geometry && opened.geometry.top) + '（按起点块算会是 132px，正好压在选区里）',
+  )
   assert(
     '卡片几何算出来了（宽度来自"浮标右缘 − 正文列左边"）',
     !!opened.geometry && /px$/.test(String(opened.geometry.width)),
@@ -4873,6 +4909,17 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       /repeating-linear-gradient/.test(String(thread.style.backgroundImage)),
     thread ? String(thread.style.display) + ' / ' + String(thread.style.backgroundImage).slice(0, 46) : 'none',
   )
+
+  const merged = Array.from(walk(mount)).filter((n) => n.className === 'dsh-sel-uline')
+  assert('同一行的多个矩形归并成一条下划线（不再"划两层"）', merged.length === 1, '下划线条数=' + merged.length)
+  assert(
+    '归并后覆盖整行（80+80=160），且取最低的那条底边（121+3=124）',
+    !!merged[0] && merged[0].style.width === '160px' && merged[0].style.top === '124px',
+    merged[0] ? String(merged[0].style.width) + ' / top=' + String(merged[0].style.top) : 'none',
+  )
+
+  documentStub.createRange = realCreateRange
+  windowStub.getComputedStyle = realGCS
 
   // 焦点：桩 DOM 的 focus() 是空实现，这里换成可观测的再重开一次
   let focused = false

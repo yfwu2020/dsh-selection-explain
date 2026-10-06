@@ -4130,7 +4130,25 @@ window.__ModuleLoader__.load({
         var right = Math.min(rect.right, Math.max(8, window.innerWidth - 8))
         var width = Math.max(VCARD_MIN_W, Math.min(VCARD_MAX_W, right - blockRect.left))
         var left = Math.max(8, right - width)
-        return { left: left, top: blockRect.bottom + 22, width: width }
+        // ⚠️ 纵向必须按**整个选区**的底边算，不能只按"选区起点所在的块"：
+        // 选中跨多个段落 / 代码块时，起点那个块的底边落在选区**中间**，
+        // 卡片就会压在剩下的选中文字上（用户实测："选大段文字时卡片有概率遮住文字"）。
+        var below = Math.max(blockRect.bottom, rect.bottom) + 22
+        var top = below
+        var cardHeight = 42
+        try {
+          var own = vcard && vcard.getBoundingClientRect()
+          if (own && own.height) cardHeight = own.height
+        } catch (error) {
+          /* 读不到就按单行 42 估 */
+        }
+        // 下方放不下就翻到选区上方；上方也放不下（选区比视口还高）就贴视口底边 ——
+        // 宁可压在可见文字的下缘，也不要把卡片推到屏幕外（那样等于没弹）
+        if (below + cardHeight > window.innerHeight - 8) {
+          var above = rect.top - cardHeight - 22
+          top = above >= 8 ? above : Math.max(8, window.innerHeight - cardHeight - 16)
+        }
+        return { left: left, top: top, width: width, height: cardHeight }
       }
 
       /** 选区所在的那个"块"（段落 / 列表项 / 单元格）—— 卡片挂在它的下方。 */
@@ -4304,24 +4322,55 @@ window.__ModuleLoader__.load({
         var rects = range.getClientRects ? range.getClientRects() : null
         if (!rects || !rects.length) return
         var accent = 'var(--sel-a1)'
+        // ⚠️ 必须先**按行归并**再画：
+        // 一行里如果有行内元素（<code>、粗体、链接），getClientRects() 会给出**多个矩形**，
+        // 而且它们的高度 / 底边各不相同 —— 按矩形各画一条就会"划两层"，
+        // 渐隐也会出现在行中间（用户实测的两个问题，同一个根因）。
+        var lines = []
         for (var i = 0; i < rects.length; i += 1) {
           var rect = rects[i]
           if (!rect || !rect.width) continue
-          var line = el('div', 'dsh-sel-uline')
-          line.style.left = Math.round(rect.left) + 'px'
-          line.style.top = Math.round(rect.bottom + 3) + 'px'
-          line.style.width = Math.round(rect.width) + 'px'
-          // U3：两端渐隐
-          line.style.background =
-            'linear-gradient(90deg,transparent,' + accent + ' 12%,' + accent + ' 88%,transparent)'
-          selMark.appendChild(line)
+          var line = null
+          for (var j = 0; j < lines.length; j += 1) {
+            var group = lines[j]
+            var overlap = Math.min(group.bottom, rect.bottom) - Math.max(group.top, rect.top)
+            var smaller = Math.min(group.bottom - group.top, rect.bottom - rect.top)
+            if (smaller > 0 && overlap > smaller * 0.5) {
+              line = group
+              break
+            }
+          }
+          if (line) {
+            line.left = Math.min(line.left, rect.left)
+            line.right = Math.max(line.right, rect.right)
+            line.top = Math.min(line.top, rect.top)
+            line.bottom = Math.max(line.bottom, rect.bottom)
+          } else {
+            lines.push({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom })
+          }
         }
-        var last = rects[rects.length - 1]
+        for (var k = 0; k < lines.length; k += 1) {
+          var row = lines[k]
+          var mark = el('div', 'dsh-sel-uline')
+          mark.style.left = Math.round(row.left) + 'px'
+          mark.style.top = Math.round(row.bottom + 3) + 'px'
+          mark.style.width = Math.round(row.right - row.left) + 'px'
+          // U3：两端渐隐 —— 归并之后就是"一行的两端"，不会再出现在行中间
+          mark.style.background =
+            'linear-gradient(90deg,transparent,' + accent + ' 12%,' + accent + ' 88%,transparent)'
+          selMark.appendChild(mark)
+        }
+        var first = lines[0]
+        var last = lines[lines.length - 1]
         var geo = vcardGeometry()
-        if (!last || !geo) return
-        var endX = last.left + last.width / 2
-        var endY = last.bottom + 2
-        var height = geo.top - endY
+        if (!first || !last || !geo) return
+        // 卡片可能在选区**上方**（下方放不下时 vcardGeometry 会翻转），所以两个方向都要能画：
+        // 否则翻转时高度算成负数，牵引线会直接消失。
+        var above = geo.top < first.top
+        var anchor = above ? first : last
+        var endX = (anchor.left + anchor.right) / 2
+        var endY = above ? anchor.top - 2 : anchor.bottom + 2
+        var height = above ? endY - (geo.top + (geo.height || 42)) : geo.top - endY
         if (height <= 6) return // 卡片紧贴选区，没什么可牵的
         selThread.style.left = Math.round(endX - 1) + 'px'
         selThread.style.top = Math.round(endY) + 'px'
