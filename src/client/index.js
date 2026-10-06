@@ -3909,6 +3909,9 @@ window.__ModuleLoader__.load({
          * Esc 看起来像失灵（实测就是这么暴露出来的）。等 !capturing 才解除。
          */
         suppress: false,
+        /** 形变期间钉住正文宽度用的兜底定时器 / transitionend 句柄。 */
+        unpinTimer: null,
+        unpinHandler: null,
       }
 
       function ensureVCard() {
@@ -3969,6 +3972,49 @@ window.__ModuleLoader__.load({
         if (!vcard || !vcardBox) return
         vcard.setAttribute('data-text', String(vcardBox.value || '').trim() ? '1' : '0')
         growVCardBox()
+      }
+
+      /**
+       * 形变结束后解开正文宽度（回到 flex 布局）。
+       *
+       * 形变期间正文宽度被钉在终值（见 openVCard ②）：卡片变宽只是"揭开"它。
+       * 不解开的话，之后打字时正文宽度不会再跟着卡片走。
+       */
+      function unpinVCardBox() {
+        if (vcardState.unpinTimer) {
+          clearTimeout(vcardState.unpinTimer)
+          vcardState.unpinTimer = null
+        }
+        if (vcard && vcardState.unpinHandler) {
+          vcard.removeEventListener('transitionend', vcardState.unpinHandler)
+          vcardState.unpinHandler = null
+        }
+        if (!vcardBox) return
+        vcardBox.style.flex = ''
+        vcardBox.style.width = ''
+      }
+
+      /**
+       * 排一次"解开正文宽度"。
+       *
+       * transitionend 是主路径；另挂一个兜底定时器 —— 形变被打断（切窗口、立刻关卡片）时
+       * transitionend 可能永远不来，正文宽度就会一直钉着。
+       */
+      function scheduleVCardUnpin() {
+        if (!vcard) return
+        if (vcardState.unpinTimer) {
+          clearTimeout(vcardState.unpinTimer)
+          vcardState.unpinTimer = null
+        }
+        if (vcardState.unpinHandler) {
+          vcard.removeEventListener('transitionend', vcardState.unpinHandler)
+          vcardState.unpinHandler = null
+        }
+        vcardState.unpinHandler = function (event) {
+          if (event.target === vcard && event.propertyName === 'width') unpinVCardBox()
+        }
+        vcard.addEventListener('transitionend', vcardState.unpinHandler)
+        vcardState.unpinTimer = later(unpinVCardBox, 420)
       }
 
       function growVCardBox() {
@@ -4057,22 +4103,40 @@ window.__ModuleLoader__.load({
         vcardState.open = true
         vcard.style.transition = 'none'
         vcard.style.display = 'flex'
-        // ⚠️ 宽度**必须在这一帧就到位**，不能参与过渡：
-        // growVCardBox() 紧接着要读 scrollHeight，而那一帧若还挤在浮标那点窄宽度（~86px）里，
-        // 文字会按窄宽度折行、行数暴涨 → 高度直接被顶到 4 行上限（114px）。
-        // 位置/高度/圆角仍然从浮标那一格过渡过来，形变照旧。
+        // ── ① 先在**最终宽度**下量一次（同一帧内完成，用户看不见）──
+        // 为什么必须在这个宽度下量：正文按宽度折行，在浮标那条窄缝（~86px）里量出来的行数会暴涨
+        // （踩过：单行卡被顶到 111px）。量完之后形变全程不再读 scrollHeight。
         vcard.style.width = Math.round(geo.width) + 'px'
+        void vcard.offsetWidth
+        var finalBoxHeight = Math.max(24, Math.min(vcardBox.scrollHeight, VCARD_TEXT_MAX))
+        var finalCardHeight = finalBoxHeight + VCARD_PAD_Y
+        var finalBoxWidth = Math.round(vcardBox.getBoundingClientRect().width)
+        // ── ② 形变期间把**正文宽度钉死** ──
+        // 卡片变宽只是"揭开"正文，正文自己不再逐帧重新折行 —— 这是"下移展开"卡顿的主因
+        // （每帧重排 textarea 里的文本）。钉死之后，卡片变宽只是一次裁剪，代价小得多。
+        if (finalBoxWidth > 0) {
+          vcardBox.style.flex = '0 0 auto'
+          vcardBox.style.width = finalBoxWidth + 'px'
+        }
+        vcardBox.style.height = finalBoxHeight + 'px'
+        vcardBox.style.overflowY = finalBoxHeight >= VCARD_TEXT_MAX ? 'auto' : 'hidden'
+        // ── ③ 回到浮标那一格：位置 / 宽 / 高 / 圆角都从那里出发 ──
+        vcard.style.width = Math.round(pillRect.width || 86) + 'px'
         vcard.style.left = Math.round(pillRect.left) + 'px'
         vcard.style.top = Math.round(pillRect.top) + 'px'
         vcard.style.height = Math.round(pillRect.height || 28) + 'px'
         vcard.style.borderRadius = '999px'
         markVCardListening(true)
         void vcard.offsetWidth
+        // ── ④ 开过渡，走向终态 ──
+        // 宽度这次**也参与**：上一版它不参与，第一帧就从 86px 跳到 460px（用户报的"跳变"）。
         vcard.style.transition = ''
         vcard.style.borderRadius = ''
         vcard.style.left = Math.round(geo.left) + 'px'
         vcard.style.top = Math.round(geo.top) + 'px'
-        growVCardBox()
+        vcard.style.width = Math.round(geo.width) + 'px'
+        vcard.style.height = finalCardHeight + 'px'
+        scheduleVCardUnpin()
         hideButton()
         // 卡片开着期间必须继续看麦克风：既要判断"这次录音结束了"（停掉呼吸），
         // 也要能接住"又按了一次 Fn"（重新标记在听）。幂等，正常路径上计时器本来就在跑。
@@ -4135,6 +4199,8 @@ window.__ModuleLoader__.load({
           vcardBox.style.overflowY = 'hidden'
         }
         stopMicWatch()
+        // 形变还没结束就被关掉时，正文宽度可能还钉着 —— 一并解开
+        unpinVCardBox()
       }
 
       /** 发送：跳过翻译与详解，把说的话当作第一条追问直接发出去。 */

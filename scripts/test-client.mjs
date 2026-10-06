@@ -4856,6 +4856,15 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
   hook.voiceCardOpen()
   assert('打开卡片时把焦点抢到输入框（上屏只认焦点元素）', focused === true, String(focused))
 
+  // 形变期间正文宽度被钉在终值（否则每帧重新折行 → 卡顿）；结束后必须解开，
+  // 否则之后打字时正文宽度不会再跟着卡片走
+  await sleep(520)
+  assert(
+    '形变结束后解开正文宽度（回到 flex 布局）',
+    !box.style.width && !box.style.flex,
+    'width=' + String(box.style.width) + ' flex=' + String(box.style.flex),
+  )
+
   // 开麦结束、一个字都没说：卡片**不退出**（用户可以接着手动打字），只是不再显示"在听"
   micStub.value = { ok: true, available: true, capturing: false, processes: [], reason: '' }
   await sleep(520)
