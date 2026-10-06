@@ -3828,11 +3828,18 @@ window.__ModuleLoader__.load({
         else button.removeAttribute('data-pop')
       }
 
-      function showButton(rect) {
+      /**
+       * 显示浮标。
+       *
+       * silent：**静默放回**，不播"浮现"动效。给"取消语音卡、把浮标还回来"那条路用 ——
+       * 浮现动效是给"新划了一段文字、浮标第一次出现"的；把还回来的浮标也弹一下，
+       * 用户看到的就是"取消之后小按钮闪了一下"（实测报的就是这个）。
+       */
+      function showButton(rect, silent) {
         // 浮标也在同一套配色下：它的底色是"页面背景"（浮层自身透明），按它判深浅
         if (!panelOpen) layer.setAttribute('data-theme', isDarkSurface(layer) ? 'dark' : 'light')
         // 只在"浮现"那一次播动效；已经可见时（划选范围被拖动、键盘调整）只平移，避免一直闪
-        if (placeFloat(button, rect)) {
+        if (placeFloat(button, rect) && !silent) {
           setButtonPop(false)
           void button.offsetWidth // 强制重排，让动画能重播
           setButtonPop(true)
@@ -4164,7 +4171,8 @@ window.__ModuleLoader__.load({
         }
         clearVCardHighlight()
         stopMicWatch()
-        if (restorePill && state.selection && !panelOpen) showButton(state.selection.rect)
+        // 静默还回浮标（silent=true）：只是"放回原位"，不是"新出现"，不该播浮现动效
+        if (restorePill && state.selection && !panelOpen) showButton(state.selection.rect, true)
       }
 
       /** 发送：跳过翻译与详解，把说的话当作第一条追问直接发出去。 */

@@ -4900,6 +4900,12 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
     documentStub.dispatch('keydown', { key: 'Escape', target: body, preventDefault() {}, stopPropagation() {} })
     await sleep(20)
     assert('Esc 收起语音卡', hook.voiceCard().open === false, JSON.stringify(hook.voiceCard()))
+    // 取消后浮标要"放回原位"，但不能重播浮现动效（用户报的"小按钮闪一下"）
+    assert(
+      '取消后浮标静默放回（没有重播浮现动效）',
+      button.style.display === 'inline-flex' && !button.getAttribute('data-pop'),
+      String(button.style.display) + ' / data-pop=' + String(button.getAttribute('data-pop')),
+    )
   } else {
     assert('Esc 收起语音卡', false, '卡片没能再次打开：' + JSON.stringify(reopened))
   }
