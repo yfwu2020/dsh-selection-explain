@@ -12,9 +12,13 @@
  */
 import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
+import { spawn } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
+import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -63,6 +67,129 @@ export const inject = ['webServer', 'llm']
 
 /** 路由前缀。 */
 const API_PREFIX = '/selection-explain/api'
+
+// ───────────────────────── 麦克风占用检测 ─────────────────────────
+//
+// 回答一个问题：**此刻是不是某个输入法正在语音输入？**（豆包输入法、微信输入法……）
+//
+// 客户端拿它做什么：用户选中一段文字、同时正在用输入法说话时，就在那段文字下方弹一个
+// 临时输入框并自动聚焦 —— 输入法"上屏"的文字会直接落进那个框（IME 只认焦点元素，
+// 所以我们不需要读它的转写结果），点发送就跳过翻译/详解直接进追问。
+//
+// 怎么知道的：macOS 14.4 起 CoreAudio 暴露了进程对象列表，逐进程可读
+// `kAudioProcessPropertyIsRunningInput` —— 于是"谁在录"是一次精确查询，而不是猜。
+// **读这个状态不需要麦克风 TCC 授权**（只有真正录音才需要），这点很关键：插件不该为了
+// 一个"指示灯"去要用户的麦克风权限。
+//
+// 原生探针见 native/mic-probe.c（Node 没有 FFI，所以编个小二进制，构建脚本第 ⑤ 步产出）。
+// 这里只负责：懒启动、解析它吐的 JSON 行、缓存最新状态。编不出来 / 非 macOS 时
+// available:false —— 客户端据此完全不启用这个特性，不装作在检测。
+
+interface MicProcess {
+  pid: number
+  bundleId: string
+  name: string
+}
+
+/** 最新一次探针状态（进程集合变了才更新）。 */
+const micState = {
+  available: false,
+  capturing: false,
+  processes: [] as MicProcess[],
+  /** 不可用时的原因（not-macos / probe-missing / probe-failed / probe-exited）。 */
+  reason: '',
+}
+
+let micChild: ChildProcess | null = null
+/** 只尝试启动一次：失败就认（避免每个请求都去 spawn 一遍）。 */
+let micStarted = false
+
+/** 探针路径：lib/native/mic-probe（与编译产物 lib/index.js 同级）。 */
+const MIC_PROBE = fileURLToPath(new URL('native/mic-probe', import.meta.url))
+
+/**
+ * 懒启动探针（第一次有人来问才 spawn）。
+ *
+ * 为什么不加载就启动：插件装着的绝大多数时间没人划词，没必要常驻一个每秒读几次
+ * CoreAudio 的进程。第一次 GET /mic 时才起，之后一直复用。
+ */
+function ensureMicProbe(): void {
+  if (micStarted) return
+  micStarted = true
+  if (process.platform !== 'darwin') {
+    micState.reason = 'not-macos'
+    return
+  }
+  if (!existsSync(MIC_PROBE)) {
+    micState.reason = 'probe-missing'
+    return
+  }
+  try {
+    const child = spawn(MIC_PROBE, ['--watch', '250'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    micChild = child
+    micState.available = true
+    micState.reason = ''
+    if (child.stdout) {
+      const lines = createInterface({ input: child.stdout })
+      lines.on('line', (line) => {
+        try {
+          const parsed = JSON.parse(line) as { capturing?: boolean; processes?: MicProcess[] }
+          micState.capturing = !!parsed.capturing
+          micState.processes = Array.isArray(parsed.processes) ? parsed.processes : []
+        } catch {
+          // 半行 / 坏行：丢掉，下一行会覆盖（探针每行都是完整状态）
+        }
+      })
+    }
+    child.on('error', () => {
+      micChild = null
+      micState.available = false
+      micState.capturing = false
+      micState.processes = []
+      micState.reason = 'probe-failed'
+    })
+    child.on('exit', () => {
+      micChild = null
+      micState.available = false
+      micState.capturing = false
+      micState.processes = []
+      micState.reason = 'probe-exited'
+    })
+  } catch {
+    micChild = null
+    micState.available = false
+    micState.reason = 'probe-failed'
+  }
+}
+
+/** 停掉探针（插件卸载时）。 */
+function stopMicProbe(): void {
+  const child = micChild
+  micChild = null
+  if (!child) return
+  try {
+    child.kill()
+  } catch {
+    // 已经退了：无所谓
+  }
+}
+
+/**
+ * GET /selection-explain/api/mic
+ *   → { ok, available, capturing, processes:[{pid,bundleId,name}], reason }
+ *
+ * 客户端只关心 `capturing` 和某个进程的 bundleId 是不是目标输入法；
+ * 一次把所有占用者给全，是因为"同时在录的还有别的 App"很常见（会议软件、录音工具），
+ * 只报第一个会让特性在那种情况下静默失效。
+ */
+const handleMic = (req: IncomingMessage, res: ServerResponse): void => {
+  ensureMicProbe()
+  res.writeHead(200, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  })
+  res.end(JSON.stringify({ ok: true, ...micState }))
+}
 
 /** 单次请求体上限（字节）。 */
 const BODY_LIMIT = 512 * 1024
@@ -3637,6 +3764,16 @@ export function apply(ctx: Context, rawConfig: Config): void {
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/pill`, handler: handlePillPos }),
     `${name}: pill position route`,
+  )
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/mic`, handler: handleMic }),
+    `${name}: mic presence route`,
+  )
+  // 探针是懒启动的（第一次有人问才起），但**卸载时要收干净**：
+  // 否则插件热重载几次就会留下一串没人管的 mic-probe 进程。
+  ctx.effect(
+    () => () => stopMicProbe(),
+    `${name}: mic probe process`,
   )
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/models`, handler: handleModels }),

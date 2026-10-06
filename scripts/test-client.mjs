@@ -386,8 +386,21 @@ function withAbort(response, signal) {
   return new Response(stream, { headers: response.headers })
 }
 
+/**
+ * 麦克风占用桩（语音卡用例用）。
+ * 默认 available:false —— 和其它用例一样"这台机器没有这个能力"，谁都不受影响；
+ * 语音卡那条用例把它改成"豆包输入法正在录"，走完整条链路。
+ */
+const micStub = { value: { ok: true, available: false, capturing: false, processes: [], reason: 'stub-default' } }
+
 const routeFetch = (input, init) => {
   const url = typeof input === 'string' ? input : ''
+  // 麦克风占用：读的是 host 上的 CoreAudio 探针，测试里由 micStub 决定
+  if (url.endsWith('/selection-explain/api/mic')) {
+    return Promise.resolve(
+      new Response(JSON.stringify(micStub.value), { headers: { 'content-type': 'application/json' } }),
+    )
+  }
   // blob:（划词桥的交互式预览用例）：从内存表里读回我们自己建的那份文档。
   // content-type 跟着 blob 的 type 走（真实浏览器就是这么给的）——插件要靠它搬 charset。
   if (url.startsWith('blob:')) {
@@ -3697,8 +3710,8 @@ let bridgeOwnedBlob = ''
   assert('只挂引用、没写问题时发送键可用', askSend.disabled === false, 'disabled=' + askSend.disabled)
   assert(
     '小窗里的引用**不带上下文**（小窗这几轮对话本来就会随历史进模型）',
-    quotes[0].context === '' && quotes[0].session === false,
-    JSON.stringify({ context: quotes[0].context, session: quotes[0].session }),
+    !!quotes[0] && quotes[0].context === '' && quotes[0].session === false,
+    JSON.stringify({ context: quotes[0] && quotes[0].context, session: quotes[0] && quotes[0].session }),
   )
   assert(
     '引用浮标画在面板**之上**（小窗里划词才看得见、点得着）',
@@ -3721,7 +3734,9 @@ let bridgeOwnedBlob = ''
       `${longQuote && longQuote.text.length} · ${hook.state().status}`,
     )
     const chipList = Array.from(walk(quotesBox)).filter((n) => n.className === 'dsh-sel-quotechip-x')
-    chipList[chipList.length - 1].dispatch('click', { stopPropagation() {} })
+    // 前面若已失败（引用没挂上），这里就没有 chip —— 别让它把整个脚本打断
+    const lastChip = chipList[chipList.length - 1]
+    if (lastChip) lastChip.dispatch('click', { stopPropagation() {} })
     await sleep(5)
     assert('删掉超长那条后回到 1 条', hook.quotes().length === 1, JSON.stringify(hook.quotes().map((q) => q.text.length)))
     // 把浮标状态也归零：不然下面那次"再点一次"的点击会把这段长文又加回来
@@ -4799,6 +4814,85 @@ function sliceFunction(text, name) {
 // ───────────────────────── 关闭 / 清理 ─────────────────────────
 hook.close()
 assert('Esc/关闭后隐藏', panel.style.display === 'none')
+// ───────────────────────── 语音卡：选中文字 + 输入法正在语音输入 ─────────────────────────
+// 这条链路的关键是"我们不读输入法的转写结果"：输入法上屏只认焦点元素，
+// 所以只要在它开麦时把焦点拿到自己的输入框上，说的话就会自己落进来。
+{
+  const find = (cls) => Array.from(walk(mount)).find((n) => n.className === cls)
+
+  hook.close()
+  await sleep(20)
+
+  // host 报：豆包输入法正在采集麦克风
+  micStub.value = {
+    ok: true,
+    available: true,
+    capturing: true,
+    processes: [{ pid: 513, bundleId: 'com.bytedance.inputmethod.doubaoime', name: 'DoubaoIme' }],
+    reason: '',
+  }
+  // 造一次真选区（走 mouseup 那条路）：浮标一出现就开始看麦克风
+  windowStub.getSelection = () => selection
+  documentStub.dispatch('mouseup', { target: body })
+  await sleep(250)
+
+  const opened = hook.voiceCard()
+  assert('检测到输入法开麦 → 语音卡自己弹出来', opened.open === true, JSON.stringify(opened))
+  assert('卡片处于"在听"（边缘呼吸）状态', opened.voiced === true, JSON.stringify(opened))
+  assert(
+    '卡片几何算出来了（宽度来自"浮标右缘 − 正文列左边"）',
+    !!opened.geometry && /px$/.test(String(opened.geometry.width)),
+    JSON.stringify(opened.geometry),
+  )
+
+  const box = find('dsh-sel-vcard-box')
+  const sendBtn = find('dsh-sel-vcard-send')
+  assert('卡片里有输入框（IME 上屏要落在它身上）', !!box && !!sendBtn, String(!!box) + '/' + String(!!sendBtn))
+
+  // 焦点：桩 DOM 的 focus() 是空实现，这里换成可观测的再重开一次
+  let focused = false
+  if (box) box.focus = () => { focused = true }
+  hook.voiceCardClose()
+  hook.voiceCardOpen()
+  assert('打开卡片时把焦点抢到输入框（上屏只认焦点元素）', focused === true, String(focused))
+
+  // 说话：文字落进输入框（输入法上屏走的就是这条路）
+  if (box) {
+    box.value = '这是在推迟还是提前？'
+    box.dispatch('input', { target: box, preventDefault() {}, stopPropagation() {} })
+  }
+  const filled = hook.voiceCard()
+  assert('有字之后才摆出发送键', filled.hasText === true, JSON.stringify(filled))
+
+  // 发送：跳过翻译与详解，直接进追问
+  const beforeSend = hook.state()
+  if (sendBtn) sendBtn.dispatch('click', { target: sendBtn, preventDefault() {}, stopPropagation() {} })
+  await sleep(80)
+  const afterSend = hook.state()
+  assert('发送后卡片收起', hook.voiceCard().open === false, JSON.stringify(hook.voiceCard()))
+  assert('跳过解读：翻译一节是空的（没请求 /analyze）', !afterSend.translation, JSON.stringify(beforeSend) + ' → ' + JSON.stringify(afterSend))
+  assert('直接进了追问：面板开着', panel.style.display !== 'none', String(panel.style.display))
+
+  // Esc 收卡片（还没发出去时）
+  micStub.value = { ok: true, available: true, capturing: true, processes: [{ pid: 513, bundleId: 'com.bytedance.inputmethod.doubaoime', name: 'DoubaoIme' }], reason: '' }
+  hook.close()
+  await sleep(20)
+  documentStub.dispatch('mouseup', { target: body })
+  await sleep(250)
+  const reopened = hook.voiceCard()
+  if (reopened.open) {
+    documentStub.dispatch('keydown', { key: 'Escape', target: body, preventDefault() {}, stopPropagation() {} })
+    await sleep(20)
+    assert('Esc 收起语音卡', hook.voiceCard().open === false, JSON.stringify(hook.voiceCard()))
+  } else {
+    assert('Esc 收起语音卡', false, '卡片没能再次打开：' + JSON.stringify(reopened))
+  }
+
+  micStub.value = { ok: true, available: false, capturing: false, processes: [], reason: 'stub-default' }
+  hook.close()
+  await sleep(20)
+}
+
 for (const dispose of disposers.reverse()) {
   try {
     dispose()

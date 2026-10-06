@@ -51,6 +51,31 @@ window.__ModuleLoader__.load({
     var SPEECH_API = '/selection-explain/api/speech'
     var SPEECH_TRANSCRIBE = SPEECH_API + '/transcribe'
     var SPEECH_PREPARE = SPEECH_API + '/prepare'
+    /**
+     * 麦克风占用（"输入法正在语音输入"）：host 读 CoreAudio 的进程对象列表，
+     * 见 src/index.ts 的 micPresence 与 native/mic-probe.c。
+     *   → { ok, available, capturing, processes:[{pid,bundleId,name}], reason }
+     * 读它不需要麦克风授权 —— 插件不该为了一个"指示灯"去要用户的麦克风权限。
+     */
+    var MIC_API = '/selection-explain/api/mic'
+    /**
+     * 认哪些输入法（bundleId 前缀）。豆包输入法。
+     * 加新输入法就往这里加一行：特性只对"已知输入法"生效，不去猜别的 App 在录什么。
+     */
+    var IME_BUNDLES = ['com.bytedance.inputmethod.doubaoime']
+    /**
+     * 轮询间隔：只在"有选区"时问（浮标亮着的那几拍）。
+     * 400ms 够用 —— 输入法"上屏"发生在松手那一刻，而我们在它开麦时就把焦点拿过来了，
+     * 中间有几秒余量；反过来等检测到文字再弹框就已经晚了（字会落到别处）。
+     */
+    var MIC_POLL_MS = 400
+    /** 语音卡几何：右缘贴浮标右缘，左缘展开到正文列左边 —— 宽度由这两条边界算出来。 */
+    var VCARD_MIN_W = 360
+    var VCARD_MAX_W = 560
+    /** 正文最多 4 行（约 93px），再多内部滚动并停在最新一行（与追问框同一套）。 */
+    var VCARD_TEXT_MAX = 96
+    /** 上下内边距合计（卡片高度 = 正文高度 + 这个）。 */
+    var VCARD_PAD_Y = 22
     /** 兜底限制（host 的 limits 优先；拿不到目录时按这套走）。 */
     var VOICE_FALLBACK_SECONDS = 60
     var VOICE_MAX_BYTES = 4 * 1024 * 1024
@@ -950,6 +975,38 @@ window.__ModuleLoader__.load({
       '.dsh-sel-sbtn[data-danger="1"]{color:var(--dsw-alias-state-error-primary,#e5484d);',
       'border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#e5484d) 45%,transparent)}',
       '.dsh-sel-sempty{font-size:12px;opacity:.55;padding:14px 2px}',
+      // ── 语音卡：选中文字 + 输入法正在语音输入时，就地弹出的临时输入框 ──
+      // 它由浮标**形变**而来（同一格 → 下移展开），所以几何全部由 JS 给，这里只管长相。
+      '.dsh-sel-vcard{position:fixed;z-index:2147483000;display:none;align-items:stretch;gap:11px;',
+      'padding:11px 12px 11px 13px;background:var(--dsw-alias-bg-base,#fff);color:inherit;',
+      'border:1px solid var(--dsw-alias-border-l2,rgba(140,140,140,.28));border-radius:20px;',
+      'box-shadow:0 10px 28px rgba(0,0,0,.18);overflow:hidden;',
+      'transition:width .3s cubic-bezier(.2,.8,.2,1),height .3s cubic-bezier(.2,.8,.2,1),',
+      'left .3s cubic-bezier(.2,.8,.2,1),top .32s cubic-bezier(.2,.8,.2,1),',
+      'border-radius .3s cubic-bezier(.2,.8,.2,1),border-color .2s ease}',
+      // 「在听」不占任何元素：状态长在卡片自己的边缘上（描边泛青 + 一圈光晕缓慢呼吸）。
+      // 好处是正文拿到全部宽度，也不会有"像光标"的独立竖条。
+      '.dsh-sel-vcard[data-voiced="1"]{border-color:var(--sel-a2);',
+      'animation:dsh-sel-vcard-breath 2.1s ease-in-out infinite}',
+      '@keyframes dsh-sel-vcard-breath{',
+      '0%,100%{box-shadow:0 10px 28px rgba(0,0,0,.18),0 0 0 0 rgba(13,148,136,0)}',
+      '50%{box-shadow:0 10px 28px rgba(0,0,0,.18),0 0 0 4px rgba(13,148,136,.16)}}',
+      // 正文右侧留 40px 给发送键（它是绝对定位的，不参与行高 —— 否则 30px 的按钮会把
+      // 单行卡片顶到 52px，用户看到的就是"临时框太高"）
+      '.dsh-sel-vcard-box{flex:1;min-width:0;align-self:center;display:block;margin:0;',
+      'padding:0 40px 0 0;border:0;outline:0;background:transparent;color:inherit;',
+      'resize:none;overflow-y:hidden;font:400 15.5px/1.5 ' + FONT + ';max-height:96px}',
+      '.dsh-sel-vcard-box::placeholder{color:var(--dsw-alias-label-tertiary,rgba(140,140,140,.9))}',
+      '.dsh-sel-vcard-send{position:absolute;right:12px;bottom:11px;width:28px;height:28px;border:0;',
+      'border-radius:50%;background:var(--sel-a1);color:#fff;font:400 14px/1 ' + FONT + ';',
+      'cursor:pointer;opacity:0;pointer-events:none;transition:opacity .16s ease}',
+      // 还什么都没说时不摆出发送键（先只显示"正在听…"）
+      '.dsh-sel-vcard[data-text="1"] .dsh-sel-vcard-send{opacity:1;pointer-events:auto}',
+      // 选中文字的底纹：抢焦点（IME 上屏必须）会清掉原生选区，所以用 Custom Highlight
+      // 把那段 range 单独画一层 —— 不碰 DOM、不影响焦点，关卡片时整层撤掉。
+      '::highlight(dsh-sel-voice){background:var(--dsh-sel-hl,rgba(59,110,245,.22))}',
+      '@media (prefers-reduced-motion:reduce){',
+      '.dsh-sel-vcard{transition:none}.dsh-sel-vcard[data-voiced="1"]{animation:none}}',
     ].join('')
 
     // ────────────────────── Markdown 轻渲染（全 DOM，无 innerHTML） ──────────────────────
@@ -3770,11 +3827,16 @@ window.__ModuleLoader__.load({
           void button.offsetWidth // 强制重排，让动画能重播
           setButtonPop(true)
         }
+        // 有选区了：开始看"输入法是不是正在语音输入"（幂等，重复调用无副作用）
+        startMicWatch()
       }
 
       function hideButton() {
         button.style.display = 'none'
         setButtonPop(false)
+        // 浮标收了就没什么可等的了 —— 但语音卡开着时**不能停**：
+        // 卡片本身就是"检测到开麦"的结果，它还要靠轮询判断"说完了没有"
+        if (!vcardState.open) stopMicWatch()
       }
 
       /**
@@ -3806,6 +3868,362 @@ window.__ModuleLoader__.load({
           void quoteButton.offsetWidth
           setQuotePop(true)
         }
+      }
+
+      // ══════════════════ 语音卡：选中文字 + 输入法正在语音输入 ══════════════════
+      //
+      // 场景：用户划选一段文字，同时正用输入法（豆包）对着麦克风说话。
+      // 这时在那段文字**下方**弹一张临时输入框并自动聚焦 —— 输入法"上屏"的文字会直接
+      // 落进这个框（IME 只认焦点元素），所以我们**不需要**读它的转写结果，也不需要任何
+      // 输入法权限。点发送就跳过翻译与详解，直接进追问。
+      //
+      // 三条前提，缺一不可（缺了就完全不弹，不装作在等）：
+      //   ① 选区在本文档里（原生 App 里的选区我们既看不到、也接不住上屏）；
+      //   ② 占着麦克风的是已知输入法（IME_BUNDLES）；
+      //   ③ 页面有焦点、且用户没在别处打字（否则会把人家在别处的听写抢过来）。
+      //
+      // 时序是整件事成立的关键：检测到开麦（≤400ms）→ 弹卡 + 抢焦点 → 用户继续说 →
+      // **松手时**输入法才上屏。抢焦点发生在开始时、上屏发生在结束时，中间有几秒余量；
+      // 反过来"等检测到文字再弹框"就已经晚了 —— 字会落到原来那个焦点里去。
+
+      var vcard = null
+      var vcardBox = null
+      var vcardSend = null
+      var vcardState = {
+        open: false,
+        /** 打开时的选区快照（滚动 / 改窗口大小时按它重算位置）。 */
+        range: null,
+        timer: null,
+        /** 上一次 /mic 还没回来（不叠请求）。 */
+        busy: false,
+        /**
+         * 用户刚取消过这次录音（Esc / 点空白）：在**这次录音结束之前**不再自动弹卡片。
+         * 没有它的话：Esc 收卡片 → 恢复浮标 → 下一拍轮询发现"还在录" → 卡片又弹回来，
+         * Esc 看起来像失灵（实测就是这么暴露出来的）。等 !capturing 才解除。
+         */
+        suppress: false,
+      }
+
+      function ensureVCard() {
+        if (vcard) return
+        vcard = el('div', 'dsh-sel-vcard')
+        vcard.setAttribute('data-voiced', '0')
+        vcard.setAttribute('data-text', '0')
+        vcardBox = el('textarea', 'dsh-sel-vcard-box')
+        vcardBox.rows = 1
+        vcardBox.placeholder = '正在听…'
+        vcardBox.setAttribute('spellcheck', 'false')
+        vcardSend = el('button', 'dsh-sel-vcard-send')
+        vcardSend.type = 'button'
+        vcardSend.title = '直接追问（跳过翻译与详解）'
+        vcardSend.textContent = '↑'
+        vcard.appendChild(vcardBox)
+        vcard.appendChild(vcardSend)
+        layer.appendChild(vcard)
+        listen(vcardBox, 'input', syncVCardText)
+        // 输入法上屏有的环境只发 compositionend 而不发 input：补一次（幂等）
+        listen(vcardBox, 'compositionend', syncVCardText)
+        listen(vcardBox, 'keyup', syncVCardText)
+        listen(vcardBox, 'keydown', function (event) {
+          // Enter 发送、Shift+Enter 换行；输入法确认候选词的那个 Enter 不算（与追问框同一套判断）
+          if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+            event.preventDefault()
+            sendVCard()
+          }
+        })
+        listen(vcardSend, 'click', function (event) {
+          event.preventDefault()
+          event.stopPropagation()
+          sendVCard()
+        })
+        // 卡片里的鼠标动作别冒泡出去：外面那套"点别处就收浮标"的逻辑会把卡收掉
+        listen(vcard, 'mousedown', function (event) {
+          event.stopPropagation()
+        })
+        // ④ 点屏幕空白处收卡片。用 capture：卡片自己的 mousedown 是冒泡阶段，
+        // 这里先跑，所以判断"在不在卡片里"必须用 contains 而不是靠冒泡顺序。
+        listen(document, 'mousedown', function (event) {
+          if (!vcardState.open) return
+          var target = event.target
+          if (target && (target === vcard || (vcard.contains && vcard.contains(target)))) return
+          vcardState.suppress = true
+          closeVCard(true)
+        }, true)
+        listen(window, 'scroll', function () {
+          if (vcardState.open) repositionVCard()
+        }, true)
+        listen(window, 'resize', function () {
+          if (vcardState.open) repositionVCard()
+        })
+      }
+
+      /** 有字了才摆出发送键；高度跟着内容长（最多 4 行，再多内部滚动并停在最新一行）。 */
+      function syncVCardText() {
+        if (!vcard || !vcardBox) return
+        vcard.setAttribute('data-text', String(vcardBox.value || '').trim() ? '1' : '0')
+        growVCardBox()
+      }
+
+      function growVCardBox() {
+        if (!vcardBox || !vcard) return
+        vcardBox.style.height = 'auto'
+        var content = Math.max(24, Math.min(vcardBox.scrollHeight, VCARD_TEXT_MAX))
+        vcardBox.style.height = content + 'px'
+        vcardBox.style.overflowY = vcardBox.scrollHeight > VCARD_TEXT_MAX ? 'auto' : 'hidden'
+        if (vcardBox.scrollHeight > VCARD_TEXT_MAX) vcardBox.scrollTop = vcardBox.scrollHeight
+        vcard.style.height = (content + VCARD_PAD_Y) + 'px'
+      }
+
+      /**
+       * 卡片几何：右缘钉在浮标右缘（横向不跳），左缘展开到**正文列左边**。
+       * 宽度不是拍脑袋定的 —— 它是"浮标右缘 − 正文列左边"，所以展开后左缘正好和正文对齐。
+       * 纵向落在整块文字下方（不是选中那一行下方）：否则会压住下面那行正文。
+       */
+      function vcardGeometry() {
+        var range = vcardState.range
+        if (!range) return null
+        var rect = null
+        try {
+          rect = range.getBoundingClientRect()
+        } catch (error) {
+          return null
+        }
+        if (!rect || (!rect.width && !rect.height)) return null
+        var blockRect = selectionBlockRect(range) || rect
+        var right = Math.min(rect.right, Math.max(8, window.innerWidth - 8))
+        var width = Math.max(VCARD_MIN_W, Math.min(VCARD_MAX_W, right - blockRect.left))
+        var left = Math.max(8, right - width)
+        return { left: left, top: blockRect.bottom + 22, width: width }
+      }
+
+      /** 选区所在的那个"块"（段落 / 列表项 / 单元格）—— 卡片挂在它的下方。 */
+      function selectionBlockRect(range) {
+        var node = range.startContainer
+        var element = node && node.nodeType === 1 ? node : node && node.parentElement
+        while (element && element !== document.body && element !== document.documentElement) {
+          var display = ''
+          try {
+            display = window.getComputedStyle(element).display
+          } catch (error) {
+            display = ''
+          }
+          if (display === 'block' || display === 'list-item' || display === 'table-cell') {
+            return element.getBoundingClientRect()
+          }
+          element = element.parentElement
+        }
+        return null
+      }
+
+      function applyVCardGeometry(geo) {
+        if (!vcard || !geo) return
+        vcard.style.left = Math.round(geo.left) + 'px'
+        vcard.style.top = Math.round(geo.top) + 'px'
+        vcard.style.width = Math.round(geo.width) + 'px'
+      }
+
+      /** 滚动 / 改窗口时重新贴住那段文字（关掉过渡，免得跟着滚"飘"）。 */
+      function repositionVCard() {
+        var geo = vcardGeometry()
+        if (!vcard || !geo) return
+        vcard.style.transition = 'none'
+        applyVCardGeometry(geo)
+        void vcard.offsetWidth
+        vcard.style.transition = ''
+      }
+
+      /**
+       * 从浮标那一格**形变**过来：先按浮标的几何摆好（关过渡），强制重排，再切到最终几何。
+       * 于是"下移 + 展开"是一段连续动画，而不是旧的消失、新的出现。
+       */
+      function openVCard() {
+        if (vcardState.open || panelOpen) return
+        if (!state.selection || !state.selection.range) return
+        // 页面没焦点 / 用户正在别处打字：不抢 —— 抢了就是把人家别处的听写拽过来
+        if (typeof document.hasFocus === 'function' && !document.hasFocus()) return
+        if (isTypingTarget(document.activeElement)) return
+        ensureVCard()
+        vcardState.range = state.selection.range
+        var geo = vcardGeometry()
+        if (!geo) return
+        var pillRect = button.getBoundingClientRect()
+        vcardState.open = true
+        vcard.style.transition = 'none'
+        vcard.style.display = 'flex'
+        vcard.style.left = Math.round(pillRect.left) + 'px'
+        vcard.style.top = Math.round(pillRect.top) + 'px'
+        vcard.style.width = Math.round(pillRect.width || 86) + 'px'
+        vcard.style.height = Math.round(pillRect.height || 28) + 'px'
+        vcard.style.borderRadius = '999px'
+        vcard.setAttribute('data-voiced', '1')
+        void vcard.offsetWidth
+        vcard.style.transition = ''
+        vcard.style.borderRadius = ''
+        applyVCardGeometry(geo)
+        growVCardBox()
+        hideButton()
+        // 关键一步：输入法上屏只认焦点元素，焦点必须在我们这个框里
+        focusVCard()
+        // 焦点一转移原生选区就没了 —— 把底纹补回来（用户明确要求"选中效果不要去掉"）
+        paintVCardHighlight()
+      }
+
+      /**
+       * 把选中文字的底纹画回来。
+       *
+       * 为什么需要它：输入法上屏只认焦点元素，所以卡片一开就得把焦点抢进 textarea ——
+       * 而浏览器在焦点转移时会把文档选区清掉（底纹跟着没了，用户报的就是这个）。
+       * 用 CSS Custom Highlight 单独画一层：不碰 DOM、不碰焦点，关掉时整层撤走。
+       * 不支持的环境（老浏览器）就没有底纹 —— 功能不受影响，只是少个视觉。
+       */
+      function paintVCardHighlight() {
+        var range = vcardState.range
+        if (!range) return
+        try {
+          if (typeof Highlight !== 'function' || typeof CSS === 'undefined' || !CSS.highlights) return
+          var dark = isDarkSurface(document.body)
+          document.documentElement.style.setProperty(
+            '--dsh-sel-hl',
+            dark ? 'rgba(110,168,254,.32)' : 'rgba(59,110,245,.22)',
+          )
+          CSS.highlights.set('dsh-sel-voice', new Highlight(range))
+        } catch (error) {
+          /* 画不出来就算了：底纹是锦上添花，不能因为它影响主流程 */
+        }
+      }
+
+      function clearVCardHighlight() {
+        try {
+          if (typeof CSS !== 'undefined' && CSS.highlights) CSS.highlights.delete('dsh-sel-voice')
+          document.documentElement.style.removeProperty('--dsh-sel-hl')
+        } catch (error) {
+          /* noop */
+        }
+      }
+
+      function focusVCard() {
+        if (!vcardBox) return
+        try {
+          vcardBox.focus({ preventScroll: true })
+        } catch (error) {
+          try {
+            vcardBox.focus()
+          } catch (inner) {
+            /* 桩环境没有 focus：不影响逻辑 */
+          }
+        }
+      }
+
+      function closeVCard(restorePill) {
+        if (!vcardState.open) return
+        vcardState.open = false
+        vcardState.range = null
+        if (vcard) {
+          vcard.style.display = 'none'
+          vcard.setAttribute('data-voiced', '0')
+          vcard.setAttribute('data-text', '0')
+          vcard.style.borderRadius = ''
+        }
+        if (vcardBox) {
+          vcardBox.value = ''
+          vcardBox.style.height = ''
+          vcardBox.style.overflowY = 'hidden'
+        }
+        clearVCardHighlight()
+        stopMicWatch()
+        if (restorePill && state.selection && !panelOpen) showButton(state.selection.rect)
+      }
+
+      /** 发送：跳过翻译与详解，把说的话当作第一条追问直接发出去。 */
+      function sendVCard() {
+        var asked = String((vcardBox && vcardBox.value) || '').trim()
+        if (!asked) {
+          focusVCard()
+          return
+        }
+        var selection = state.selection
+        if (!selection || !selection.range) {
+          closeVCard(false)
+          return
+        }
+        var contextInfo = collectContext(rangeSelection(selection.range))
+        closeVCard(false)
+        openPanelWith(
+          selection.text,
+          contextInfo.context,
+          contextInfo.label,
+          selection.rect,
+          contextInfo.keyContext,
+          { askFirst: asked },
+        )
+        clearDocSelection()
+        // 选区连同它的记录一起作废（与 openForSelection 一致）
+        state.selection = null
+      }
+
+      /** host 报的占用者里，有没有已知输入法。 */
+      function matchingIme(data) {
+        if (!data || !data.capturing || !Array.isArray(data.processes)) return null
+        for (var i = 0; i < data.processes.length; i++) {
+          var proc = data.processes[i] || {}
+          var id = String(proc.bundleId || '')
+          for (var j = 0; j < IME_BUNDLES.length; j++) {
+            if (id.indexOf(IME_BUNDLES[j]) === 0) return proc
+          }
+        }
+        return null
+      }
+
+      /**
+       * 只在"有选区"时轮询（浮标亮着的那几拍）。不叠请求：上一拍没回来就跳过这一拍。
+       * 拿不到 host 的能力（非 macOS / 探针没编出来）就**停掉轮询**，不再空转。
+       */
+      function startMicWatch() {
+        if (vcardState.timer) return
+        if (!state.selection) return
+        vcardState.timer = setInterval(micTick, MIC_POLL_MS)
+        timers.push(vcardState.timer)
+        micTick()
+      }
+
+      function stopMicWatch() {
+        if (!vcardState.timer) return
+        clearInterval(vcardState.timer)
+        vcardState.timer = null
+      }
+
+      function micTick() {
+        if (vcardState.busy) return
+        if (!state.selection) {
+          stopMicWatch()
+          return
+        }
+        vcardState.busy = true
+        fetch(MIC_API)
+          .then(function (response) {
+            return response.json()
+          })
+          .then(function (data) {
+            vcardState.busy = false
+            if (!data || !data.available) {
+              stopMicWatch()
+              return
+            }
+            if (matchingIme(data)) {
+          if (vcardState.suppress) return
+          if (!vcardState.open) openVCard()
+          else if (vcard) vcard.setAttribute('data-voiced', '1')
+          return
+        }
+        // 没人在录了：这一次录音结束，解除抑制（下一次开麦才允许再弹）
+        vcardState.suppress = false
+            // 开麦结束了：一个字都没说就收掉（别留个空框）；已经说了字的留着让人改 / 发
+            if (vcardState.open && !String((vcardBox && vcardBox.value) || '').trim()) closeVCard(true)
+          })
+          .catch(function () {
+            vcardState.busy = false
+            stopMicWatch()
+          })
       }
 
       function hideQuoteButton() {
@@ -4561,7 +4979,10 @@ window.__ModuleLoader__.load({
        * 打开面板的公共路径：真实选区与自检钩子**共用**这一条，
        * 否则钩子会绕过缓存（缓存行为只能靠人工点选才能验证）。
        */
-      function openPanelWith(text, context, label, anchor, keyContext) {
+      function openPanelWith(text, context, label, anchor, keyContext, options) {
+        // 这一轮是不是"从语音卡直接进追问"：paint() 靠它决定不画翻译/详解两节、
+        // 并且让追问输入框直接可见（见 state.voiceAsk 的几处用法）
+        state.voiceAsk = !!(options && options.askFirst)
         // 记下"这次划词发生在哪个会话"——小窗后续所有按会话解析的东西都用它
         panelSessionId = currentSessionId()
         state.payload = buildPayload(text, context, label)
@@ -4580,6 +5001,24 @@ window.__ModuleLoader__.load({
         state.parts = (cached && cached.parts) || { translation: '', detail: '' }
         state.stage = ''
         state.raw = ''
+        // 语音卡那条路（options.askFirst）：**不请求 /analyze**，直接把说的话当第一条追问发出去。
+        // 面板停在"追问"阶段、翻译与详解两节是空的 —— 这正是"跳过解读"的字面意思。
+        // 缓存与历史回放一律不参与：用户要的是"现在这句"，不是"这段文字上次的解读"。
+        if (options && options.askFirst) {
+          state.parts = { translation: '', detail: '' }
+          state.phase = 'done'
+          state.chars = 0
+          state.error = ''
+          state.fromCache = false
+          state.sharedCache = false
+          state.elapsed = 0
+          state.toolBusy = false
+          state.cacheState = ''
+          renderTurns()
+          paint()
+          sendAsk(options.askFirst)
+          return
+        }
         renderTurns()
         if (cached) {
           state.turns = (cached.turns || []).slice()
@@ -5607,7 +6046,8 @@ window.__ModuleLoader__.load({
         for (var i = 0; i < state.turns.length; i += 1) {
           if (state.turns[i].role === 'user') asked = true
         }
-        expandButton.style.display = !hasDetail && translationReady && !asked ? '' : 'none'
+        // 语音卡那条路没有解读可展开，别摆一个点了没反应的按钮
+        expandButton.style.display = !hasDetail && translationReady && !asked && !state.voiceAsk ? '' : 'none'
         expandButton.disabled = false
         return asked
       }
@@ -5635,6 +6075,9 @@ window.__ModuleLoader__.load({
         var stage = state.stage
         var selected = state.payload && state.payload.text ? state.payload.text : state.selection ? state.selection.text : ''
         var sections = splitSections(visibleRaw())
+        // 语音卡那条路（选中文字 + 输入法语音 → 直接追问）：这一轮**没有解读**，
+        // 所以翻译节整节不画 —— 不是"画个空节、里面写这次没有返回内容"（用户否掉的正是它）。
+        translationSection.root.style.display = state.voiceAsk ? 'none' : ''
 
         // 翻译节：首轮流式期间逐字渲染；已有结果就用结果；一个字都还没有时给等待特效
         var live = stripEchoPrefix(stage === 'detail' ? '' : sections.translation || sections.other, selected)
@@ -5709,7 +6152,7 @@ window.__ModuleLoader__.load({
         // 配色按**面板实际底色**选（不看系统偏好）：主题实现方式怎么变都不影响
         layer.setAttribute('data-theme', isDarkSurface(panel) ? 'dark' : 'light')
         panel.setAttribute('data-theme', isDarkSurface(panel) ? 'dark' : 'light')
-        askRow.style.display = wide || translationReady || state.quotes.length > 0 ? '' : 'none'
+        askRow.style.display = wide || translationReady || state.voiceAsk || state.quotes.length > 0 ? '' : 'none'
         // 展开 CTA：翻译还在跑（含思考期）时先不出现——那时候该看的是等待特效，
         // 摆在下面只会是个灰着的按钮，反而像"没反应"；发过追问之后也收起（见 syncExpandCta）。
         syncExpandCta()
@@ -7743,6 +8186,21 @@ window.__ModuleLoader__.load({
       var offSelectionChange = listen(document, 'selectionchange', function () {
         if (selectPressing()) return
         scheduleCheck()
+      }, true)
+
+      /**
+       * Esc 收语音卡。
+       *
+       * 用 capture 抢在最前面：卡片是当下最内层的东西，Esc 该先退它
+       * （小窗那套 Esc 是"从最内层往外退"，这里是同一条规则往外多包一层）。
+       * 已经说出来的字**丢掉**：卡还没发出去，取消就是取消；要留着就先点发送。
+       */
+      var offVoiceEscape = listen(document, 'keydown', function (event) {
+        if (event.key !== 'Escape' || !vcardState.open || event.defaultPrevented) return
+        event.preventDefault()
+        event.stopPropagation()
+        vcardState.suppress = true
+        closeVCard(true)
       }, true)
 
       /**
@@ -9798,6 +10256,45 @@ window.__ModuleLoader__.load({
 
       // —— 调试钩子（自动化验证用） ——
       window.__dshSelectionExplain = {
+        /**
+         * 语音卡（选中文字 + 输入法正在语音输入 → 就地追问）的状态。
+         * 给自动化验证用：能不能弹、有没有焦点、几何对不对，全在这里读。
+         */
+        voiceCard: function () {
+          return {
+            open: vcardState.open,
+            watching: !!vcardState.timer,
+            voiced: !!(vcard && vcard.getAttribute('data-voiced') === '1'),
+            hasText: !!(vcard && vcard.getAttribute('data-text') === '1'),
+            text: vcardBox ? vcardBox.value : '',
+            focused: !!(vcardBox && document.activeElement === vcardBox),
+            geometry: vcard
+              ? {
+                  left: vcard.style.left,
+                  top: vcard.style.top,
+                  width: vcard.style.width,
+                  height: vcard.style.height,
+                }
+              : null,
+          }
+        },
+        /** 手工把卡打开/收起/发送（测试与调试用；正常路径由麦克风轮询驱动）。 */
+        voiceCardOpen: function () {
+          openVCard()
+          return window.__dshSelectionExplain.voiceCard()
+        },
+        voiceCardClose: function () {
+          closeVCard(false)
+          return window.__dshSelectionExplain.voiceCard()
+        },
+        voiceCardSend: function (text) {
+          if (vcardBox && text !== undefined) {
+            vcardBox.value = String(text)
+            syncVCardText()
+          }
+          sendVCard()
+          return true
+        },
         /** 重新读一次 host 上的小窗尺寸（测试用；正常路径只在挂载时读一次）。 */
         loadPanelSize: function () {
           panelSizeAsked = false
@@ -10277,6 +10774,7 @@ window.__ModuleLoader__.load({
           offMouseUp()
           offKeyUp()
           offSelectionChange()
+          offVoiceEscape()
           if (floatWatchId) clearInterval(floatWatchId)
           offMouseDown()
           offButtonDown()

@@ -7,6 +7,7 @@
   "types": "./lib/types/index.d.ts",
   "files": [
     "lib",
+    "native",
     "src",
     "scripts",
     "cordis.patch.yml",

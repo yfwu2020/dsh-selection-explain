@@ -126,5 +126,22 @@ node --check src/client/index.js
 mkdir -p lib
 cp src/client/index.js lib/client.js
 
+# ── ⑤ 原生探针（macOS 专用）──
+# 「检测输入法正在语音输入」靠读 CoreAudio 的进程对象列表（macOS 14.4+），
+# Node 没有 FFI，所以编一个小二进制放进 lib/native/，host 需要时 spawn 它
+# （见 src/index.ts 里的 micPresence）。
+# 编不出来**不算构建失败**：功能降级成 available:false（和"没装识别服务"一个待遇），
+# 其余功能一律不受影响；非 macOS 直接跳过。
+mkdir -p lib/native
+if [ "$(uname -s)" = "Darwin" ] && command -v clang >/dev/null 2>&1; then
+  if clang -O2 -framework CoreAudio -framework CoreFoundation native/mic-probe.c -o lib/native/mic-probe; then
+    echo "=== 原生探针：lib/native/mic-probe ==="
+  else
+    echo "build: 原生探针编译失败 —— 麦克风占用检测将不可用（不影响其它功能）" >&2
+  fi
+else
+  echo "build: 跳过原生探针（非 macOS 或没有 clang）—— 麦克风占用检测不可用"
+fi
+
 echo "=== 构建完成 ==="
 ls -l lib
