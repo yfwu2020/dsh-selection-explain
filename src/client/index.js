@@ -1000,7 +1000,9 @@ window.__ModuleLoader__.load({
       // 正文右侧留 40px 给发送键（它是绝对定位的，不参与行高 —— 否则 30px 的按钮会把
       // 单行卡片顶到 52px，用户看到的就是"临时框太高"）
       '.dsh-sel-vcard-box{flex:1;min-width:0;align-self:center;display:block;margin:0;',
-      'box-sizing:border-box;padding:0 40px 0 0;border:0;outline:0;background:transparent;color:inherit;',
+      // min-height:0 是防御：宿主 App 的样式表若给 textarea 设了 min-height（我们管不到别人的全局规则），
+      // 高度就会由它说了算 —— 单行卡会因此变高
+      'box-sizing:border-box;min-height:0;padding:0 40px 0 0;border:0;outline:0;background:transparent;color:inherit;',
       'resize:none;overflow-y:hidden;font:400 15.5px/1.5 ' + FONT + ';max-height:96px}',
       '.dsh-sel-vcard-box::placeholder{color:var(--dsw-alias-label-tertiary,rgba(140,140,140,.9))}',
       // 尺寸≈一行行高（23.25px）：单行卡里它和文字同一条中线；多行时贴底=跟着最后一行走。
@@ -4058,16 +4060,21 @@ window.__ModuleLoader__.load({
         vcardState.open = true
         vcard.style.transition = 'none'
         vcard.style.display = 'flex'
+        // ⚠️ 宽度**必须在这一帧就到位**，不能参与过渡：
+        // growVCardBox() 紧接着要读 scrollHeight，而那一帧若还挤在浮标那点窄宽度（~86px）里，
+        // 文字会按窄宽度折行、行数暴涨 → 高度直接被顶到 4 行上限（114px）。
+        // 位置/高度/圆角仍然从浮标那一格过渡过来，形变照旧。
+        vcard.style.width = Math.round(geo.width) + 'px'
         vcard.style.left = Math.round(pillRect.left) + 'px'
         vcard.style.top = Math.round(pillRect.top) + 'px'
-        vcard.style.width = Math.round(pillRect.width || 86) + 'px'
         vcard.style.height = Math.round(pillRect.height || 28) + 'px'
         vcard.style.borderRadius = '999px'
         vcard.setAttribute('data-voiced', '1')
         void vcard.offsetWidth
         vcard.style.transition = ''
         vcard.style.borderRadius = ''
-        applyVCardGeometry(geo)
+        vcard.style.left = Math.round(geo.left) + 'px'
+        vcard.style.top = Math.round(geo.top) + 'px'
         growVCardBox()
         hideButton()
         // 关键一步：输入法上屏只认焦点元素，焦点必须在我们这个框里
