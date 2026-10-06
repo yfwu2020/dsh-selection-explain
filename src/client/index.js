@@ -4069,7 +4069,7 @@ window.__ModuleLoader__.load({
         vcard.style.top = Math.round(pillRect.top) + 'px'
         vcard.style.height = Math.round(pillRect.height || 28) + 'px'
         vcard.style.borderRadius = '999px'
-        vcard.setAttribute('data-voiced', '1')
+        markVCardListening(true)
         void vcard.offsetWidth
         vcard.style.transition = ''
         vcard.style.borderRadius = ''
@@ -4077,6 +4077,9 @@ window.__ModuleLoader__.load({
         vcard.style.top = Math.round(geo.top) + 'px'
         growVCardBox()
         hideButton()
+        // 卡片开着期间必须继续看麦克风：既要判断"这次录音结束了"（停掉呼吸），
+        // 也要能接住"又按了一次 Fn"（重新标记在听）。幂等，正常路径上计时器本来就在跑。
+        startMicWatch()
         // 关键一步：输入法上屏只认焦点元素，焦点必须在我们这个框里
         focusVCard()
         // 焦点一转移原生选区就没了 —— 把底纹补回来（用户明确要求"选中效果不要去掉"）
@@ -4114,6 +4117,21 @@ window.__ModuleLoader__.load({
         } catch (error) {
           /* noop */
         }
+      }
+
+      /**
+       * 「在听」标记与空框占位文案。
+       *
+       * 麦克风一松开就必须停掉呼吸 —— 否则卡片还在泛青呼吸，等于在说"我还在听"，
+       * 而这时输入法早就松手了。空框的占位也跟着换（"正在听…" → "直接打字也行…"），
+       * 不然那句话同样是在撒谎。
+       */
+      function markVCardListening(on) {
+        if (!vcard) return
+        vcard.setAttribute('data-voiced', on ? '1' : '0')
+        if (!vcardBox) return
+        if (String(vcardBox.value || '').trim()) return
+        vcardBox.placeholder = on ? '正在听…' : '直接打字也行…'
       }
 
       function focusVCard() {
@@ -4225,15 +4243,16 @@ window.__ModuleLoader__.load({
               return
             }
             if (matchingIme(data)) {
-          if (vcardState.suppress) return
-          if (!vcardState.open) openVCard()
-          else if (vcard) vcard.setAttribute('data-voiced', '1')
-          return
-        }
-        // 没人在录了：这一次录音结束，解除抑制（下一次开麦才允许再弹）
-        vcardState.suppress = false
-            // 开麦结束了：一个字都没说就收掉（别留个空框）；已经说了字的留着让人改 / 发
-            if (vcardState.open && !String((vcardBox && vcardBox.value) || '').trim()) closeVCard(true)
+              if (vcardState.suppress) return
+              if (!vcardState.open) openVCard()
+              else markVCardListening(true)
+              return
+            }
+            // 没人在录了：这一次录音结束，解除抑制（下一次开麦才允许再弹）
+            vcardState.suppress = false
+            // 开麦结束了：**不退出**。卡片留着、焦点也留着 —— 一个字都没说时用户可以接着手动打字；
+            // "框突然消失"比"没听到就自己打"更打断人。只把"在听"停掉（见 markVCardListening）。
+            if (vcardState.open) markVCardListening(false)
           })
           .catch(function () {
             vcardState.busy = false

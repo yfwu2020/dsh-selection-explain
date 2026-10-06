@@ -4856,6 +4856,22 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
   hook.voiceCardOpen()
   assert('打开卡片时把焦点抢到输入框（上屏只认焦点元素）', focused === true, String(focused))
 
+  // 开麦结束、一个字都没说：卡片**不退出**（用户可以接着手动打字），只是不再显示"在听"
+  micStub.value = { ok: true, available: true, capturing: false, processes: [], reason: '' }
+  await sleep(520)
+  const silent = hook.voiceCard()
+  assert('开麦结束但一个字都没说：卡片留着不退出', silent.open === true, JSON.stringify(silent))
+  assert('此时不再显示「在听」（麦克风已经松开了）', silent.voiced === false, JSON.stringify(silent))
+  // 恢复"正在录"：后面几步按原样继续
+  micStub.value = {
+    ok: true,
+    available: true,
+    capturing: true,
+    processes: [{ pid: 513, bundleId: 'com.bytedance.inputmethod.doubaoime', name: 'DoubaoIme' }],
+    reason: '',
+  }
+  await sleep(520)
+
   // 说话：文字落进输入框（输入法上屏走的就是这条路）
   if (box) {
     box.value = '这是在推迟还是提前？'
