@@ -4848,6 +4848,31 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
   const box = find('dsh-sel-vcard-box')
   const sendBtn = find('dsh-sel-vcard-send')
   assert('卡片里有输入框（IME 上屏要落在它身上）', !!box && !!sendBtn, String(!!box) + '/' + String(!!sendBtn))
+  // 选中提示（下划线 + 牵引线）：**只在卡片打开后才画** —— 选中/浮标阶段不画（那时原生底纹还在）
+  const uline = find('dsh-sel-uline')
+  const thread = find('dsh-sel-thread')
+  assert(
+    '卡片打开后画了下划线（按选区逐行矩形）',
+    !!uline && uline.style.width === '160px',
+    uline ? String(uline.style.width) : 'none',
+  )
+  assert(
+    '下划线是两端渐隐的（U3）',
+    !!uline && /linear-gradient/.test(String(uline.style.background)),
+    uline ? String(uline.style.background).slice(0, 46) : 'none',
+  )
+  assert(
+    '牵引线起点有个小圆点（标明"从这段文字来"）',
+    !!find('dsh-sel-threaddot') && find('dsh-sel-threaddot').style.display === 'block',
+    find('dsh-sel-threaddot') ? String(find('dsh-sel-threaddot').style.display) : 'none',
+  )
+  assert(
+    '牵引线从选区落到卡片上缘，且是流动虚线',
+    !!thread &&
+      thread.style.display === 'block' &&
+      /repeating-linear-gradient/.test(String(thread.style.backgroundImage)),
+    thread ? String(thread.style.display) + ' / ' + String(thread.style.backgroundImage).slice(0, 46) : 'none',
+  )
 
   // 焦点：桩 DOM 的 focus() 是空实现，这里换成可观测的再重开一次
   let focused = false
@@ -4945,6 +4970,11 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       JSON.stringify(closed) + ' / display=' + (cardEl ? String(cardEl.style.display) : '?'),
     )
     assert('亮线也一并收掉', !!crtLine && !crtLine.getAttribute('data-off'), crtLine ? String(crtLine.getAttribute('data-off')) : 'no line')
+    assert(
+      '卡片收起后选中提示一并清掉',
+      !find('dsh-sel-uline') && !!thread && thread.style.display === 'none',
+      '下划线=' + String(!!find('dsh-sel-uline')) + ' 牵引线 display=' + (thread ? String(thread.style.display) : '?'),
+    )
   } else {
     assert('Esc 收起语音卡', false, '卡片没能再次打开：' + JSON.stringify(reopened))
   }

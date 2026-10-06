@@ -1012,6 +1012,19 @@ window.__ModuleLoader__.load({
       'cursor:pointer;opacity:0;pointer-events:none;transition:opacity .16s ease}',
       // 还什么都没说时不摆出发送键（先只显示"正在听…"）
       '.dsh-sel-vcard[data-text="1"] .dsh-sel-vcard-send{opacity:1;pointer-events:auto}',
+      // ── 选中提示：下划线 + 从选区牵引到卡片的虚线（E 方案）──────────────
+      // 抢焦点会让原生选区底纹消失，所以用这两样接手"指认这段文字"。
+      // 两者都在我们自己的层里，**不碰选区 / 焦点语义**，对输入法上屏零影响。
+      // 颜色直接用 --sel-a1 —— 它本来就按明暗换（浅色 #0d9488 / 深色 #4ecdc4）。
+      '.dsh-sel-umark{position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;',
+      'z-index:2147482998;transition:opacity .14s ease}',
+      '.dsh-sel-uline{position:fixed;height:2px;border-radius:1px;pointer-events:none}',
+      '.dsh-sel-thread{position:fixed;width:2px;display:none;pointer-events:none;z-index:2147482998;',
+      'transition:opacity .14s ease;animation:dsh-sel-thread-flow 1.1s linear infinite}',
+      '.dsh-sel-threaddot{position:fixed;width:5px;height:5px;border-radius:50%;display:none;',
+      'pointer-events:none;z-index:2147482999;transition:opacity .14s ease}',
+      // 虚线朝卡片流动：动的是 background-position（一条 2px 宽的竖条，重绘代价极小）
+      '@keyframes dsh-sel-thread-flow{from{background-position-y:0}to{background-position-y:8px}}',
       // ── 消失：老式电视机关机（A 方案）────────────────────────────────
       // 卡片塌成一条线，亮线再横缩成一个点；最后一段做成"像素故障"：
       // 亮线拆成 5 段，各自闪、各自抖、各自死；**收缩原点统一在整条线的中心**
@@ -1072,7 +1085,8 @@ window.__ModuleLoader__.load({
       '.dsh-sel-vcard{transition:none}.dsh-sel-vcard[data-voiced="1"]{animation:none}',
       '.dsh-sel-vcard[data-off="a"],.dsh-sel-crtline[data-off="a"],',
       '.dsh-sel-crtline[data-off="a"] .dsh-sel-crtseg,.dsh-sel-crtline[data-off="a"] .dsh-sel-crtspark{',
-      'animation:none!important;opacity:0}}',
+      'animation:none!important;opacity:0}',
+      '.dsh-sel-thread{animation:none}}',
     ].join('')
 
     // ────────────────────── Markdown 轻渲染（全 DOM，无 innerHTML） ──────────────────────
@@ -3957,6 +3971,10 @@ window.__ModuleLoader__.load({
       var vcardSend = null
       /** 关机动画那条亮线（懒建）。 */
       var crtLine = null
+      /** 选中提示：下划线层 / 牵引线 / 牵引线起点的小圆点（懒建）。 */
+      var selMark = null
+      var selThread = null
+      var selThreadDot = null
       var vcardState = {
         open: false,
         /** 打开时的选区快照（滚动 / 改窗口大小时按它重算位置）。 */
@@ -4149,6 +4167,8 @@ window.__ModuleLoader__.load({
         applyVCardGeometry(geo)
         void vcard.offsetWidth
         vcard.style.transition = ''
+        // 选中提示是按视口坐标摆的，滚动 / 改窗口要跟着重画
+        if (vcardState.open) paintSelectionMarkers()
       }
 
       /**
@@ -4205,6 +4225,9 @@ window.__ModuleLoader__.load({
         vcard.style.width = Math.round(geo.width) + 'px'
         vcard.style.height = finalCardHeight + 'px'
         scheduleVCardUnpin()
+        // 卡片打开后才画选中提示（选中/浮标阶段不画：那时原生底纹还在）
+        ensureSelectionMarkers()
+        paintSelectionMarkers()
         hideButton()
         // 卡片开着期间必须继续看麦克风：既要判断"这次录音结束了"（停掉呼吸），
         // 也要能接住"又按了一次 Fn"（重新标记在听）。幂等，正常路径上计时器本来就在跑。
@@ -4251,6 +4274,80 @@ window.__ModuleLoader__.load({
        * "要不要解读"，而用户刚表达的是"这次算了"。要解读就重新划一次。
        * 发送那条路也不还（它直接开面板了）。
        */
+      /** 选中提示的三个元素（懒建）。 */
+      function ensureSelectionMarkers() {
+        if (selMark) return
+        selMark = el('div', 'dsh-sel-umark')
+        layer.appendChild(selMark)
+        selThread = el('div', 'dsh-sel-thread')
+        layer.appendChild(selThread)
+        selThreadDot = el('div', 'dsh-sel-threaddot')
+        selThreadDot.style.background = 'var(--sel-a1)'
+        layer.appendChild(selThreadDot)
+      }
+
+      /**
+       * 画"选中提示"：下划线（逐行矩形、两端渐隐）+ 从选区牵引到卡片的虚线。
+       *
+       * **只在卡片打开后才出现**（用户定的）：选中/浮标阶段不画 —— 那时原生底纹还在，
+       * 两者同时出现会互相打架。等底纹被抢焦点吃掉，这两样正好接上。
+       *
+       * 下划线按 range 的**逐行矩形**贴（多行选区就是多条），不是整块一条线。
+       * 牵引线从选区**末行中点**竖直落到卡片上缘 —— 这一条会穿过下方文字（用户接受），
+       * 所以它是 2px 宽的竖条 + repeating-gradient 虚线，而不是实线。
+       */
+      function paintSelectionMarkers() {
+        if (!selMark) return
+        clearSelectionMarkers()
+        var range = vcardState.range
+        if (!range || !vcard || !vcardState.open) return
+        var rects = range.getClientRects ? range.getClientRects() : null
+        if (!rects || !rects.length) return
+        var accent = 'var(--sel-a1)'
+        for (var i = 0; i < rects.length; i += 1) {
+          var rect = rects[i]
+          if (!rect || !rect.width) continue
+          var line = el('div', 'dsh-sel-uline')
+          line.style.left = Math.round(rect.left) + 'px'
+          line.style.top = Math.round(rect.bottom + 3) + 'px'
+          line.style.width = Math.round(rect.width) + 'px'
+          // U3：两端渐隐
+          line.style.background =
+            'linear-gradient(90deg,transparent,' + accent + ' 12%,' + accent + ' 88%,transparent)'
+          selMark.appendChild(line)
+        }
+        var last = rects[rects.length - 1]
+        var geo = vcardGeometry()
+        if (!last || !geo) return
+        var endX = last.left + last.width / 2
+        var endY = last.bottom + 2
+        var height = geo.top - endY
+        if (height <= 6) return // 卡片紧贴选区，没什么可牵的
+        selThread.style.left = Math.round(endX - 1) + 'px'
+        selThread.style.top = Math.round(endY) + 'px'
+        selThread.style.height = Math.round(height) + 'px'
+        selThread.style.backgroundImage =
+          'repeating-linear-gradient(180deg,' + accent + ' 0 4px,transparent 4px 8px)'
+        selThread.style.display = 'block'
+        selThreadDot.style.left = Math.round(endX - 2.5) + 'px'
+        selThreadDot.style.top = Math.round(endY - 2.5) + 'px'
+        selThreadDot.style.display = 'block'
+      }
+
+      /** 收起选中提示（幂等）。 */
+      function clearSelectionMarkers() {
+        if (selMark && selMark.children.length) selMark.textContent = ''
+        if (selMark) selMark.style.opacity = ''
+        if (selThread) {
+          selThread.style.display = 'none'
+          selThread.style.opacity = ''
+        }
+        if (selThreadDot) {
+          selThreadDot.style.display = 'none'
+          selThreadDot.style.opacity = ''
+        }
+      }
+
       /** 关机动画那条亮线（懒建）。 */
       function ensureCrtLine() {
         if (crtLine) return crtLine
@@ -4317,6 +4414,10 @@ window.__ModuleLoader__.load({
           ? 'drop-shadow(0 0 6px rgba(190,245,255,.8))'
           : 'drop-shadow(0 0 6px rgba(13,148,136,.55))'
         vcardState.closing = true
+        // 选中提示跟着卡片一起淡掉（它俩是"卡片这一段"的注解，卡片塌了就不该还挂着）
+        if (selMark) selMark.style.opacity = '0'
+        if (selThread) selThread.style.opacity = '0'
+        if (selThreadDot) selThreadDot.style.opacity = '0'
         // 摘掉再挂上：让动画能重播（同一元素上连续两次收卡片）
         vcard.removeAttribute('data-off')
         line.removeAttribute('data-off')
@@ -4378,6 +4479,7 @@ window.__ModuleLoader__.load({
           crtLine.style.opacity = ''
           crtLine.style.filter = ''
         }
+        clearSelectionMarkers()
       }
 
       /**
