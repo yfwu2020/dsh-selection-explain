@@ -1013,15 +1013,28 @@ window.__ModuleLoader__.load({
       // 还什么都没说时不摆出发送键（先只显示"正在听…"）
       '.dsh-sel-vcard[data-text="1"] .dsh-sel-vcard-send{opacity:1;pointer-events:auto}',
       // ── 消失：老式电视机关机（A 方案）────────────────────────────────
-      // 卡片塌成一条线，亮线再横缩成一个点。两件事分开做：
-      //   · 卡片：transform 压缩（走合成器）
-      //   · 亮线：**独立元素**，不能做成卡片的 box-shadow ——
-      //     box-shadow 会跟着 transform 一起被压扁，塌到 5% 时连光晕都成一条（实测踩过）
-      // 颜色由 JS 按明暗写进内联样式：浅色底上白线看不见（只差 ~15/255），深色底上深带子会消失。
-      '.dsh-sel-crtline{position:fixed;height:3px;border-radius:2px;opacity:0;pointer-events:none;',
-      'z-index:2147483001;transform-origin:50% 50%}',
-      '.dsh-sel-vcard[data-off="a"]{transform-origin:50% 50%;animation:dsh-sel-crt-card-a 420ms cubic-bezier(.3,0,.2,1) forwards}',
-      '.dsh-sel-crtline[data-off="a"]{animation:dsh-sel-crt-line-a 420ms cubic-bezier(.35,0,.25,1) forwards}',
+      // 卡片塌成一条线，亮线再横缩成一个点；最后一段做成"像素故障"：
+      // 亮线拆成 5 段，各自闪、各自抖、各自死；**收缩原点统一在整条线的中心**
+      // （百分比是相对每段自己的宽度算的，所以外圈是 200% / -200% 这种值），
+      // 于是"往中间收"和"错位露缝"同时发生 —— 那点电子损坏就是这么来的。
+      // 为什么不用 mask 做虚线：mask-image 不是可动画属性，写在关键帧里会被忽略。
+      // 亮线是**独立元素**，不是卡片的 box-shadow —— 后者会跟着 transform 一起被压扁。
+      // 颜色由 JS 按明暗挂到容器上（浅色底白线看不见，只差 ~15/255），子元素用 currentColor 继承。
+      '.dsh-sel-crtline{position:fixed;height:3px;pointer-events:none;z-index:2147483001;opacity:0}',
+      '.dsh-sel-crtseg,.dsh-sel-crtspark{position:absolute;background:currentColor;border-radius:1px}',
+      '.dsh-sel-crtseg{top:0;height:100%;width:20%}',
+      '.dsh-sel-crtspark{top:-1px;width:3px;height:5px;opacity:0}',
+      '.dsh-sel-vcard[data-off="a"]{transform-origin:50% 50%;animation:dsh-sel-crt-card-a 460ms cubic-bezier(.3,0,.2,1) forwards}',
+      '.dsh-sel-crtline[data-off="a"]{animation:dsh-sel-crt-line-a 460ms cubic-bezier(.35,0,.25,1) forwards}',
+      '.dsh-sel-crtline[data-off="a"] .dsh-sel-crtseg{animation:dsh-sel-crt-seg-a 460ms cubic-bezier(.4,0,.3,1) forwards}',
+      '.dsh-sel-crtline[data-off="a"] .dsh-sel-crtspark{animation:dsh-sel-crt-spark-a 460ms linear forwards}',
+      '.dsh-sel-crtline[data-off="a"] .dsh-sel-crtseg:nth-child(1){left:0%;transform-origin:200% 50%;animation-delay:-16ms}',
+      '.dsh-sel-crtline[data-off="a"] .dsh-sel-crtseg:nth-child(2){left:20%;transform-origin:100% 50%;animation-delay:-38ms}',
+      '.dsh-sel-crtline[data-off="a"] .dsh-sel-crtseg:nth-child(3){left:40%;transform-origin:0% 50%;animation-delay:-4ms}',
+      '.dsh-sel-crtline[data-off="a"] .dsh-sel-crtseg:nth-child(4){left:60%;transform-origin:-100% 50%;animation-delay:-30ms}',
+      '.dsh-sel-crtline[data-off="a"] .dsh-sel-crtseg:nth-child(5){left:80%;transform-origin:-200% 50%;animation-delay:-22ms}',
+      '.dsh-sel-crtline[data-off="a"] .dsh-sel-crtspark:nth-child(6){left:31%;animation-delay:-46ms}',
+      '.dsh-sel-crtline[data-off="a"] .dsh-sel-crtspark:nth-child(7){left:67%;animation-delay:-12ms}',
       // opacity 必须在前面显式写 1：只在 100% 写 0 的话，CSS 会从 0% 起就线性插值，
       // 整段塌缩都在同时淡出（实测 160ms 时 opacity 已经掉到 0.365），
       // 而显像管是"一直亮着、最后一下才没"。
@@ -1032,12 +1045,34 @@ window.__ModuleLoader__.load({
       '88%{opacity:1}',
       '100%{transform:scale(.5,.05);filter:brightness(2.4);opacity:0}}',
       '@keyframes dsh-sel-crt-line-a{',
-      '0%,52%{opacity:0;transform:scaleX(1)}',
-      '60%{opacity:1;transform:scaleX(1)}',
-      '100%{opacity:0;transform:scaleX(.02)}}',
+      '0%,52%{opacity:0}',
+      '60%{opacity:1}',
+      '96%{opacity:1}',
+      '100%{opacity:0}}',
+      // 每段：一边往中心收，一边闪断（opacity 阶梯）+ 上下抖 1px
+      '@keyframes dsh-sel-crt-seg-a{',
+      '0%,58%{transform:scaleX(1) translateY(0);opacity:1}',
+      '64%{transform:scaleX(.94) translateY(1px);opacity:1}',
+      '70%{transform:scaleX(.78) translateY(-1px);opacity:.3}',
+      '74%{transform:scaleX(.66) translateY(0);opacity:1}',
+      '80%{transform:scaleX(.44) translateY(1px);opacity:.15}',
+      '84%{transform:scaleX(.34) translateY(0);opacity:1}',
+      '90%{transform:scaleX(.16) translateY(-1px);opacity:.5}',
+      '96%{transform:scaleX(.06) translateY(0);opacity:1}',
+      '100%{transform:scaleX(0) translateY(0);opacity:0}}',
+      // 火花：段子死掉之后还在原位闪两下的残留像素
+      '@keyframes dsh-sel-crt-spark-a{',
+      '0%,74%{opacity:0}',
+      '78%{opacity:1}',
+      '82%{opacity:0}',
+      '88%{opacity:.9}',
+      '94%{opacity:0}',
+      '100%{opacity:0}}',
       '@media (prefers-reduced-motion:reduce){',
       '.dsh-sel-vcard{transition:none}.dsh-sel-vcard[data-voiced="1"]{animation:none}',
-      '.dsh-sel-vcard[data-off="a"],.dsh-sel-crtline[data-off="a"]{animation:none!important;opacity:0}}',
+      '.dsh-sel-vcard[data-off="a"],.dsh-sel-crtline[data-off="a"],',
+      '.dsh-sel-crtline[data-off="a"] .dsh-sel-crtseg,.dsh-sel-crtline[data-off="a"] .dsh-sel-crtspark{',
+      'animation:none!important;opacity:0}}',
     ].join('')
 
     // ────────────────────── Markdown 轻渲染（全 DOM，无 innerHTML） ──────────────────────
@@ -4224,6 +4259,20 @@ window.__ModuleLoader__.load({
         return crtLine
       }
 
+      /**
+       * 亮线的分段与火花（懒建，只建一次）。
+       *
+       * 5 段首尾相接拼成整条线（看上去就是一条实线）；收缩时各段延迟不同，
+       * 于是"往中间收"和"错位露缝"同时发生 —— 这点像素故障是刻意做的。
+       * 末尾两个火花是段子死掉之后还在原位闪两下的残留像素。
+       */
+      function ensureCrtSegments(line) {
+        if (line.children && line.children.length) return
+        for (var i = 0; i < 5; i += 1) line.appendChild(el('div', 'dsh-sel-crtseg'))
+        line.appendChild(el('div', 'dsh-sel-crtspark'))
+        line.appendChild(el('div', 'dsh-sel-crtspark'))
+      }
+
       /** 系统是否要求减少动效。 */
       function prefersReducedMotion() {
         try {
@@ -4259,10 +4308,14 @@ window.__ModuleLoader__.load({
         line.style.left = Math.round(rect.left) + 'px'
         line.style.top = Math.round(rect.top + rect.height / 2 - 1.5) + 'px'
         line.style.width = Math.round(rect.width) + 'px'
-        line.style.background = dark ? '#FFFFFF' : 'var(--sel-a1)'
-        line.style.boxShadow = dark
-          ? '0 0 12px 2px rgba(190,245,255,.8)'
-          : '0 0 12px 2px rgba(13,148,136,.55)'
+        ensureCrtSegments(line)
+        // 颜色挂在容器上，分段/火花用 currentColor 继承 —— 一处赋值，7 个子元素跟着变
+        line.style.color = dark ? '#FFFFFF' : 'var(--sel-a1)'
+        line.style.background = 'transparent'
+        line.style.boxShadow = 'none'
+        line.style.filter = dark
+          ? 'drop-shadow(0 0 6px rgba(190,245,255,.8))'
+          : 'drop-shadow(0 0 6px rgba(13,148,136,.55))'
         vcardState.closing = true
         // 摘掉再挂上：让动画能重播（同一元素上连续两次收卡片）
         vcard.removeAttribute('data-off')
@@ -4286,7 +4339,7 @@ window.__ModuleLoader__.load({
           if (event.target === vcard) done()
         }
         vcard.addEventListener('animationend', vcardState.crtHandler)
-        vcardState.crtTimer = later(done, 640)
+        vcardState.crtTimer = later(done, 700)
         return true
       }
 
@@ -4323,6 +4376,7 @@ window.__ModuleLoader__.load({
         if (crtLine) {
           crtLine.removeAttribute('data-off')
           crtLine.style.opacity = ''
+          crtLine.style.filter = ''
         }
       }
 

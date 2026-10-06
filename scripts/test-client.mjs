@@ -4926,9 +4926,15 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       cardEl ? String(cardEl.getAttribute('data-off')) : 'no card',
     )
     assert(
-      '亮线是独立元素，宽度跟着卡片、颜色按明暗给',
-      !!crtLine && crtLine.style.width === '460px' && !!crtLine.style.background,
-      crtLine ? crtLine.style.width + ' / ' + String(crtLine.style.background) : 'no line',
+      '亮线拆成 5 段 + 2 个火花，宽度跟着卡片、颜色按明暗给',
+      !!crtLine &&
+        crtLine.style.width === '460px' &&
+        !!crtLine.style.color &&
+        !!crtLine.children &&
+        crtLine.children.length === 7,
+      crtLine
+        ? crtLine.style.width + ' / ' + String(crtLine.style.color) + ' / 子元素 ' + String(crtLine.children.length)
+        : 'no line',
     )
     // 桩环境没有 animationend，走 640ms 兜底
     await sleep(780)
