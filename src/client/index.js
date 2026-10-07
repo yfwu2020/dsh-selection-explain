@@ -74,8 +74,15 @@ window.__ModuleLoader__.load({
      */
     var MIC_POLL_MS = 200
     /** 语音卡几何：右缘贴浮标右缘，左缘展开到正文列左边 —— 宽度由这两条边界算出来。 */
-    var VCARD_MIN_W = 360
-    var VCARD_MAX_W = 560
+    /**
+     * 卡片宽度：**固定 360**。
+     *
+     * 原来按"正文列左边 → 选区右缘"算，再夹在 [360, 560] 之间 —— 想法是"让卡片看起来属于
+     * 这一段正文"，但实测**经常偏宽**（选区在第一行靠右结束时能顶到 560），读起来笨重。
+     * 现在统一 360：右缘仍然钉在选区右缘（和浮标同侧，形变时右缘不动、左缘展开），
+     * 宽度不再随选区位置变化。
+     */
+    var VCARD_W = 360
     /** 正文最多 4 行（约 93px），再多内部滚动并停在最新一行（与追问框同一套）。 */
     var VCARD_TEXT_MAX = 96
     /**
@@ -4132,7 +4139,7 @@ window.__ModuleLoader__.load({
         if (!rect || (!rect.width && !rect.height)) return null
         var blockRect = selectionBlockRect(range) || rect
         var right = Math.min(rect.right, Math.max(8, window.innerWidth - 8))
-        var width = Math.max(VCARD_MIN_W, Math.min(VCARD_MAX_W, right - blockRect.left))
+        var width = VCARD_W
         var left = Math.max(8, right - width)
         // ⚠️ 纵向必须按**整个选区**的底边算，不能只按"选区起点所在的块"：
         // 选中跨多个段落 / 代码块时，起点那个块的底边落在选区**中间**，

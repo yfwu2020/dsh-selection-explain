@@ -4864,7 +4864,9 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       { left: 83, top: 128, right: 533, bottom: 149, width: 450, height: 21 },
     ]
     // 选区本体很大（跨到 200），起点块只到 110
-    r.getBoundingClientRect = () => ({ left: 40, top: 100, right: 200, bottom: 200, width: 160, height: 100 })
+    // 选区右缘故意放到很靠右（innerWidth 1440）：老规则"正文列左边→选区右缘"会算出 560，
+    // 现在统一 360 —— 这条断言就是为了钉住"不再随选区位置变宽"。
+    r.getBoundingClientRect = () => ({ left: 40, top: 100, right: 1300, bottom: 200, width: 1260, height: 100 })
     return r
   }
 
@@ -4882,8 +4884,8 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
     'top=' + String(opened.geometry && opened.geometry.top) + '（按起点块算会是 132px，正好压在选区里）',
   )
   assert(
-    '卡片几何算出来了（宽度来自"浮标右缘 − 正文列左边"）',
-    !!opened.geometry && /px$/.test(String(opened.geometry.width)),
+    '卡片宽度固定 360（不随选区位置变宽；老规则在这里会给出 560）',
+    !!opened.geometry && opened.geometry.width === '360px',
     JSON.stringify(opened.geometry),
   )
 
