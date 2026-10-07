@@ -103,15 +103,31 @@ const micState = {
 let micChild: ChildProcess | null = null
 /** 只尝试启动一次：失败就认（避免每个请求都去 spawn 一遍）。 */
 let micStarted = false
+/** 最近一次有人来问探针的时间（用来判断"没人看了"）。 */
+let micLastUse = 0
+/** "没人看就停"的检查定时器。 */
+let micIdleTimer: NodeJS.Timeout | null = null
 
-/** 探针路径：lib/native/mic-probe（与编译产物 lib/index.js 同级）。 */
-const MIC_PROBE = fileURLToPath(new URL('native/mic-probe', import.meta.url))
+/**
+ * 没人来问之后，探针还留多久（毫秒）。
+ *
+ * 为什么不立刻停：页面在"点一下别处"时会瞬间停轮询，立刻杀进程会变成反复 spawn/kill。
+ * 留一段空转把这种抖动吸收掉；划词期间页面每 400ms 来问一次，探针自然不会到期。
+ */
+const MIC_IDLE_MS = Number(process.env.DSH_SEL_MIC_IDLE_MS || 15000)
+/** 空转检查的间隔（毫秒）。 */
+const MIC_IDLE_CHECK_MS = Number(process.env.DSH_SEL_MIC_CHECK_MS || 5000)
+
+/** 探针路径：lib/native/mic-probe（与编译产物 lib/index.js 同级；测试可注入假的）。 */
+const MIC_PROBE =
+  process.env.DSH_SEL_MIC_PROBE || fileURLToPath(new URL('native/mic-probe', import.meta.url))
 
 /**
  * 懒启动探针（第一次有人来问才 spawn）。
  *
  * 为什么不加载就启动：插件装着的绝大多数时间没人划词，没必要常驻一个每秒读几次
- * CoreAudio 的进程。第一次 GET /mic 时才起，之后一直复用。
+ * CoreAudio 的进程。第一次 GET /mic 时才起。
+ * 起过之后**也不是一直留着**：见 armMicIdleCheck —— 没人来问就停，下次再起。
  */
 function ensureMicProbe(): void {
   if (micStarted) return
@@ -162,8 +178,38 @@ function ensureMicProbe(): void {
   }
 }
 
-/** 停掉探针（插件卸载时）。 */
+/**
+ * 排一次"没人看就停"的检查（幂等）。
+ *
+ * 页面的轮询只在"有选区 / 卡片开着"时跑，探针跟着它的节奏走就够了 ——
+ * 划词即启动，选区消失后再空转 MIC_IDLE_MS 就停，下次划词再起。
+ */
+function armMicIdleCheck(): void {
+  if (micIdleTimer) return
+  micIdleTimer = setInterval(() => {
+    if (Date.now() - micLastUse < MIC_IDLE_MS) return
+    stopMicProbe()
+  }, MIC_IDLE_CHECK_MS)
+  if (typeof micIdleTimer.unref === 'function') micIdleTimer.unref()
+}
+
+/**
+ * 停掉探针（没人看了 / 插件卸载）。**下次有人来问会重新启动**。
+ *
+ * 注意 available 要跟着回落到 false：探针都停了，再报"正在录"就是过期数据 ——
+ * 客户端看到 !available 会停掉轮询（不假装），这正是我们要的。
+ */
 function stopMicProbe(): void {
+  if (micIdleTimer) {
+    clearInterval(micIdleTimer)
+    micIdleTimer = null
+  }
+  // 允许下次重新启动（与"启动失败就认"不同：那是 spawn 失败，不该每个请求都重试）
+  micStarted = false
+  micState.available = false
+  micState.capturing = false
+  micState.processes = []
+  micState.reason = 'idle'
   const child = micChild
   micChild = null
   if (!child) return
@@ -183,7 +229,10 @@ function stopMicProbe(): void {
  * 只报第一个会让特性在那种情况下静默失效。
  */
 const handleMic = (req: IncomingMessage, res: ServerResponse): void => {
+  // 每次有人来问都续一次命：只要页面在轮询，探针就不会到期
+  micLastUse = Date.now()
   ensureMicProbe()
+  armMicIdleCheck()
   res.writeHead(200, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
