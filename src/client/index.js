@@ -4121,10 +4121,12 @@ window.__ModuleLoader__.load({
         vcardState.unpinHandler = function (event) {
           if (event.target !== vcard) return
           if (event.propertyName === 'width') unpinVCardBox()
-          // 形变结束后重画选中提示：开卡片时卡片还在动，牵引线的终点取到的是中间值
-          if (event.propertyName === 'top' || event.propertyName === 'height') {
-            if (vcardState.open) paintSelectionMarkers()
-          }
+          // ⚠️ 这里**不要**重画选中提示。
+          // 曾经加过"形变结束后重画一次"当安全网，结果是**闪一下**：
+          // 重画会先 clearSelectionMarkers()（牵引线 display:none）再重画（block），
+          // 而 display:none → block 会让生长动画**重放** —— 用户看到的就是"曲线生成后闪一下、
+          // 再重新长一遍"。而且卡片形变会分别触发 top 和 height 两次，所以闪两次。
+          // 现在终点用的是算出来的**最终位置**（不读卡片当下的 rect），本来就不需要这次重画。
         }
         vcard.addEventListener('transitionend', vcardState.unpinHandler)
         vcardState.unpinTimer = later(unpinVCardBox, 420)
@@ -4215,7 +4217,7 @@ window.__ModuleLoader__.load({
         void vcard.offsetWidth
         vcard.style.transition = ''
         // 选中提示是按视口坐标摆的，滚动 / 改窗口要跟着重画
-        if (vcardState.open) paintSelectionMarkers()
+        if (vcardState.open) paintSelectionMarkers(false)
       }
 
       /**
@@ -4274,7 +4276,7 @@ window.__ModuleLoader__.load({
         scheduleVCardUnpin()
         // 卡片打开后才画选中提示（选中/浮标阶段不画：那时原生底纹还在）
         ensureSelectionMarkers()
-        paintSelectionMarkers()
+        paintSelectionMarkers(true)
         hideButton()
         // 卡片开着期间必须继续看麦克风：既要判断"这次录音结束了"（停掉呼吸），
         // 也要能接住"又按了一次 Fn"（重新标记在听）。幂等，正常路径上计时器本来就在跑。
@@ -4351,7 +4353,7 @@ window.__ModuleLoader__.load({
        * 牵引线从选区**末行中点**竖直落到卡片上缘 —— 这一条会穿过下方文字（用户接受），
        * 所以它是 2px 宽的竖条 + repeating-gradient 虚线，而不是实线。
        */
-      function paintSelectionMarkers() {
+      function paintSelectionMarkers(grow) {
         if (!selMark) return
         clearSelectionMarkers()
         var range = vcardState.range
@@ -4450,7 +4452,10 @@ window.__ModuleLoader__.load({
         selThreadDot.setAttribute('cy', sy)
         selThreadDot.setAttribute('fill', accent)
         selThreadDot.setAttribute('stroke', 'var(--dsw-alias-bg-base,#fff)')
-        selThread.setAttribute('data-grow', '1')
+        // 生长动画**只在开卡片时**播：滚动 / 缩放也会走到这里，而 display:none → block
+        // 会重启动画 —— 那就是又一次"闪一下"（同一个坑，别踩第二遍）。
+        if (grow) selThread.setAttribute('data-grow', '1')
+        else selThread.removeAttribute('data-grow')
         selThread.style.display = 'block'
         selThread.style.opacity = '1'
       }
