@@ -103,6 +103,12 @@ try {
     `available=${first.available} start=${await starts()}`,
   )
 
+  check(
+    '探针以约定的采样间隔启动（--watch 125：发现"开麦"的延迟减半）',
+    (await logText()).includes('--watch 125'),
+    JSON.stringify((await logText()).split('\n')[0]),
+  )
+
   // ③ 一直有人问 → 不停（划词期间不能抖）
   for (let i = 0; i < 5; i += 1) {
     await ask()

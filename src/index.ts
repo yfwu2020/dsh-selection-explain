@@ -118,6 +118,16 @@ const MIC_IDLE_MS = Number(process.env.DSH_SEL_MIC_IDLE_MS || 15000)
 /** 空转检查的间隔（毫秒）。 */
 const MIC_IDLE_CHECK_MS = Number(process.env.DSH_SEL_MIC_CHECK_MS || 5000)
 
+/**
+ * 探针的采样间隔（毫秒）—— 决定它多久发现"麦克风被打开了"。
+ *
+ * 为什么是 125：实测常驻成本极低（250ms → 0.6% 单核，150ms → 0.7%），
+ * 而"按 Fn 到卡片弹出"的延迟里它是主要两项之一（另一项是页面轮询）。
+ * 调快一倍的代价约 0.1% 单核，换来发现延迟减半 —— 值。
+ * 原生探针会把区间夹在 50~5000ms 之间（见 native/mic-probe.c）。
+ */
+const MIC_WATCH_MS = Number(process.env.DSH_SEL_MIC_WATCH_MS || 125)
+
 /** 探针路径：lib/native/mic-probe（与编译产物 lib/index.js 同级；测试可注入假的）。 */
 const MIC_PROBE =
   process.env.DSH_SEL_MIC_PROBE || fileURLToPath(new URL('native/mic-probe', import.meta.url))
@@ -141,7 +151,9 @@ function ensureMicProbe(): void {
     return
   }
   try {
-    const child = spawn(MIC_PROBE, ['--watch', '250'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    const child = spawn(MIC_PROBE, ['--watch', String(MIC_WATCH_MS)], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
     micChild = child
     micState.available = true
     micState.reason = ''
