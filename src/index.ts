@@ -112,9 +112,14 @@ let micIdleTimer: NodeJS.Timeout | null = null
  * 没人来问之后，探针还留多久（毫秒）。
  *
  * 为什么不立刻停：页面在"点一下别处"时会瞬间停轮询，立刻杀进程会变成反复 spawn/kill。
- * 留一段空转把这种抖动吸收掉；划词期间页面每 400ms 来问一次，探针自然不会到期。
+ * 留一段空转把这种抖动吸收掉；划词期间页面每 200ms 来问一次，探针自然不会到期。
+ *
+ * 为什么是 60 秒：让探针"热着"—— 你划词、看两眼、再划下一段，中间往往隔几十秒；
+ * 探针还在的话，第二次划词是**零启动开销**（冷启动要 ~80ms 才出第一行）。
+ * 代价是没人用之后进程多留一会儿，而它常驻只占 ~0.8% 单核，值。
+ * 实际停止发生在超时后的下一次检查，所以真实寿命是 60~65 秒（见 MIC_IDLE_CHECK_MS）。
  */
-const MIC_IDLE_MS = Number(process.env.DSH_SEL_MIC_IDLE_MS || 15000)
+const MIC_IDLE_MS = Number(process.env.DSH_SEL_MIC_IDLE_MS || 60000)
 /** 空转检查的间隔（毫秒）。 */
 const MIC_IDLE_CHECK_MS = Number(process.env.DSH_SEL_MIC_CHECK_MS || 5000)
 
