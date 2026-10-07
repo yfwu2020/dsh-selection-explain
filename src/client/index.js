@@ -1001,13 +1001,17 @@ window.__ModuleLoader__.load({
       'transition:width .3s cubic-bezier(.2,.8,.2,1),height .3s cubic-bezier(.2,.8,.2,1),',
       'left .3s cubic-bezier(.2,.8,.2,1),top .32s cubic-bezier(.2,.8,.2,1),',
       'border-radius .3s cubic-bezier(.2,.8,.2,1),border-color .2s ease}',
-      // 「在听」不占任何元素：状态长在卡片自己的边缘上（描边泛青 + 一圈光晕缓慢呼吸）。
-      // 好处是正文拿到全部宽度，也不会有"像光标"的独立竖条。
-      '.dsh-sel-vcard[data-voiced="1"]{border-color:var(--sel-a2);',
-      'animation:dsh-sel-vcard-breath 2.1s ease-in-out infinite}',
-      '@keyframes dsh-sel-vcard-breath{',
-      '0%,100%{box-shadow:0 10px 28px rgba(0,0,0,.18),0 0 0 0 rgba(13,148,136,0)}',
-      '50%{box-shadow:0 10px 28px rgba(0,0,0,.18),0 0 0 4px rgba(13,148,136,.16)}}',
+      // 「在听」= 卡片左缘那根 3px 竖条（B1）+ 高度呼吸（动1）。
+      // 当年否掉竖条的理由是"太像输入光标"—— 但那次是**通高 + 紧贴文字**；
+      // 现在保留同一形态，靠"伸缩"把它从"光标"读成"电平在动"（用户选定 B1+动1）。
+      // 描边仍然泛青（静态的"这一段在用"），但**光晕呼吸撤掉**：指示器只留一个，别两个一起动。
+      // 竖条在非"在听"时压暗到 .35（录音结束后不再假装在听，且不隐藏 —— 隐藏会让正文跳一下）。
+      '.dsh-sel-vcard[data-voiced="1"]{border-color:var(--sel-a2)}',
+      '.dsh-sel-vbar{flex:0 0 3px;width:3px;align-self:stretch;border-radius:3px;',
+      'background:var(--sel-a1);margin-right:9px;opacity:.35}',
+      '.dsh-sel-vcard[data-voiced="1"] .dsh-sel-vbar{opacity:1;',
+      'animation:dsh-sel-vbar-pulse 1.05s ease-in-out infinite}',
+      '@keyframes dsh-sel-vbar-pulse{50%{transform:scaleY(.55)}}',
       // 正文右侧留 40px 给发送键（它是绝对定位的，不参与行高 —— 否则 30px 的按钮会把
       // 单行卡片顶到 52px，用户看到的就是"临时框太高"）
       '.dsh-sel-vcard-box{flex:1;min-width:0;align-self:center;display:block;margin:0;',
@@ -1093,7 +1097,7 @@ window.__ModuleLoader__.load({
       '94%{opacity:0}',
       '100%{opacity:0}}',
       '@media (prefers-reduced-motion:reduce){',
-      '.dsh-sel-vcard{transition:none}.dsh-sel-vcard[data-voiced="1"]{animation:none}',
+      '.dsh-sel-vcard{transition:none}.dsh-sel-vcard[data-voiced="1"] .dsh-sel-vbar{animation:none}',
       '.dsh-sel-vcard[data-off="a"],.dsh-sel-crtline[data-off="a"],',
       '.dsh-sel-crtline[data-off="a"] .dsh-sel-crtseg,.dsh-sel-crtline[data-off="a"] .dsh-sel-crtspark{',
       'animation:none!important;opacity:0}',
@@ -4014,6 +4018,8 @@ window.__ModuleLoader__.load({
         vcard = el('div', 'dsh-sel-vcard')
         vcard.setAttribute('data-voiced', '0')
         vcard.setAttribute('data-text', '0')
+        // 「在听」那根 3px 竖条：作为第一个 flex 子元素，正文排在它右边（占 3+9=12px）
+        vcard.appendChild(el('div', 'dsh-sel-vbar'))
         vcardBox = el('textarea', 'dsh-sel-vcard-box')
         vcardBox.rows = 1
         vcardBox.placeholder = '正在听…'

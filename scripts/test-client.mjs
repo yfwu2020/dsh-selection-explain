@@ -4877,7 +4877,7 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
 
   const opened = hook.voiceCard()
   assert('检测到输入法开麦 → 语音卡自己弹出来', opened.open === true, JSON.stringify(opened))
-  assert('卡片处于"在听"（边缘呼吸）状态', opened.voiced === true, JSON.stringify(opened))
+  assert('卡片处于"在听"状态（竖条呼吸）', opened.voiced === true, JSON.stringify(opened))
   assert(
     '大段选区：卡片按**整个选区**的底边落位（不压在选中的文字上）',
     !!opened.geometry && opened.geometry.top === '222px',
@@ -4892,6 +4892,14 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
   const box = find('dsh-sel-vcard-box')
   const sendBtn = find('dsh-sel-vcard-send')
   assert('卡片里有输入框（IME 上屏要落在它身上）', !!box && !!sendBtn, String(!!box) + '/' + String(!!sendBtn))
+  // 「在听」指示器 = 卡片左缘那根 3px 竖条（B1 + 动1，用户选定）
+  const vbar = find('dsh-sel-vbar')
+  const cardNode = find('dsh-sel-vcard')
+  assert(
+    '卡片里有那根「在听」竖条，且是卡片的第一个子元素（正文排在它右边）',
+    !!vbar && !!cardNode && !!cardNode.children && cardNode.children[0] === vbar,
+    vbar ? '竖条存在；是第一个子元素=' + String(!!cardNode && cardNode.children[0] === vbar) : '没找到竖条',
+  )
   // 选中提示（下划线 + 牵引线）：**只在卡片打开后才画** —— 选中/浮标阶段不画（那时原生底纹还在）
   const uline = find('dsh-sel-uline')
   const thread = find('dsh-sel-thread')
