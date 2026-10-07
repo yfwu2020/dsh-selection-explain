@@ -1040,6 +1040,10 @@ window.__ModuleLoader__.load({
       'z-index:2147482998;overflow:visible;display:none;opacity:0;transition:opacity .14s ease}',
       '.dsh-sel-thread path{fill:none;stroke-width:1.6;stroke-dasharray:4 4;',
       'animation:dsh-sel-thread-flow 1.1s linear infinite}',
+      // 出现时"向卡片生长"：用 clip 从上往下揭开（display:none → block 时动画自动重放，
+      // 不需要 JS 去重置；连续开关卡片也不会第二次不动）
+      '.dsh-sel-thread[data-grow="1"]{animation:dsh-sel-thread-grow .26s ease-out}',
+      '@keyframes dsh-sel-thread-grow{from{clip-path:inset(0 0 100% 0)}to{clip-path:inset(0 0 0 0)}}',
       // 虚线朝卡片流动：SVG 直接动 stroke-dashoffset（比动 background-position 更省、也更准）
       '@keyframes dsh-sel-thread-flow{to{stroke-dashoffset:-16}}',
       // ── 消失：老式电视机关机（A 方案）────────────────────────────────
@@ -4420,16 +4424,11 @@ window.__ModuleLoader__.load({
         var last = lines[lines.length - 1]
         var geo = vcardGeometry()
         if (!first || !last || !geo) return
-        // 终点用**卡片此刻的真实位置**，不是算出来的 geo.top ——
-        // 不管上面的几何怎么变，线都必须落在卡片上（实测出现过"线没连到卡片"）。
-        // 开卡片时卡片还在形变途中，所以这里拿到的是中间值：形变结束后会再重画一次（见 scheduleVCardUnpin）。
+        // 终点用**算出来的最终位置**（geo.top），不是卡片此刻的 rect ——
+        // 开卡片时卡片还在从"解读按钮"那一格形变过来，读当下的 rect 会先指到按钮上，
+        // 等形变结束才跳过去（用户："慢半拍""一开始不要连接到解读按钮上"）。
+        // 所以这里一律瞄准最终位置；形变期间不需要跟随（形变结束后那次重画只是安全网）。
         var cardTop = geo.top
-        try {
-          var own = vcard && vcard.getBoundingClientRect()
-          if (own && own.height) cardTop = own.top
-        } catch (error) {
-          /* 读不到就用 geo.top 兜底 */
-        }
         var above = cardTop < first.top
         var anchor = above ? first : last
         var sx = (anchor.left + anchor.right) / 2
@@ -4451,6 +4450,7 @@ window.__ModuleLoader__.load({
         selThreadDot.setAttribute('cy', sy)
         selThreadDot.setAttribute('fill', accent)
         selThreadDot.setAttribute('stroke', 'var(--dsw-alias-bg-base,#fff)')
+        selThread.setAttribute('data-grow', '1')
         selThread.style.display = 'block'
         selThread.style.opacity = '1'
       }
