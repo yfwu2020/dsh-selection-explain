@@ -1034,12 +1034,14 @@ window.__ModuleLoader__.load({
       '.dsh-sel-umark{position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;',
       'z-index:2147482998;transition:opacity .14s ease}',
       '.dsh-sel-uline{position:fixed;height:2px;border-radius:1px;pointer-events:none}',
-      '.dsh-sel-thread{position:fixed;width:2px;display:none;pointer-events:none;z-index:2147482998;',
-      'transition:opacity .14s ease;animation:dsh-sel-thread-flow 1.1s linear infinite}',
-      '.dsh-sel-threaddot{position:fixed;width:5px;height:5px;border-radius:50%;display:none;',
-      'pointer-events:none;z-index:2147482999;transition:opacity .14s ease}',
-      // 虚线朝卡片流动：动的是 background-position（一条 2px 宽的竖条，重绘代价极小）
-      '@keyframes dsh-sel-thread-flow{from{background-position-y:0}to{background-position-y:8px}}',
+      // 牵引线是 **SVG 贝塞尔**（原来是一根 2px 竖条 → 控制点和端点同 x，退化成直线，
+      // 用户一眼看出"这不是贝塞尔"）。现在两端各给一个反向的横向控制量，做出可见的 S 形。
+      '.dsh-sel-thread{position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;',
+      'z-index:2147482998;overflow:visible;display:none;opacity:0;transition:opacity .14s ease}',
+      '.dsh-sel-thread path{fill:none;stroke-width:1.6;stroke-dasharray:4 4;',
+      'animation:dsh-sel-thread-flow 1.1s linear infinite}',
+      // 虚线朝卡片流动：SVG 直接动 stroke-dashoffset（比动 background-position 更省、也更准）
+      '@keyframes dsh-sel-thread-flow{to{stroke-dashoffset:-16}}',
       // ── 消失：老式电视机关机（A 方案）────────────────────────────────
       // 卡片塌成一条线，亮线再横缩成一个点；最后一段做成"像素故障"：
       // 亮线拆成 5 段，各自闪、各自抖、各自死；**收缩原点统一在整条线的中心**
@@ -3989,6 +3991,7 @@ window.__ModuleLoader__.load({
       /** 选中提示：下划线层 / 牵引线 / 牵引线起点的小圆点（懒建）。 */
       var selMark = null
       var selThread = null
+      var selThreadPath = null
       var selThreadDot = null
       var vcardState = {
         open: false,
@@ -4112,7 +4115,12 @@ window.__ModuleLoader__.load({
           vcardState.unpinHandler = null
         }
         vcardState.unpinHandler = function (event) {
-          if (event.target === vcard && event.propertyName === 'width') unpinVCardBox()
+          if (event.target !== vcard) return
+          if (event.propertyName === 'width') unpinVCardBox()
+          // 形变结束后重画选中提示：开卡片时卡片还在动，牵引线的终点取到的是中间值
+          if (event.propertyName === 'top' || event.propertyName === 'height') {
+            if (vcardState.open) paintSelectionMarkers()
+          }
         }
         vcard.addEventListener('transitionend', vcardState.unpinHandler)
         vcardState.unpinTimer = later(unpinVCardBox, 420)
@@ -4309,16 +4317,24 @@ window.__ModuleLoader__.load({
        * "要不要解读"，而用户刚表达的是"这次算了"。要解读就重新划一次。
        * 发送那条路也不还（它直接开面板了）。
        */
-      /** 选中提示的三个元素（懒建）。 */
+      /** 选中提示的元素（懒建）：下划线层 + 牵引线（SVG 贝塞尔）+ 锚点圆。 */
       function ensureSelectionMarkers() {
         if (selMark) return
         selMark = el('div', 'dsh-sel-umark')
         layer.appendChild(selMark)
-        selThread = el('div', 'dsh-sel-thread')
+        var NS = 'http://www.w3.org/2000/svg'
+        selThread = document.createElementNS(NS, 'svg')
+        selThread.setAttribute('class', 'dsh-sel-thread')
+        selThreadPath = document.createElementNS(NS, 'path')
+        selThreadPath.setAttribute('class', 'dsh-sel-threadpath')
+        selThreadPath.setAttribute('fill', 'none')
+        selThread.appendChild(selThreadPath)
+        selThreadDot = document.createElementNS(NS, 'circle')
+        selThreadDot.setAttribute('class', 'dsh-sel-threaddot')
+        selThreadDot.setAttribute('r', '2.6')
+        selThreadDot.setAttribute('stroke-width', '1.5')
+        selThread.appendChild(selThreadDot)
         layer.appendChild(selThread)
-        selThreadDot = el('div', 'dsh-sel-threaddot')
-        selThreadDot.style.background = 'var(--sel-a1)'
-        layer.appendChild(selThreadDot)
       }
 
       /**
@@ -4404,23 +4420,39 @@ window.__ModuleLoader__.load({
         var last = lines[lines.length - 1]
         var geo = vcardGeometry()
         if (!first || !last || !geo) return
-        // 卡片可能在选区**上方**（下方放不下时 vcardGeometry 会翻转），所以两个方向都要能画：
-        // 否则翻转时高度算成负数，牵引线会直接消失。
-        var above = geo.top < first.top
+        // 终点用**卡片此刻的真实位置**，不是算出来的 geo.top ——
+        // 不管上面的几何怎么变，线都必须落在卡片上（实测出现过"线没连到卡片"）。
+        // 开卡片时卡片还在形变途中，所以这里拿到的是中间值：形变结束后会再重画一次（见 scheduleVCardUnpin）。
+        var cardTop = geo.top
+        try {
+          var own = vcard && vcard.getBoundingClientRect()
+          if (own && own.height) cardTop = own.top
+        } catch (error) {
+          /* 读不到就用 geo.top 兜底 */
+        }
+        var above = cardTop < first.top
         var anchor = above ? first : last
-        var endX = (anchor.left + anchor.right) / 2
-        var endY = above ? anchor.top - 2 : anchor.bottom + 2
-        var height = above ? endY - (geo.top + (geo.height || 42)) : geo.top - endY
-        if (height <= 6) return // 卡片紧贴选区，没什么可牵的
-        selThread.style.left = Math.round(endX - 1) + 'px'
-        selThread.style.top = Math.round(endY) + 'px'
-        selThread.style.height = Math.round(height) + 'px'
-        selThread.style.backgroundImage =
-          'repeating-linear-gradient(180deg,' + accent + ' 0 4px,transparent 4px 8px)'
+        var sx = (anchor.left + anchor.right) / 2
+        var sy = above ? anchor.top - 2 : anchor.bottom + 2
+        // 终点：卡片上（下）缘，x 落在卡片宽度内、左右各留 24px；
+        // **多探进卡片 4px** —— SVG 在卡片下层，多出来那段被卡片盖住，视觉上正好接住。
+        var endY = above ? cardTop + (geo.height || 42) + 4 : cardTop + 4
+        var endX = Math.max(geo.left + 24, Math.min(sx, geo.left + geo.width - 24))
+        // 可见的贝塞尔：两端各一个反向的横向控制量 → S 形（原来控制点和端点同 x，是直线）
+        var dy = Math.abs(endY - sy) || 1
+        var bend = 18
+        selThreadPath.setAttribute(
+          'd',
+          'M' + sx + ' ' + sy + ' C ' + (sx + bend) + ' ' + (sy + dy * 0.45) + ', ' +
+            (endX - bend) + ' ' + (endY - dy * 0.45) + ', ' + endX + ' ' + endY,
+        )
+        selThreadPath.setAttribute('stroke', accent)
+        selThreadDot.setAttribute('cx', sx)
+        selThreadDot.setAttribute('cy', sy)
+        selThreadDot.setAttribute('fill', accent)
+        selThreadDot.setAttribute('stroke', 'var(--dsw-alias-bg-base,#fff)')
         selThread.style.display = 'block'
-        selThreadDot.style.left = Math.round(endX - 2.5) + 'px'
-        selThreadDot.style.top = Math.round(endY - 2.5) + 'px'
-        selThreadDot.style.display = 'block'
+        selThread.style.opacity = '1'
       }
 
       /** 收起选中提示（幂等）。 */
@@ -4430,10 +4462,6 @@ window.__ModuleLoader__.load({
         if (selThread) {
           selThread.style.display = 'none'
           selThread.style.opacity = ''
-        }
-        if (selThreadDot) {
-          selThreadDot.style.display = 'none'
-          selThreadDot.style.opacity = ''
         }
       }
 

@@ -101,6 +101,12 @@ class FakeEl {
     for (const handler of this._listeners.get(type) || []) handler(event)
   }
   getBoundingClientRect() {
+    // 临时卡片：给一个**和选区自洽**的矩形（落在选区下方）。
+    // 用通用矩形（top:100）的话卡片会跑到选区上方，牵引线走"卡片在上方"那条分支，
+    // 断言就量不到真实场景（卡片在下方）——这个坑我踩过一次。
+    if (this.className === 'dsh-sel-vcard') {
+      return { left: 940, top: 222, right: 1300, bottom: 264, width: 360, height: 42 }
+    }
     return { left: 40, top: 100, right: 500, bottom: 400, width: 460, height: 300 }
   }
   getClientRects() {
@@ -4818,7 +4824,11 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
 // 这条链路的关键是"我们不读输入法的转写结果"：输入法上屏只认焦点元素，
 // 所以只要在它开麦时把焦点拿到自己的输入框上，说的话就会自己落进来。
 {
-  const find = (cls) => Array.from(walk(mount)).find((n) => n.className === cls)
+  // 也认 setAttribute('class') —— SVG 元素的 className 是只读对象，插件只能用 setAttribute
+  const find = (cls) =>
+    Array.from(walk(mount)).find(
+      (n) => n.className === cls || (n.getAttribute && n.getAttribute('class') === cls),
+    )
 
   hook.close()
   await sleep(20)
@@ -4913,17 +4923,25 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
     !!uline && /linear-gradient/.test(String(uline.style.background)),
     uline ? String(uline.style.background).slice(0, 46) : 'none',
   )
+  // （旧的"圆点 display:block"断言删了：圆点现在是 SVG 子元素，没有自己的 display，
+  //   由下面的 cx/cy 断言覆盖 —— 那才是它真正要表达的东西。）
+  const threadPath = find('dsh-sel-threadpath')
+  const threadDot = find('dsh-sel-threaddot')
+  const d = threadPath ? String(threadPath.getAttribute('d')) : ''
   assert(
-    '牵引线起点有个小圆点（标明"从这段文字来"）',
-    !!find('dsh-sel-threaddot') && find('dsh-sel-threaddot').style.display === 'block',
-    find('dsh-sel-threaddot') ? String(find('dsh-sel-threaddot').style.display) : 'none',
+    '牵引线是 **SVG 贝塞尔**（path 里有 C 曲线段，不再是直线）',
+    !!threadPath && d.indexOf('C') > 0,
+    d ? d.slice(0, 64) : 'none',
   )
   assert(
-    '牵引线从选区落到卡片上缘，且是流动虚线',
-    !!thread &&
-      thread.style.display === 'block' &&
-      /repeating-linear-gradient/.test(String(thread.style.backgroundImage)),
-    thread ? String(thread.style.display) + ' / ' + String(thread.style.backgroundImage).slice(0, 46) : 'none',
+    '牵引线终点**探进卡片 4px**（卡片真实上缘 222 → 终点 y=226，视觉上正好接住）',
+    / 964 226$/.test(d),
+    'd 的结尾=' + JSON.stringify(d.slice(-14)),
+  )
+  assert(
+    '牵引线起点有锚点圆（cx/cy 落在选区末行中点）',
+    !!threadDot && String(threadDot.getAttribute('cx')) === '276.5' && String(threadDot.getAttribute('cy')) === '151',
+    threadDot ? 'cx=' + String(threadDot.getAttribute('cx')) + ' cy=' + String(threadDot.getAttribute('cy')) : 'none',
   )
 
   const merged = Array.from(walk(mount)).filter((n) => n.className === 'dsh-sel-uline')
@@ -5025,7 +5043,7 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
     assert(
       '亮线拆成 5 段 + 2 个火花，宽度跟着卡片、颜色按明暗给',
       !!crtLine &&
-        crtLine.style.width === '460px' &&
+        crtLine.style.width === '360px' &&
         !!crtLine.style.color &&
         !!crtLine.children &&
         crtLine.children.length === 7,
