@@ -6911,9 +6911,38 @@ window.__ModuleLoader__.load({
         if (!panelOpen) return
         askFocusPending = true
         focusComposerOnce()
+        ensureAskFocusLanded()
       }
 
-      /** 把光标交给输入框（preventScroll：别因为聚焦把页面滚一下）。 */
+      /**
+       * 收尾复核：**高亮还在 composer 上、但焦点没落在输入框**时，把光标换回输入框。
+       *
+       * 为什么需要：composer 的高亮是 `:focus-within` —— 只要里面**任意一个后代**有焦点就亮，
+       * 所以"边框亮着"并不能证明光标在输入框里（可能停在发送键 / 模型选择 / 麦克风上）。
+       * 用户实测就是这样：回答完成后边框高亮、输入框里没有插入符。
+       * 只在焦点确实停在 composer 内部时才纠正，绝不从别处抢。
+       */
+      function ensureAskFocusLanded() {
+        later(function () {
+          if (!panelOpen) return
+          var active = document.activeElement
+          if (!active || active === askBox) return
+          var inComposer = !!(panel && panel.contains && panel.contains(active))
+          var focusable = active.tagName === 'BUTTON' || active.tagName === 'INPUT' || active.tagName === 'TEXTAREA'
+          if (!inComposer || !focusable) return
+          if (focusBail !== 'ok') focusBail = '复核纠正（原焦点在 ' + String(active.tagName) + '）'
+          focusAskBox()
+        }, 120)
+      }
+
+      /**
+       * 把光标交给输入框（preventScroll：别因为聚焦把页面滚一下）。
+       *
+       * ⚠️ 这里有个**必须复核**的坑（用户实测症状："边框高亮着，但没有光标"）：
+       * 在元素还没真正显示时调 focus()，浏览器会把 activeElement 记成它、`:focus` 样式也生效，
+       * 但**不画插入符** —— 看上去就是"高亮了却没光标"。
+       * 所以聚焦之后要查一次 getClientRects：还没有盒子（= 还没显示）就等它显示出来再补一次。
+       */
       function focusAskBox() {
         try {
           askBox.focus({ preventScroll: true })
@@ -6924,6 +6953,22 @@ window.__ModuleLoader__.load({
             /* 桩环境 */
           }
         }
+        if (typeof askBox.getClientRects === 'function' && askBox.getClientRects().length === 0) {
+          refocusAskBoxWhenVisible(6)
+        }
+      }
+
+      /** 等输入框真的可见了再聚焦一次（见 focusAskBox 的注释；最多补 6 次，每次 80ms）。 */
+      function refocusAskBoxWhenVisible(left) {
+        if (left <= 0) return
+        later(function () {
+          if (!panelOpen) return
+          if (typeof askBox.getClientRects === 'function' && askBox.getClientRects().length === 0) {
+            refocusAskBoxWhenVisible(left - 1)
+            return
+          }
+          focusAskBox()
+        }, 80)
       }
 
       /** 输入框这会儿真的看得见吗（藏着的元素聚焦没有意义）。 */

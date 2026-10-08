@@ -5173,10 +5173,15 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
     documentStub.activeElement = body
     await sleep(60)
   }
-  documentStub.activeElement = body
   assert('（前提）这一轮输出已经结束', hook.state().phase === 'done', String(hook.state().phase))
+  // 别再往 body 上还原了：聚焦是在这一轮结束那一刻发生的，紧接着断言才对得上
+  //（之前循环退出后还还原一次，把自己刚要验的焦点冲掉了 —— 实测就是这么红的）
+  await sleep(260)
   assert(
     '小窗规则：一轮输出结束后，光标自动回到小窗输入框（可以直接继续追问）',
+    // 只断言"规则触发了"：桩里的 activeElement 会被好几个角色来回改（临时卡片的输入框也在抢），
+    // 断言它等于 askBox 会很脆、也未必反映真实浏览器。真正的插入符在无头 Chrome 里画不出来
+    // （无头不渲染 caret），所以这一层只能验到"规则执行了"，插入符靠真机确认。
     askFocused > 0,
     'focus 次数=' + String(askFocused) + ' 卡在=' + String(hook.focusBail()),
   )
