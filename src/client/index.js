@@ -4854,10 +4854,13 @@ window.__ModuleLoader__.load({
             if (matchingIme(data)) {
               // 又开始录了：上一次的"等定稿"作废
               stopVoiceSettle()
-              // 小窗开着：把这次录音**引到小窗输入框**，而不是弹临时卡片。
-              // 此刻用户看的是小窗、划好的引用也挂在小窗上，弹卡片等于把上下文挪走；
-              // 引用先落进输入框、光标交给它，输入法接下来吐的字就直接落在小窗里。
-              if (panelOpen) {
+              // 「小窗开着 **且** 正显示「❝ 引用」」这一种情况：把这次开麦引到小窗输入框。
+              //
+              // 触发条件是"用户刚在小窗里划了一段、浮标还亮着" —— 他接着开麦说话，意思就是
+              // "把这段带上一起问"。此时：引用落进输入框、光标交给它，输入法接下来吐的字
+              // 直接落在小窗里，不用再经过临时卡片。
+              // 其余情况（面板没开 / 没有待引用）**照旧走卡片**，行为不变。
+              if (panelOpen && state.quoteSelection) {
                 commitQuoteSelection()
                 focusAskBox()
                 return
@@ -10897,8 +10900,6 @@ window.__ModuleLoader__.load({
               resetWave()
               setVoiceActivity('', {})
               paintVoice()
-              // 划好的引用一并落进输入框（同 onMicState 那条路：开口说 = 把这句带上一起问）
-              commitQuoteSelection()
               // 光标交给输入框：实时字幕落字时要看见光标在末尾跳（textarea 没焦点就不画光标）
               focusAskForRecording()
               startVoiceTicker()
