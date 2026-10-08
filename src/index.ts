@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { appendFileSync, existsSync } from 'node:fs'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
@@ -3843,8 +3843,12 @@ export function apply(ctx: Context, rawConfig: Config): void {
   const handleVoiceTrace = (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
       const raw = await readBody(req, 200_000)
-      ctx.logger.info(`[voice-trace] ${raw}`)
-      sendJson(res, 200, { ok: true })
+      // 写固定路径的文件：宿主日志不落盘（~/.dsh/logs 里是旧的），写文件最可靠
+      // 放 ~/.dsh 下：固定、可预期（os.tmpdir() 在 macOS 上是 /var/folders/…，路径不稳定）
+      const tracePath = join(homedir(), '.dsh', 'voice-settle.log')
+      appendFileSync(tracePath, `${new Date().toISOString()} ${raw}\n`, 'utf8')
+      ctx.logger.info(`[voice-trace] 已写入 ${tracePath}`)
+      sendJson(res, 200, { ok: true, path: tracePath })
     })().catch((error: unknown) => {
       sendJson(res, 500, { ok: false, error: String((error as Error)?.message ?? error) })
     })
