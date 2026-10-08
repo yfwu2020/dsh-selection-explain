@@ -3328,8 +3328,11 @@ export function apply(ctx: Context, rawConfig: Config): void {
     })
     // 上一轮查过的东西一并带上：否则追问会反复重查同样的内容（一次工具往返 20~34s）
     const toolDigest = typeof body.toolDigest === 'string' ? body.toolDigest.trim().slice(0, 2000) : ''
+    // 顺序很重要：把"已经查到的结果"放**前面**、问题放**最后**。
+    // 反过来的话，模型最后读到的是原始检索结果，容易"整理资料"而不是回答问题
+    //（实测：问新闻却把上一次的检索结果当成要总结的对象）。
     const questionText = toolDigest
-      ? `${question}\n\n【本会话已经查到的结果】（同一会话里查过的，不要重复查同样的内容）\n${toolDigest}`
+      ? `【本会话已经查到的结果】（同一会话里查过的，不要重复查同样的内容；只在与本轮问题相关时才用）\n${toolDigest}\n\n【用户这一轮的问题】\n${question}`
       : question
     const openingMessages: Message[] = isChat
       ? [...historyMessages, createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: questionText }] })]
@@ -3615,12 +3618,21 @@ export function apply(ctx: Context, rawConfig: Config): void {
         conclusionInfo.outTokens = 0
         sse(res, { type: 'notice', code: 'conclusion-retry', text: '查询已完成，正在整理结论…' })
         const conclusionUser = [
+          // ⚠️ **必须带上用户这一轮问的是什么**：这一段是最终正文的来源，而它以前只有
+          // 「选区块 + 检索资料 + 请给出最终答案」—— 模型看不到问题，就只能顺着选中文字写。
+          // 实测症状：问"搜索今天的AI新闻。"，正文却在解释选区那个词（如 diagLog / exit）。
+          // 特别是收尾轮也带上工具之后（照主会话的做法），正文**每次都**由这里产出，
+          // 缺了问题就等于每次都答非所问。
+          question ? `【用户这一轮的问题】（这就是你要回答的对象）\n${question}` : '',
+          '',
+          '【选中文字】（只是背景资料：问题需要它时才引用，不要拿它当回答的对象）',
           userText,
           '',
           '【已经查到的资料】',
           ...toolDigestLines.slice(0, 12),
           '',
-          '请**直接输出**给用户的最终答案：结论先行、必要处带来源链接。',
+          '请**直接回答上面那条「用户这一轮的问题」**：结论先行、必要处带来源链接。',
+          '不要复述选中文字，也不要解释它是什么 —— 除非问题问的就是它。',
           '不要再请求工具，不要输出任何工具调用格式，也不要写"我先看看""让我核对一下"这类过程。',
         ].join('\n')
         // 先按当前档位试一次；空则用「关」档再试（有的模型在这一档更"直接给答案"）
