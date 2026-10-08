@@ -6888,7 +6888,14 @@ window.__ModuleLoader__.load({
         focusBail = 'pending=' + String(askFocusPending) + ' panel=' + String(panelOpen)
         if (!askFocusPending || !panelOpen) return
         focusBail = 'composerVisible=' + String(composerVisible()) + ' panelSel=' + String(hasPanelSelection())
-        if (!composerVisible()) return
+        if (!composerVisible()) {
+          // ⚠️ 这里**不能只是返回**：实测（focus-trace）一轮结束时输入框常常还没显示
+          // （首轮还在流式、DOM 刚渲染），如果就此放弃，等它 90ms 后显示出来时已经没人管了 ——
+          // 症状就是用户看到的"边框高亮着、却没有光标、字也打不进去"。
+          // 所以安排一条"等它显示出来再聚焦"的重试。
+          retryFocusWhenComposerVisible(8)
+          return
+        }
         // 小窗里正有一段选中文字（用户正在划词、准备点「❝ 引用」）：**这一下聚焦会把选区清掉**。
         // 让位给用户，并且不再补焦 —— 引用浮标是这个功能的主入口，不能因为抢焦点而让它消失。
         //（实测：开窗后那一帧恰好落在"首轮刚出完"的自动聚焦上，划好的词会瞬间没了。）
@@ -6982,14 +6989,20 @@ window.__ModuleLoader__.load({
       function ensureAskFocusLanded() {
         later(function () {
           if (!panelOpen) return
+          // 输入框还没显示：交给 retryFocusWhenComposerVisible 那条路，这里不动
+          if (!composerVisible()) return
           var active = document.activeElement
-          if (!active || active === askBox) return
-          var inComposer = !!(panel && panel.contains && panel.contains(active))
-          var focusable = active.tagName === 'BUTTON' || active.tagName === 'INPUT' || active.tagName === 'TEXTAREA'
-          if (!inComposer || !focusable) return
-          if (focusBail !== 'ok') focusBail = '复核纠正（原焦点在 ' + String(active.tagName) + '）'
-          focusAskBox()
-        }, 120)
+          if (active === askBox) return
+          var inComposer = !!(active && panel && panel.contains && panel.contains(active))
+          // 人家在**别处**正经打字：不抢
+          if (active && !inComposer && isTypingTarget(active)) return
+          // composer 里落在非输入控件上（比如卡片/焦点圈）：也不动
+          if (active && inComposer && !(active.tagName === 'BUTTON' || active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return
+          // 其余情况（焦点在输入类控件上但不在输入框里，或者压根没有焦点）→ 纠正
+          focusBail = '复核纠正（原焦点=' + String((active && (active.className || active.tagName)) || 'null') + '）'
+          askFocusPending = true
+          focusComposerOnce()
+        }, 160)
       }
 
       /**
@@ -7013,6 +7026,26 @@ window.__ModuleLoader__.load({
         if (typeof askBox.getClientRects === 'function' && askBox.getClientRects().length === 0) {
           refocusAskBoxWhenVisible(6)
         }
+      }
+
+      /**
+       * 输入框还没显示时，等它显示出来再聚焦（最多 8 次，每次 100ms）。
+       *
+       * 为什么必须有：收尾那一刻 `composerVisible()` 常常还是 false（流式刚结束、DOM 刚渲染），
+       * 而 `askFocusPending` 会被后续的 paint 消耗掉 —— 只返回不重试的话，
+       * 等输入框真的出现时已经没有任何人会去聚焦它（focus-trace 实测到的就是这个）。
+       */
+      function retryFocusWhenComposerVisible(left) {
+        if (left <= 0) return
+        later(function () {
+          if (!panelOpen) return
+          if (!composerVisible()) {
+            retryFocusWhenComposerVisible(left - 1)
+            return
+          }
+          askFocusPending = true
+          focusComposerOnce()
+        }, 100)
       }
 
       /** 等输入框真的可见了再聚焦一次（见 focusAskBox 的注释；最多补 6 次，每次 80ms）。 */
