@@ -673,7 +673,12 @@ const routeFetch = (input, init) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', mode: 'chat', effort: 'low' })}\n\n`))
         await new Promise((r) => setTimeout(r, 450))
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'delta', text: '等到了回答。' })}\n\n`))
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`))
+        // ⚠️ 临时诊断（定位完随诊断一起删）：追问流的 done 也带上逐轮诊断
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+          type: 'done',
+          chars: 6,
+          rounds: [{ round: 1, wrapUp: true, ms: 900, raw: 260, emitted: 240, think: 12, residueDropped: 0, finish: 'stop', tools: 0, outTokens: 233 }],
+        })}\n\n`))
         controller.close()
       },
     })
@@ -3014,6 +3019,24 @@ assert('追问等待期不重建节点（动画不被打断）', classesIn(askBu
 await sleep(400)
 const botBubbles = askBubbles()
 assert('首个字到达后等待特效换成正文', classesIn(botBubbles[botBubbles.length - 1], 'dsh-sel-wait').length === 0 && textOf(botBubbles[botBubbles.length - 1]).indexOf('等到了回答') >= 0, JSON.stringify(textOf(botBubbles[botBubbles.length - 1]).slice(0, 24)))
+
+// ⚠️ 临时诊断的断言（定位完随诊断一起删）：**追问**这条流也要留下逐轮诊断。
+// 背景：追问的 SSE 原来没有 done 分支（靠流结束触发 finish），诊断在这里全丢 ——
+// 而"25% 的回答结尾是半个句子"恰恰发生在追问上。
+{
+  for (let i = 0; i < 60 && !(hook.state().diagLog || []).some((d) => d.question); i += 1) await sleep(20)
+  const dgAsk = (hook.state().diagLog || []).filter((d) => d.question).pop()
+  assert(
+    '追问流也记下逐轮诊断（带当轮问题）',
+    !!dgAsk && dgAsk.question === '这个要等多久？' && dgAsk.rounds.length === 1 && dgAsk.rounds[0].finish === 'stop',
+    JSON.stringify(dgAsk && { q: dgAsk.question, tail: dgAsk.answerTail, rounds: dgAsk.rounds }),
+  )
+  assert(
+    '诊断记下了回答结尾（判断"是不是半个句子"靠它）',
+    !!dgAsk && typeof dgAsk.answerTail === 'string' && dgAsk.answerTail.indexOf('等到了回答') >= 0,
+    JSON.stringify(dgAsk && dgAsk.answerTail),
+  )
+}
 
 // ───────────────────────── 本地缓存：同一个词再点一次必须秒回 ─────────────────────────
 hook.open('缓存探测词', '上下文片段 A', '缓存用例')

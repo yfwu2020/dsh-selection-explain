@@ -8403,6 +8403,11 @@ window.__ModuleLoader__.load({
                     paintModelPill()
                   }
                   scheduleTurnsRender()
+                } else if (message.type === 'done') {
+                  // ⚠️ 临时诊断（定位完就删）：追问这条流原来**没有 done 分支**
+                  // （它靠流结束触发 finish()），所以逐轮诊断在这里全丢了 ——
+                  // 而"半个句子"恰恰发生在追问上。
+                  recordTurnDiag(message)
                 } else if (message.type === 'error') {
                   finish(message.message || '模型返回错误')
                 }
