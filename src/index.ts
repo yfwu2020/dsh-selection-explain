@@ -3455,11 +3455,14 @@ export function apply(ctx: Context, rawConfig: Config): void {
        * 用来回答"到底是模型没吐、还是被我们的过滤器吃掉了、还是上游掐流"——不靠猜。
        */
       const roundDiag: Array<Record<string, unknown>> = []
-      let conclusionInfo: { tried: boolean; chars: number; rounds: number; error: string } = {
+      // ⚠️ 临时诊断（定位完就删）：加 finish / outTokens —— 结论轮是怎么结束的正是缺口
+      let conclusionInfo: { tried: boolean; chars: number; rounds: number; error: string; finish: string; outTokens: number } = {
         tried: false,
         chars: 0,
         rounds: 0,
         error: '',
+        finish: '',      // ⚠️ 临时诊断（定位完就删）
+        outTokens: 0,    // ⚠️ 临时诊断（定位完就删）
       }
       const toolRounds = config.maxToolRounds
       // 档位被上游拒绝时（400/401/500）重试一次：清单里声明的档位是**建议值**，
@@ -3722,6 +3725,9 @@ export function apply(ctx: Context, rawConfig: Config): void {
         // 这里自己补结论轮：**不重放工具调用链**，而是把结果写成一段自包含的提示 ——
         // 重放消息链的方式实测也不稳（模型面对 tool-call 历史仍可能继续吐工具调用）。
         conclusionInfo.tried = true
+        // ⚠️ 临时诊断（定位完就删）
+        conclusionInfo.finish = ''
+        conclusionInfo.outTokens = 0
         sse(res, { type: 'notice', code: 'conclusion-retry', text: '查询已完成，正在整理结论…' })
         const conclusionUser = [
           userText,
@@ -3768,6 +3774,9 @@ export function apply(ctx: Context, rawConfig: Config): void {
               } else if (chunk.type === 'usage') {
                 usage = chunk.usage
               } else if (chunk.type === 'finish') {
+                // ⚠️ 临时诊断（定位完就删）：不管哪种结束原因都记下来
+                conclusionInfo.finish = String(chunk.reason.kind)
+                conclusionInfo.outTokens = (chunk as { usage?: { outputTokens?: number } }).usage?.outputTokens ?? 0
                 if (chunk.reason.kind === 'error') {
                   conclusionInfo.error = chunk.reason.failure?.message ?? '模型调用失败'
                 }

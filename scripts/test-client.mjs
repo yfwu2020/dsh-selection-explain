@@ -678,6 +678,7 @@ const routeFetch = (input, init) => {
           type: 'done',
           chars: 6,
           rounds: [{ round: 1, wrapUp: true, ms: 900, raw: 260, emitted: 240, think: 12, residueDropped: 0, finish: 'stop', tools: 0, outTokens: 233 }],
+          conclusion: { tried: true, chars: 17, rounds: 1, error: '', finish: 'length', outTokens: 777 },
         })}\n\n`))
         controller.close()
       },
@@ -3035,6 +3036,16 @@ assert('首个字到达后等待特效换成正文', classesIn(botBubbles[botBub
     '诊断记下了回答结尾（判断"是不是半个句子"靠它）',
     !!dgAsk && typeof dgAsk.answerTail === 'string' && dgAsk.answerTail.indexOf('等到了回答') >= 0,
     JSON.stringify(dgAsk && dgAsk.answerTail),
+  )
+  assert(
+    '诊断记下结论轮的结束原因（正文真正的来源，也是截断的嫌疑地）',
+    !!dgAsk && dgAsk.conclusion && dgAsk.conclusion.finish === 'length' && dgAsk.conclusion.chars === 17,
+    JSON.stringify(dgAsk && dgAsk.conclusion),
+  )
+  assert(
+    '诊断带上交叉验证字段（客户端实际字数 vs 宿主的 chars）',
+    !!dgAsk && dgAsk.answerLen === '等到了回答。'.length && dgAsk.chars === 6,
+    JSON.stringify(dgAsk && { answerLen: dgAsk.answerLen, chars: dgAsk.chars }),
   )
 }
 

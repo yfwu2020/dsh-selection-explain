@@ -7424,6 +7424,15 @@ window.__ModuleLoader__.load({
           if (!tail && t.role === 'assistant') tail = String(t.text || '').slice(-28)
           if (question && tail) break
         }
+        var answerLen = 0
+        var notice = ''
+        for (var j = state.turns.length - 1; j >= 0; j -= 1) {
+          if (state.turns[j].role === 'assistant') {
+            answerLen = String(state.turns[j].text || '').length
+            notice = String(state.turns[j].notice || '')
+            break
+          }
+        }
         state.diagLog.push({
           at: Date.now(),
           phase: state.phase,
@@ -7433,6 +7442,19 @@ window.__ModuleLoader__.load({
           residue: !!message.residue,
           answerTail: tail,
           rounds: slim,
+          // ⚠️ 临时诊断（定位完就删）：结论轮（正文真正的来源）与交叉验证
+          conclusion: message.conclusion
+            ? {
+                tried: !!message.conclusion.tried,
+                chars: message.conclusion.chars,
+                rounds: message.conclusion.rounds,
+                error: message.conclusion.error,
+                finish: message.conclusion.finish,
+                outTokens: message.conclusion.outTokens,
+              }
+            : null,
+          answerLen: answerLen, // 客户端实际拿到的字数 vs 宿主的 chars
+          notice: notice,
         })
         if (state.diagLog.length > 12) state.diagLog = state.diagLog.slice(-12)
       }
