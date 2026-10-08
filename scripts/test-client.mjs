@@ -759,6 +759,16 @@ const routeFetch = (input, init) => {
     return Promise.resolve(new Response(payload, { headers: { 'content-type': 'text/event-stream' } }))
   }
   if (body && body.question) {
+    // 追问失败注入（`globalThis.__askFailOnce = true`）：验"报错之后光标回不回到输入框"
+    if (globalThis.__askFailOnce) {
+      globalThis.__askFailOnce = false
+      return Promise.resolve(
+        new Response(JSON.stringify({ ok: false, error: 'no adapter registered for provider "p1"' }), {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+    }
     const extra = globalThis.__askExtra || {}
     const payload = [
       `data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', mode: 'chat', effort: 'low' })}\n\n`,
@@ -5164,6 +5174,36 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
   askBox.focus = realAskFocus
   // 还原焦点：不还原的话它会一直停在别处，后面用例开卡片会被"别处正在打字"那条守卫挡掉
   documentStub.activeElement = body
+
+  // 追问失败也要把光标交回输入框 —— 这条路原来漏了规则（用户实测："报错之后输入框没有光标"）
+  {
+    let focusAfterAskError = 0
+    const realAskFocus2 = askBox.focus
+    askBox.focus = () => {
+      focusAfterAskError += 1
+    }
+    globalThis.__askFailOnce = true
+    const sentBeforeAsk = sent.length
+    hook.ask('这条追问会失败')
+    await sleep(200)
+    // 追问的问答在 chat log 里（不在翻译正文 panelBody 里），所以整个面板一起找
+    for (let i = 0; i < 50 && !!globalThis.__askFailOnce; i += 1) await sleep(60)
+    // 前置条件用**可证明的事实**：请求发出去了、而且被桩的失败注入接走了。
+    //（不查"面板里有没有『追问失败』这行字"：桩里那行渲染文本用 textOf 够不到，
+    //  查它会得到一个恒假的断言 —— 那是测试环境的事，不是产品行为。）
+    assert(
+      '（前提）追问请求发了，且这次被桩按失败处理',
+      sent.length - sentBeforeAsk > 0 && !globalThis.__askFailOnce,
+      '请求数=' + String(sent.length - sentBeforeAsk) + ' 失败注入已消费=' + String(!globalThis.__askFailOnce),
+    )
+    assert(
+      '追问失败后，光标也回到小窗输入框（这条路原来漏了"一轮结束就交回光标"的规则）',
+      focusAfterAskError > 0,
+      'focus 次数=' + String(focusAfterAskError),
+    )
+    askBox.focus = realAskFocus2
+    documentStub.activeElement = body
+  }
   assert('跳过解读：翻译一节是空的（没请求 /analyze）', !afterSend.translation, JSON.stringify(beforeSend) + ' → ' + JSON.stringify(afterSend))
   assert('直接进了追问：面板开着', panel.style.display !== 'none', String(panel.style.display))
 

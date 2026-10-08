@@ -8215,6 +8215,10 @@ window.__ModuleLoader__.load({
                 ? ''
                 : '追问完成 · 耗时 ' + ((Date.now() - startedAt) / 1000).toFixed(1) + 's',
           )
+          // 一轮**追问**结束（成功 / 失败 / 被停止）—— 与小窗其它轮同一条规则：光标交回输入框。
+          // ⚠️ 这里原来是漏的：首轮的 succeed/fail 有规则，追问这条路径没有，
+          // 所以"追问失败"之后输入框里不出现光标（用户实测）。
+          askFocusAfterTurn()
         }
 
         fetch(API, {
