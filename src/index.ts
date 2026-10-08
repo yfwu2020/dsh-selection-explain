@@ -1892,6 +1892,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
     turns?: { role?: unknown; text?: unknown }[]
     toolDigest?: unknown
     pinned?: unknown
+    /** ⚠️ 临时诊断（定位完就删）：见 HistoryEntry.diagLog */
+    diagLog?: unknown
   }
   interface HistoryEntry {
     key: string
@@ -1903,6 +1905,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
     turns: HistoryTurn[]
     toolDigest: string
     pinned: boolean
+    /** ⚠️ 临时诊断（定位完就删）：客户端回传的逐轮诊断（rounds 等） */
+    diagLog?: unknown[]
   }
 
   const history = new Map<string, HistoryEntry>()
@@ -2182,6 +2186,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
           }))
         : [],
       toolDigest: clampText(input.toolDigest, 2000),
+      // ⚠️ 临时诊断（定位完就删）：逐轮诊断原样收下（形状由客户端保证，这里不解析）
+      diagLog: Array.isArray(input.diagLog) ? (input.diagLog as unknown[]).slice(-12) : undefined,
       pinned: input.pinned === true || previous?.pinned === true,
     }
     history.delete(key)
@@ -2581,6 +2587,10 @@ export function apply(ctx: Context, rawConfig: Config): void {
           parts: (body?.parts ?? {}) as { translation?: unknown; detail?: unknown },
           turns: (Array.isArray(body?.turns) ? body.turns : []) as { role?: unknown; text?: unknown }[],
           toolDigest: typeof body?.toolDigest === 'string' ? body.toolDigest : '',
+          // ⚠️ 临时诊断（定位完就删）：不加这段，宿主只挑已知字段存，diagLog 会被丢掉
+          diagLog: Array.isArray((body as { diagLog?: unknown }).diagLog)
+            ? ((body as { diagLog?: unknown[] }).diagLog as unknown[])
+            : undefined,
           pinned: body?.pinned === true,
         })
         sendJson(res, 200, { ok: true, size })

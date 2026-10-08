@@ -626,7 +626,12 @@ const routeFetch = (input, init) => {
     const payload = [
       `data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', stage: 'translation' })}\n\n`,
       `data: ${JSON.stringify({ type: 'delta', text: '## 翻译\n语音用例的翻译\n' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'done', chars: 8 })}\n\n`,
+      // ⚠️ 临时诊断（定位完随诊断一起删）：模拟宿主在 done 里回传的逐轮诊断
+      `data: ${JSON.stringify({
+        type: 'done',
+        chars: 8,
+        rounds: [{ round: 0, wrapUp: false, ms: 1234, raw: 140, emitted: 120, think: 0, residueDropped: 7, finish: 'tool_calls', tools: 1, outTokens: 42 }],
+      })}\n\n`,
     ].join('')
     return Promise.resolve(new Response(payload, { headers: { 'content-type': 'text/event-stream' } }))
   }
@@ -3226,6 +3231,29 @@ assert('回放走的是历史，不重新调模型', sent.length === sentBeforeR
   )
   assert('生成中按 Enter：没有真的发出去', sent.length === sentBeforeBusy, String(sent.length - sentBeforeBusy))
   hook.askValue('')
+  hook.close()
+  await sleep(40)
+}
+
+// ⚠️ 临时诊断的用例（定位完随诊断一起删）：宿主在 done 里回传的逐轮诊断必须留下来。
+// 背景：历史里 25% 的助手回答结尾是半个句子，而"掐在哪一环"以前无从判断 ——
+// 宿主早就发了这些字段（residueDropped / finish / tools / outTokens），客户端却扔了。
+{
+  const diagBefore = (hook.state().diagLog || []).length
+  hook.open('voice-probe', '', '诊断用例')
+  for (let i = 0; i < 100 && (hook.state().diagLog || []).length === diagBefore; i += 1) await sleep(20)
+  const diagAll = hook.state().diagLog || []
+  const dg = diagAll[diagAll.length - 1]
+  assert(
+    '逐轮诊断被留下来（查"半个句子"的现场）',
+    !!dg && Array.isArray(dg.rounds) && dg.rounds.length === 1 && dg.rounds[0].residueDropped === 7,
+    JSON.stringify(dg && dg.rounds),
+  )
+  assert(
+    '诊断里带 finish / tools / outTokens（判掐断类型靠它们）',
+    !!dg && Array.isArray(dg.rounds) && dg.rounds.length === 1 && dg.rounds[0].finish === 'tool_calls' && dg.rounds[0].tools === 1 && dg.rounds[0].outTokens === 42,
+    JSON.stringify(dg && dg.rounds && dg.rounds[0]),
+  )
   hook.close()
   await sleep(40)
 }
