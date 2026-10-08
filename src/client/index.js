@@ -2396,7 +2396,6 @@ window.__ModuleLoader__.load({
         /** 有工具正在跑（等待提示说"正在检索资料"，不显示是哪个工具、查了什么）。 */
         toolBusy: false,
         /** 模型输出了伪造的工具调用格式（已被剥掉）。 */
-        toolResidue: false,
         /** 这次内容是"从历史回放"出来的（不是本次请求）。 */
         fromHistory: false,
         /** 当前选区的本地缓存 key。 */
@@ -5656,7 +5655,7 @@ window.__ModuleLoader__.load({
         // 于是只要某段对话搜过东西（比如问过一次新闻），之后**每一段新选区**的追问
         // 都会把那段结果一并带给模型（用户实测："每次后面都带着我之前搜的新闻"）。
         //
-        // 只清 digest、不动 tools/toolResidue/thought：那几个在请求开始处另有一份复位，
+        // 只清 digest、不动 tools/thought：那几个在请求开始处另有一份复位，
         // digest 则该在这里（以及历史回放）动。
         state.toolDigest = ''
         clearQuotes()
@@ -6775,19 +6774,6 @@ window.__ModuleLoader__.load({
           retryButton.style.display = ''
         }
 
-        // 伪造的工具调用被剥掉时，正文下面补一句交代（不是没查，是这轮没工具可用）
-        if (state.phase === 'done' && state.toolResidue) {
-          var hasNote = false
-          for (var ni = 0; ni < translationSection.content.children.length; ni += 1) {
-            if (translationSection.content.children[ni].className === 'dsh-sel-note') hasNote = true
-          }
-          if (!hasNote) {
-            translationSection.content.appendChild(
-              el('div', 'dsh-sel-note', '（本轮没有可用工具：模型输出的工具调用格式已忽略，以上是它凭已有知识的回答）'),
-            )
-          }
-        }
-
         // 详解节：只在第二阶段出现（或已缓存过）
         var wantDetail = !!(state.parts.detail || stage === 'detail')
         detailSection.root.style.display = wantDetail ? '' : 'none'
@@ -7350,46 +7336,15 @@ window.__ModuleLoader__.load({
         return folded
       }
 
-      function sanitizeToolResidue(text) {
-        var out = String(text || '')
-        out = out.replace(/<ds_safety_tool_call>[\s\S]*?<\/ds_safety_tool_call>\s*/gi, '')
-        out = out.replace(/<ds_safety_tool_call>[\s\S]*$/i, '')
-        out = out.replace(/<\/?ds_safety_tool_call>\s*/gi, '')
-        // DeepSeek 原生 DSML 工具调用（全角竖线 U+FF5C 包起来的 tool_calls/invoke/parameter）。
-        // host 侧已经在流里滤过一道，这里兜住"旧缓存 / 历史回放 / 升格"这些不经过 host 的路径。
-        // 形态不止一种：marker 与标签名之间**可能有空格**（实测），且可能是逐标签式
-        // （只有 <MARK parameter …> 而没有 tool_calls 包裹）——按"标签栈"整段丢掉最稳。
-        var dsml = '\uFF5C\uFF5CDSML\uFF5C\uFF5C'
-        var tag = new RegExp('</?\\s*' + dsml + '\\s*(?:tool_calls|calls|invoke|parameter)\\b[^>]*>', 'g')
-        out = stripTaggedBlocks(out, tag)
-        out = stripTaggedBlocks(out, /<\/?\s*ds_safety_tool_call\s*>/gi)
-        return out
-      }
 
-      /** 按标签栈把"残渣块"整段删掉（未闭合就删到结尾）。 */
-      function stripTaggedBlocks(text, tag) {
-        var out = ''
-        var rest = text
-        var depth = 0
-        for (;;) {
-          tag.lastIndex = 0
-          var hit = tag.exec(rest)
-          if (!hit) {
-            if (depth === 0) out += rest
-            break
-          }
-          if (depth === 0) out += rest.slice(0, hit.index)
-          depth = hit[0].charAt(1) === '/' ? Math.max(0, depth - 1) : depth + 1
-          rest = rest.slice(hit.index + hit[0].length)
-        }
-        return out
-      }
-
-      /** 当前可见的原文（已去掉伪造的工具调用）。 */
+      /** 当前可见的原文。
+       *
+       * 以前这里会剥掉"伪造的工具调用"文本（DSML / ds_safety_tool_call），
+       * 现在**不再做任何文本清洗** —— 照主会话的做法：工具每轮都在请求里，
+       * 模型走协议层表达调用，正文里根本不该出现这种标记。
+       * 清洗留在那儿只会再吃一次正文（未闭合就删到结尾）。 */
       function visibleRaw() {
-        var cleaned = sanitizeToolResidue(state.raw)
-        if (cleaned !== state.raw) state.toolResidue = true
-        return cleaned
+        return state.raw
       }
 
       // ────────────────────── 小窗对话历史（A′） ──────────────────────
@@ -8000,7 +7955,7 @@ window.__ModuleLoader__.load({
             if (node.__sig !== sig) {
               // 内容没变就别重建：重建会把预览 iframe 一起换掉（多建一次 = 白闪一次）
               node.__sig = sig
-              renderRich(node, sanitizeToolResidue(turn.text) || '…', { settled: turn.streaming !== true })
+              renderRich(node, turn.text || '…', { settled: turn.streaming !== true })
             }
             paintNotice(node, turn)
             paintQuoteAll(node, turn)
@@ -8063,7 +8018,7 @@ window.__ModuleLoader__.load({
           bubble.className += ' dsh-sel-bubble-err'
           bubble.textContent = turn.text
         } else {
-          renderRich(bubble, sanitizeToolResidue(turn.text) || '…', { settled: turn.streaming !== true })
+          renderRich(bubble, turn.text || '…', { settled: turn.streaming !== true })
         }
         if (turn.role !== 'user') {
           paintNotice(bubble, turn)
@@ -8103,7 +8058,7 @@ window.__ModuleLoader__.load({
             event.stopPropagation()
             var source = existing.__turn
             if (!source) return
-            var body = foldForHistory(sanitizeToolResidue(source.text))
+            var body = foldForHistory(source.text)
             // 整条引用同样不带上下文：出处写进标签（「小窗第 N 轮回答」），对话本身在历史里
             addQuote(body, turnLabelOf(source), { context: '', session: false })
           })
@@ -8112,7 +8067,7 @@ window.__ModuleLoader__.load({
 
       /** 把首轮解读结果作为追问的第一条助手上下文（截断，避免过长）。 */
       function seedHistoryFromExplanation() {
-        var fallback = splitSections(sanitizeToolResidue(state.raw))
+        var fallback = splitSections(state.raw)
         var translation = (state.parts.translation || fallback.translation || '').trim()
         var detail = (state.parts.detail || fallback.detail || '').trim()
         // 写成"前情提要"而不是"我上一轮的回答"：否则模型会顺着把两节内容再复述一遍
@@ -8645,7 +8600,6 @@ window.__ModuleLoader__.load({
         state.stageEffort = ''
         state.thought = ''
         state.tools = []
-        state.toolResidue = false
         state.startedAt = Date.now()
         state.elapsed = 0
         paint()
@@ -8863,8 +8817,8 @@ window.__ModuleLoader__.load({
         // 用分阶段保存的结果：展开详解后 state.raw 里只有详解那一段，
         // 直接拿 raw 解析会导致翻译丢失（升格出来的会话里翻译变成「未记录」）
         var sections = {
-          translation: state.parts.translation || splitSections(sanitizeToolResidue(state.raw)).translation,
-          detail: state.parts.detail || splitSections(sanitizeToolResidue(state.raw)).detail,
+          translation: state.parts.translation || splitSections(state.raw).translation,
+          detail: state.parts.detail || splitSections(state.raw).detail,
         }
         state.promoting = true
         promoteButton.disabled = true
@@ -11366,8 +11320,7 @@ window.__ModuleLoader__.load({
             stageEffort: state.stageEffort,
             raw: state.raw,
             model: state.model,
-            sections: splitSections(sanitizeToolResidue(state.raw)),
-            toolResidue: state.toolResidue,
+            sections: splitSections(state.raw),
             tools: state.tools.length,
             toolBusy: state.toolBusy,
             toolDigest: state.toolDigest,
@@ -11386,10 +11339,6 @@ window.__ModuleLoader__.load({
         },
         pill: function () {
           return pill
-        },
-        /** 自检用：残渣清理（供单测直接打表）。 */
-        stripResidue: function (text) {
-          return sanitizeToolResidue(text)
         },
         /** 自检用：模型/档位当前值 + 已加载的目录规模。 */
         modelState: function () {

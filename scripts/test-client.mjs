@@ -2749,13 +2749,16 @@ for (let i = 0; i < 120 && hook.state().phase !== 'done'; i += 1) await sleep(20
   assert('追问停止也有记录（自检可读）', /已停止/.test(String(hook.state().status || '')), String(hook.state().status))
 }
 
-// ───────────────────────── 没有工具时不许伪造调用 ─────────────────────────
+// ────────────── 正文不再做文本层清洗（照主会话的做法） ──────────────
+//
+// 以前这里断言"<ds_safety_tool_call> 被剥掉"。现在**故意不清洗**了：
+// 主会话从不摘工具，模型走协议层表达工具调用，正文里根本不会有这种标记；
+// 而留一道清洗，在标记"未闭合"时会把正文尾巴一起吃掉（实测：收尾轮 raw=726 → emitted=0）。
+// 所以这条用例改成锁住"原样显示"，防止以后又有人把清洗加回来。
 hook.open('fake-tool-probe', '', '伪造调用')
 for (let i = 0; i < 80 && hook.state().phase !== 'done'; i += 1) await sleep(20)
-assert('模型吐出的 <ds_safety_tool_call> 被剥掉', textOf(sections[0]).indexOf('ds_safety_tool_call') < 0 && textOf(sections[0]).indexOf('tool_name') < 0, textOf(sections[0]).slice(0, 60))
-assert('正文其余内容保留', textOf(sections[0]).indexOf('没有工具时的回答') >= 0, textOf(sections[0]).slice(0, 60))
-assert('明确告知"本轮没有可用工具"', textOf(sections[0]).indexOf('没有可用工具') >= 0, textOf(sections[0]).slice(0, 80))
-assert('自检钩子报出伪造残渣标记', hook.state().toolResidue === true, String(hook.state().toolResidue))
+assert('正文原样保留：客户端不再做文本层清洗', String(hook.state().raw).indexOf('ds_safety_tool_call') >= 0, String(hook.state().raw).slice(0, 60))
+assert('正文其余内容保留（不做手术就不会误伤）', textOf(sections[0]).indexOf('没有工具时的回答') >= 0, textOf(sections[0]).slice(0, 80))
 
 // ───────────────────────── 追问小窗（临时多轮对话） ─────────────────────────
 const askBox = Array.from(walk(panel)).find((n) => n.className === 'dsh-sel-askbox')
@@ -3542,35 +3545,6 @@ assert('点回来看到"已停止"的状态与可重试入口', hook.state().pha
     for (let i = 0; i < 300; i += 1) { const list = hook.turns(); if (list.length && !list.some((t) => t.streaming === true)) break; await sleep(20) }
   }
 
-  // 客户端兜底：旧缓存/历史回放里的工具调用残渣（两种形态：官方 safety + DSML 带空格形态）
-  {
-    const VB = String.fromCharCode(0xff5c)
-    const MK = VB + VB + 'DSML' + VB + VB
-    const dirty = `正文。<${MK} parameter name="limit" string="false">40</${MK} parameter>尾。`
-    hook.close()
-    await sleep(30)
-    hook.open('residue-probe', '上下文：清残渣', '残渣兜底用例')
-    for (let i = 0; i < 120 && hook.state().phase !== 'done'; i += 1) await sleep(20)
-    await sleep(30)
-    globalThis.__askExtra = { delta: dirty }
-    const before = hook.turns().length
-    hook.ask('残渣兜底追问')
-    for (let i = 0; i < 300; i += 1) {
-      const list = hook.turns()
-      if (list.length > before && !list.some((t) => t.streaming === true)) break
-      await sleep(20)
-    }
-    await sleep(60)
-    const stripped = hook.stripResidue(dirty)
-    assert('客户端兜底：函数本身能清掉带空格的 DSML（含孤立标签）', stripped.indexOf(MK) < 0 && !/parameter\s+name=/.test(stripped) && stripped.indexOf('正文。') >= 0, JSON.stringify(stripped))
-    const rendered = textOf(chatLog)
-    assert(
-      '客户端兜底：带空格的 DSML 残渣不会渲染进消息区',
-      rendered.indexOf(MK) < 0 && !/parameter\s+name=/.test(rendered) && rendered.indexOf('正文。') >= 0,
-      JSON.stringify(rendered.slice(-60)),
-    )
-    globalThis.__askExtra = null
-  }
 
   // strip 事件：把"模型写进正文的思考"从已流出的正文里撤回，并按"泄漏"记进记忆
   {

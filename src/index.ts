@@ -686,108 +686,6 @@ function splitLeakedReasoning(text: string): { prefix: string; rest: string } {
   return { prefix: head, rest: tail }
 }
 
-/**
- * 正文里不该出现的"工具调用残渣"。
- *
- * 收尾轮**不带工具**（为了逼模型给结论），模型这时会把"还想再 read 一下"当正文吐出来，
- * 而且用的可能是两种格式之一：
- *   ① 官方 safety 包装：`<ds_safety_tool_call>…</ds_safety_tool_call>`（客户端以前只认这个）
- *   ② DeepSeek 原生 DSML：全角竖线包起来的 `tool_calls / invoke / parameter` 块（实测漏过正文）
- *
- * 这里在**流里**就把它滤掉：客户端连 delta 都收不到，存盘/升格的内容也是干净的。
- * （客户端那份 sanitizeToolResidue 留作兜底：旧缓存、历史回放这些路径不经过 host。）
- */
-/** 全角竖线（U+FF5C）×2 + DSML + ×2：DSML 标记本身，用它拼正则避免源码里出现字面量。 */
-const DSML_MARK = '\uFF5C\uFF5CDSML\uFF5C\uFF5C'
-
-/**
- * "残渣标签"的两种形态。
- *
- * DSML 这边**不能只认 `tool_calls`**：实测模型吐出来的是**逐标签式**的，而且 marker 与标签名之间
- * **有一个空格** —— `<MARK parameter name="limit" string="false">40</MARK parameter>`、
- * `<MARK invoke name="read">…</MARK invoke>`、`<MARK calls>…</MARK calls>`。
- * 我第一版只匹配 `<\uFF5CDSML\uFF5Ctool_calls>`（无空格）→ 一个都没命中，残渣照漏（实测 4 轮漏 3 轮）。
- */
-const DSML_TAG = new RegExp(`<\\/?\\s*${DSML_MARK}\\s*(?:tool_calls|calls|invoke|parameter)\\b[^>]*>`, 'g')
-const SAFETY_TAG = /<\/?\s*ds_safety_tool_call\s*>/gi
-
-/**
- * 把正文里的"工具调用残渣"整段丢掉。
- *
- * 为什么必须在流里做：收尾轮不带工具（为了逼模型给结论），模型会把"还想再调一次工具"当正文吐出来，
- * 客户端现有的 sanitizeToolResidue 只认官方 safety 包装，不认 DSML —— 用户看到的就是一段乱码标记。
- *
- * 算法：**按标签栈计数**。遇到开标签 depth+1、闭标签 depth-1；depth>0 期间的一切（含嵌套标签与参数值）
- * 全部丢弃；流在 depth>0 时结束 → 剩下的整段丢掉。这样三种实测形态（整块/缺包裹/单个标签）都能盖住。
- */
-function createResidueFilter(): { push: (text: string) => string; flush: () => string; dropped: () => number } {
-  const HOLD = 32 // 标签可能被切开，没命中时留一小截尾巴再输出
-  let buffer = ''
-  let depth = 0
-  let droppedChars = 0
-  const scan = (text: string): RegExpExecArray | null => {
-    DSML_TAG.lastIndex = 0
-    const dsml = DSML_TAG.exec(text)
-    SAFETY_TAG.lastIndex = 0
-    const safety = SAFETY_TAG.exec(text)
-    if (dsml && safety) return dsml.index <= safety.index ? dsml : safety
-    return dsml ?? safety
-  }
-  /**
-   * 该留多长的尾巴：除了固定 32 字，还要**精确扣住"半个标签"**。
-   * 踩过的坑：DSML 标签本身有 40+ 字（`<MARK parameter name="include" string="true">`），
-   * 只留 32 字时标签被切在中间 → 前半截被当正文发出去，后半截又不成标签 → 残渣漏进正文（实测漏过）。
-   * 判据：末尾最后一个 '<' 之后没有 '>'，就认为它是未完成的标签，从那个 '<' 起全部扣住。
-   */
-  const holdOf = (text: string): number => {
-    const lastLt = text.lastIndexOf('<')
-    if (lastLt >= 0 && text.indexOf('>', lastLt) < 0) return Math.max(HOLD, text.length - lastLt)
-    return HOLD
-  }
-  const drain = (final: boolean): string => {
-    let out = ''
-    for (;;) {
-      const hit = scan(buffer)
-      if (!hit) {
-        const hold = holdOf(buffer)
-        if (depth > 0) {
-          // 在残渣块内部：丢掉，只留足以认出闭合标签的尾巴
-          if (final) buffer = ''
-          else buffer = buffer.length > hold ? buffer.slice(-hold) : buffer
-          break
-        }
-        if (final) {
-          out += buffer
-          buffer = ''
-        } else if (buffer.length > hold) {
-          out += buffer.slice(0, buffer.length - hold)
-          buffer = buffer.slice(-hold)
-        }
-        break
-      }
-      if (depth === 0) out += buffer.slice(0, hit.index)
-      const closing = hit[0].charAt(1) === '/'
-      if (!closing) droppedChars += hit[0].length
-      depth = closing ? Math.max(0, depth - 1) : depth + 1
-      buffer = buffer.slice(hit.index + hit[0].length)
-    }
-    return out
-  }
-  return {
-    push: (text: string) => {
-      buffer += text
-      return drain(false)
-    },
-    flush: () => {
-      const out = drain(true)
-      depth = 0 // 本轮结束就把状态归零：未闭合的残渣块不许影响下一轮
-      buffer = ''
-      return out
-    },
-    /** 本轮被丢掉了多少字（用来判断"末尾残渣被删掉后句子没写完"）。 */
-    dropped: () => droppedChars,
-  }
-}
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body)
@@ -3449,7 +3347,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
       let errorCode: string | undefined
       const toolDigestLines: string[] = []
       /** 被残渣过滤器丢掉的字数：末尾那些"模型顺手又调了一次工具"的标记会让正文停在半句上。 */
-      let residueDropped = 0
       /**
        * 逐轮诊断（放进 done 事件）：原始字数 / 过滤后字数 / 思考字数 / 残渣丢弃 / finish 原因 / 输出 tokens。
        * 用来回答"到底是模型没吐、还是被我们的过滤器吃掉了、还是上游掐流"——不靠猜。
@@ -3499,7 +3396,10 @@ export function apply(ctx: Context, rawConfig: Config): void {
             ),
             ...(round === 0 ? [baseMessage, ...openingMessages] : [baseMessage, ...openingMessages, ...toolMessages]),
           ],
-          ...(!wrapUp && toolSchemas.length > 0 ? { tools: toolSchemas } : {}),
+          // 工具**每轮都在请求里**（照主会话的做法）：收尾轮以前故意不带工具"逼结论"，
+          // 结果模型退到文本层、把工具调用标记写进正文（实测 wrapUp 轮 raw=726 → emitted=0）。
+          // 主会话从不摘工具，模型也就从不写这种标记 —— 这里与它保持一致。
+          ...(toolSchemas.length > 0 ? { tools: toolSchemas } : {}),
           ...(config.temperature >= 0 ? { temperature: config.temperature } : {}),
           ...(config.maxTokens > 0 ? { maxTokens: config.maxTokens } : {}),
           ...(roundEffort ? { reasoningEffort: ReasoningEffortId(roundEffort) } : {}),
@@ -3514,7 +3414,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
         // 共用一个的话，某一轮吐了未闭合的 DSML（实测收尾轮很常见）会让 depth 一直 >0，
         // 后面所有轮次的正文都被吞掉 —— 表现就是"只完成了工具查询，没有产出正文"（用户截图报的）。
         const think = createThinkFilter()
-        const residue = createResidueFilter()
         let roundRaw = 0
         let roundEmitted = 0
         let roundThink = 0
@@ -3527,7 +3426,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
             sse(res, { type: 'thought', text: part.think })
           }
           // 残渣过滤放在 think 之后：先分出思考，再把正文里的工具调用标记丢掉
-          const text = part.text ? residue.push(part.text) : ''
+          const text = part.text
           if (text) {
             roundEmitted += text.length
             chars += text.length
@@ -3565,19 +3464,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
           }
         }
         emit(think.flush())
-        // 注意：residue.flush() 吐出的正文**不能再走 emit()** —— emit 会把它再喂回同一个过滤器，
-        // 于是 HOLD=32 又扣住尾巴，而本轮到此结束 → 最后 32 字永远不会发出去（实测 raw−emitted 恒为 32）。
-        {
-          const tailText = residue.flush()
-          if (tailText) {
-            chars += tailText.length
-            answer += tailText
-            roundText += tailText
-            roundEmitted += tailText.length
-            sse(res, { type: 'delta', text: tailText })
-          }
-        }
-        residueDropped += residue.dropped()
         roundDiag.push({
           round,
           wrapUp,
@@ -3585,7 +3471,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
           raw: roundRaw,
           emitted: roundEmitted,
           think: roundThink,
-          residueDropped: residue.dropped(),
           finish: roundFinish || '(none)',
           tools: assembler.blocks().filter((block) => block.type === 'tool-call').length,
           ...(body.debug === true ? { tailChunks } : {}),
@@ -3748,6 +3633,10 @@ export function apply(ctx: Context, rawConfig: Config): void {
               model: route.model,
               ...(sessionId ? { sessionId: sessionId as never } : {}),
               system: undefined,
+              // 工具**依然带着**（照主会话：任何一轮都不摘工具）。
+              // 以前这一轮不带工具，模型要调工具时只能退回文本层 —— 那正是正文里出现
+              // DSML / ds_safety_tool_call 标记的唯一来源。带上之后它走协议层，正文就是正文。
+              ...(toolSchemas.length > 0 ? { tools: toolSchemas } : {}),
               messages: [
                 // 同上：多传的插件名在老版本运行时会被忽略，新版本类型上却是必填
                 systemMessageOf(systemPrompt, name),
@@ -3759,12 +3648,11 @@ export function apply(ctx: Context, rawConfig: Config): void {
               signal: controller.signal,
             })
             const thinkAgain = createThinkFilter()
-            const residueAgain = createResidueFilter()
             for await (const chunk of resume) {
               if (chunk.type === 'text-delta') {
                 const part = thinkAgain.push(chunk.text)
                 if (part.think) sse(res, { type: 'thought', text: part.think })
-                const text = part.text ? residueAgain.push(part.text) : ''
+                const text = part.text
                 if (text) {
                   chars += text.length
                   answer += text
@@ -3783,14 +3671,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
               }
             }
             for (const tail of [thinkAgain.flush()]) if (tail.think) sse(res, { type: 'thought', text: tail.think })
-            const tailText = residueAgain.flush()
-            if (tailText) {
-              chars += tailText.length
-              answer += tailText
-              conclusionInfo.chars += tailText.length
-              sse(res, { type: 'delta', text: tailText })
-            }
-            residueDropped += residueAgain.dropped()
             // 结论轮也可能把"英文核对过程"写进正文：一律按泄漏裁一次
             const leaked = splitLeakedReasoning(answer)
             if (leaked.prefix) {
@@ -3925,7 +3805,6 @@ export type { WebServer }
  */
 export const __internals = {
   createThinkFilter,
-  createResidueFilter,
   splitLeakedReasoning,
   looksLikeLeakedReasoning,
   resolveToolNames,

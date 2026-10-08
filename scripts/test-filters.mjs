@@ -1,8 +1,11 @@
 /**
- * 流式文本手术刀的确定性单测：思考过滤器 / 工具调用残渣过滤器 / 泄漏思考判别。
+ * 流式文本手术刀的确定性单测：思考过滤器 / 泄漏思考判别 / 工具清单解析。
  *
  * 为什么单独一个文件：这三件事都只能靠"模型吐什么"来发现（思考内联、DSML 残渣都是实测撞出来的），
  * 而模型每次发挥不同 —— 靠真实请求验证会时灵时不灵。这里把 lib/index.js 里的纯函数直接拿来打表。
+ *
+ * 注：原先这里还有一节"工具调用残渣过滤器" —— 那个过滤器已经**整体删除**（不再做文本层清洗，
+ * 改为照主会话的做法：工具每轮都带在请求里，模型走协议层表达调用，正文里不会有这种标记）。
  *
  * 跑法：node scripts/test-filters.mjs（已挂进 npm test）
  */
@@ -13,7 +16,7 @@ import { dirname, resolve } from 'node:path'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
 const { __internals } = require(resolve(HERE, '..', 'lib', 'index.js'))
-const { createThinkFilter, createResidueFilter, splitLeakedReasoning, looksLikeLeakedReasoning, resolveToolNames } = __internals
+const { createThinkFilter, splitLeakedReasoning, looksLikeLeakedReasoning, resolveToolNames } = __internals
 
 let pass = 0
 let fail = 0
@@ -66,92 +69,6 @@ const M = VB + VB + 'DSML' + VB + VB
   const a = f.push('普通正文，没有思考标签')
   const b = f.flush()
   assert('think：没有标签时原样输出（不误伤）', a.text + b.text === '普通正文，没有思考标签' && a.think + b.think === '', '')
-}
-
-// ───────────────────────── 工具调用残渣过滤器 ─────────────────────────
-{
-  // 实测形态①：整块包裹
-  const f = createResidueFilter()
-  const block = `<${M}tool_calls>\n<${M}invoke name="read">\n<${M}parameter name="path">/tmp/a.json</${M}parameter>\n</${M}invoke>\n</${M}tool_calls>`
-  const out = f.push(`前面有正文。${block}后面还有正文。` ) + f.flush()
-  assert('残渣：整块包裹的 DSML 被丢掉、前后正文保留', out === '前面有正文。后面还有正文。', JSON.stringify(out))
-}
-{
-  // 实测形态②：marker 与标签名之间有空格 + 没有外层包裹（漏得最多的那种）
-  const f = createResidueFilter()
-  const raw = `结论在这里。\n<${M} calls>\n<${M} invoke name="glob">\n<${M} parameter name="include" string="true">*.json</${M} parameter>\n</${M} invoke>\n</${M} calls>\n就这样。`
-  const out = f.push(raw) + f.flush()
-  // 残渣块自带换行，整块删掉后会留一个空行 —— 语义上没问题（正文两段仍在），断言里把连续空行归一
-  assert('残渣：带空格的 calls/invoke/parameter 三件套被丢掉', out.replace(/\n{2,}/g, '\n') === '结论在这里。\n就这样。', JSON.stringify(out))
-}
-{
-  // 实测形态③：单个孤立标签 + 参数值（没有 invoke/calls 包裹）
-  const f = createResidueFilter()
-  const raw = `正文 A。<${M} parameter name="limit" string="false">40</${M} parameter>正文 B。`
-  const out = f.push(raw) + f.flush()
-  assert('残渣：孤立的 parameter 标签也被丢掉', out === '正文 A。正文 B。', JSON.stringify(out))
-}
-{
-  // 未闭合（流被截断）→ 从标记起全部丢掉
-  const f = createResidueFilter()
-  const out = f.push(`结论在这里。\n<${M} invoke name="read">`) + f.flush()
-  assert('残渣：未闭合的块整段丢掉（不留在正文里）', out === '结论在这里。\n', JSON.stringify(out))
-}
-{
-  // 逐字喂（最坏分块）：marker 被切碎也不能漏
-  const f = createResidueFilter()
-  const whole = `答案 A。<${M} calls><${M} invoke name="grep">x</${M} invoke></${M} calls>答案 B。`
-  let out = ''
-  for (const ch of whole) out += f.push(ch)
-  out += f.flush()
-  assert('残渣：逐字符喂也不漏（marker 被切碎）', out === '答案 A。答案 B。', JSON.stringify(out))
-}
-{
-  // 标签被切在中间（40+ 字的标签，只留 32 字尾巴时会漏前半截）
-  const f = createResidueFilter()
-  const tag = `<${M} parameter name="include" string="true">`
-  const at = 24 // 切在 '<MARK parameter name="incl' 中间
-  const part1 = '正文 A。' + tag.slice(0, at)
-  const part2 = tag.slice(at) + '值' + `</${M} parameter>` + '正文 B。'
-  const out = f.push(part1) + f.push(part2) + f.flush()
-  assert('残渣：标签被切在中间也不漏（尾部要扣住半个标签）', out === '正文 A。正文 B。', JSON.stringify(out))
-}
-{
-  const f = createResidueFilter()
-  const out = f.push('前<ds_safety_tool_call><tool_name>web_search</tool_name></ds_safety_tool_call>后') + f.flush()
-  assert('残渣：官方 ds_safety_tool_call 同样被丢掉', out === '前后', JSON.stringify(out))
-}
-{
-  const f = createResidueFilter()
-  const text = '正常一段话：<parameter> 不是 DSML 标记；invoke 与 calls 只是英文词。'
-  const out = f.push(text) + f.flush()
-  assert('残渣：普通文本不受影响（没有 marker 的尖括号不误伤）', out === text, JSON.stringify(out))
-}
-
-{
-  // 本轮吐了未闭合的残渣块 → 只在本轮内作废；flush 之后新一轮必须能正常输出
-  // （共用一个过滤器时，这里会让"后续所有轮次的正文"被吞掉：实测表现为"只完成了工具查询，没有产出正文"）
-  const f = createResidueFilter()
-  const first = f.push(`本轮旁白。<${M} invoke name="grep">`) + f.flush()
-  const second = f.push('下一轮的正文，必须原样出来。') + f.flush()
-  assert('残渣：未闭合块只在本轮内作废（flush 后重置深度）', first === '本轮旁白。' && second === '下一轮的正文，必须原样出来。', JSON.stringify({ first, second }))
-}
-{
-  // 同一轮内，未闭合块之后的内容仍然要被丢掉（不能因为"怕误伤"就放行）
-  const f = createResidueFilter()
-  const out = f.push(`本轮旁白。<${M} invoke name="read">后面的参数碎片`) + f.flush()
-  assert('残渣：同一轮内未闭合块之后的内容仍被丢掉', out === '本轮旁白。', JSON.stringify(out))
-}
-
-{
-  // dropped()：统计被丢掉的字数（用来判断"末尾残渣删掉后句子没写完"）
-  const f = createResidueFilter()
-  const out = f.push(`结论写到一半就<${M} invoke name="read">`) + f.flush()
-  assert('残渣：dropped() 统计被丢掉的字数', out === '结论写到一半就' && f.dropped() > 0, `dropped=${f.dropped()}`)
-  const clean = createResidueFilter()
-  clean.push('干净文本，没有残渣。')
-  clean.flush()
-  assert('残渣：干净文本的 dropped() 为 0（不误判成截断）', clean.dropped() === 0, `dropped=${clean.dropped()}`)
 }
 
 // ───────────────────────── 泄漏思考判别 ─────────────────────────
