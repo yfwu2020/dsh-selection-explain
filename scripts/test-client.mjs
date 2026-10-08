@@ -5239,9 +5239,11 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       hook.voiceCard().open === true && sent.length === sentBefore,
       JSON.stringify(hook.voiceCard()) + ' / sent=' + String(sent.length - sentBefore),
     )
-    await sleep(900)
+    // 主信号：输入法的智能整理**走合成 API 提交**（实测 8 次录音里 6 次都有）
+    if (box) box.dispatch('compositionend', { data: cleaned })
+    await sleep(260)
     assert(
-      '定稿后才发送（卡片收起）',
+      '收到 compositionend 后**短窗口内**就决定（260ms 就发了 —— 兜底的 700ms 静默还没到）',
       hook.voiceCard().open === false,
       JSON.stringify(hook.voiceCard()),
     )
@@ -5249,15 +5251,7 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       '发出去的是**整理之后**的文字（不是松手那一刻的草稿）',
       // 问题在 question 字段（text 是选中的原文）
       sent.slice(sentBefore).some((b) => b && (b.question === cleaned || b.text === cleaned)),
-      JSON.stringify(sent.slice(sentBefore).map((b) => b && b.text)),
-    )
-
-    // 临时测量链路自检（测完和 VOICE_TRACE 一起删）
-    const trace = hook.voiceTrace()
-    assert(
-      '临时测量：记录到了"松手之后的变化"，且带上最终文字',
-      !!trace && Array.isArray(trace.events) && trace.events.some((e) => e.kind === 'value') && trace.finalText === cleaned,
-      trace ? JSON.stringify({ decision: trace.decision, durationMs: trace.durationMs, events: trace.events.map((e) => e.t + ':' + e.kind) }) : 'none',
+      JSON.stringify(sent.slice(sentBefore).map((b) => b && b.question)),
     )
 
     // 收尾：设置清回默认，别影响后面的用例

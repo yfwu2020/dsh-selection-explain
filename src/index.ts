@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { appendFileSync, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
@@ -3832,31 +3832,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/analyze`, handler: handleAnalyze }),
     `${name}: analyze route`,
-  )
-  /**
-   * ⚠️ **临时测量路由（测完删掉）**。
-   *
-   * 目的：确定"松手之后输入法的智能整理要多久、走不走 composition API"，
-   * 好把客户端那个 VOICE_SETTLE_MS 从猜的 700ms 换成测出来的值。
-   * 客户端把一串带时间戳的事件 POST 上来，这里原样写进宿主日志（用户不用开 devtools）。
-   */
-  const handleVoiceTrace = (req: IncomingMessage, res: ServerResponse): void => {
-    void (async () => {
-      const raw = await readBody(req, 200_000)
-      // 写固定路径的文件：宿主日志不落盘（~/.dsh/logs 里是旧的），写文件最可靠
-      // 放 ~/.dsh 下：固定、可预期（os.tmpdir() 在 macOS 上是 /var/folders/…，路径不稳定）
-      const tracePath = join(homedir(), '.dsh', 'voice-settle.log')
-      appendFileSync(tracePath, `${new Date().toISOString()} ${raw}\n`, 'utf8')
-      ctx.logger.info(`[voice-trace] 已写入 ${tracePath}`)
-      sendJson(res, 200, { ok: true, path: tracePath })
-    })().catch((error: unknown) => {
-      sendJson(res, 500, { ok: false, error: String((error as Error)?.message ?? error) })
-    })
-  }
-
-  ctx.effect(
-    () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/voice-trace`, handler: handleVoiceTrace }),
-    `${name}: voice-trace route (临时测量)`,
   )
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/settings`, handler: handleSettings }),
