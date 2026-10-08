@@ -1441,11 +1441,44 @@ async function main() {
     await sleep(30)
   }
 
+
+  // 内容把面板撑出视口 → 必须自动收回（回复框不能被顶到屏幕外）
+  //
+  // 真实场景：开窗那一刻"放得下吗"是按当时的高度算的（常常只有一行翻译在流），
+  // 之后正文长到 max-height，面板从固定的 top 往下挂 —— 它是 position:fixed、页面不滚，
+  // 顶出去那截（回复框）就点不到了。
+  //
+  // ⚠️ 复核挂在**绘制之后**（内容这时才在 DOM 里）。所以这里灌完内容要再走一次真实绘制，
+  // 不能用 askValue 那类只改状态、不重绘的钩子（踩过：断言量到的一直是注入前的旧位置）。
+  {
+    hook.open('溢出探测', '上下文片段', '冒烟')
+    await sleep(140)
+    var panelEl3 = document.querySelector('.dsh-sel-panel')
+    var bodyEl3 = panelEl3.querySelector('.dsh-sel-body')
+    var filler = document.createElement('div')
+    filler.style.height = Math.round(window.innerHeight * 0.9) + 'px'
+    filler.style.flex = '0 0 auto'
+    bodyEl3.appendChild(filler)
+    // 再开一次 = 走一遍真实的 showPanel + paint（内容已经在 DOM 里，复核这帧就能看见）
+    hook.open('溢出探测', '上下文片段', '冒烟')
+    await sleep(180)
+    var overRect = panelEl3.getBoundingClientRect()
+    check('内容把面板撑出视口时自动收回可视区（回复框不会被顶到屏幕外）',
+      overRect.bottom <= window.innerHeight - 2,
+      'bottom=' + Math.round(overRect.bottom) + ' vh=' + window.innerHeight)
+    filler.remove()
+    hook.open('溢出探测', '上下文片段', '冒烟')
+    await sleep(80)
+    hook.close()
+    await sleep(40)
+  }
+
   finish()
 }
 
 main().catch(function (error) {
   check('冒烟脚本自身没抛错', false, (error && error.message) || String(error))
+
   finish()
 })
 </script>

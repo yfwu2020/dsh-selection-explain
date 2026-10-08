@@ -7927,6 +7927,51 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /**
+       * 面板被内容顶出屏幕 → 收回可视区。
+       *
+       * 为什么需要：开窗时"放得下吗"是按**当时**的高度算的（那会儿往往只有一行翻译在流），
+       * 之后正文长高（上限 78vh 或 720px），面板从固定的 top 往下长 —— 而它是 position:fixed、
+       * 页面不滚，被顶出视口的那部分（通常是回复框）就点不到了（实测能挂出去 287px）。
+       *
+       * 用面板**自己**的 ResizeObserver：只在尺寸变化时触发（内容长高、拖拽、阶段切换都算），
+       * 而挪位置（left/top）不改变尺寸 → 不存在"写回自身"的循环。
+       * 每帧只多一次 getBoundingClientRect，且只在真的溢出时才写样式。
+       */
+      var panelGrowWatch = null
+
+      /**
+       * 复核一次：面板被顶出视口就收回来（只在真的溢出时才写样式）。
+       *
+       * 两条入口都会调它：
+       *   · paint() —— 流式/内容变化时的**主力**（渲染本来就节流在 90ms，一次 rect 读约 0.02ms）；
+       *   · 面板自己的 ResizeObserver —— 兜住不经过 paint 的尺寸变化（阶段切换、composer 长高）。
+       *
+       * ⚠️ 曾经只挂 ResizeObserver，实测**不生效**：内容长高时面板往往已经顶到 max-height，
+       * 伸长的是内部滚动区 —— 面板尺寸不变，观察器根本不触发（冒烟用例里探针显示 open:false、
+       * 且灌内容后零唤醒）。所以主力必须是绘制路径上的复核。
+       */
+      function ensurePanelInsideViewportNow() {
+        if (!panelOpen || panelInteracting) return
+        var rect = panel.getBoundingClientRect()
+        if (rect.bottom <= window.innerHeight - 4) return
+        clampPanelPosition()
+      }
+
+      function ensurePanelInsideViewport() {
+        if (panelGrowWatch || typeof ResizeObserver !== 'function') return null
+        panelGrowWatch = new ResizeObserver(function () {
+          ensurePanelInsideViewportNow()
+        })
+        panelGrowWatch.observe(panel)
+        return function () {
+          if (panelGrowWatch) {
+            panelGrowWatch.disconnect()
+            panelGrowWatch = null
+          }
+        }
+      }
+
       /** 滚轮/触摸：用户自己滚 = 立刻收回跟随权；滚回底部再交还。 */
       function noteUserScroll(event) {
         var up = event && typeof event.deltaY === 'number' && event.deltaY < 0
@@ -8790,6 +8835,11 @@ window.__ModuleLoader__.load({
                 state.chars = state.raw.length
               }
               paint()
+              // 复核放在**绘制之后**：内容这时候才在 DOM 里，面板这一帧长高的量当场就能夹住
+              //（放在 paint 开头会晚一帧——那帧量到的还是旧高度，实测过）。
+              // 位置只在开窗/拖拽/窗口 resize 时夹过，内容长高这条路径原先没人管 ——
+              // 面板是 position:fixed、页面不滚，顶出去那截（回复框）就点不到了。
+              ensurePanelInsideViewportNow()
             })
           }
           // 流式期间限速（同 scheduleTurnsRender）：长内容每帧整块重建会把小窗拖卡
@@ -11064,6 +11114,7 @@ window.__ModuleLoader__.load({
         window.addEventListener('mouseup', up, true)
       })
 
+      ensurePanelInsideViewport()
       bindResizeGrip(gripCorner, 'se')
       bindResizeGrip(gripRight, 'e')
       bindResizeGrip(gripBottom, 's')
@@ -11658,6 +11709,10 @@ window.__ModuleLoader__.load({
           offBodyTouch()
           offBodyScroll()
           if (chatGrowWatch) chatGrowWatch.disconnect()
+          if (panelGrowWatch) {
+            panelGrowWatch.disconnect()
+            panelGrowWatch = null
+          }
           if (pillPlacerId) clearTimeout(pillPlacerId)
           if (pillObserver) {
             try {
