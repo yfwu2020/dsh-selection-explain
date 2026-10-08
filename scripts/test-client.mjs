@@ -273,6 +273,8 @@ const navigatorStub = {}
 // ───────────────────────── 载入 bundle ─────────────────────────
 const source = readFileSync(BUNDLE, 'utf8')
 globalThis.ResizeObserver = ResizeObserverStub
+// 临时实验：关掉收尾复核
+if (typeof windowStub !== 'undefined') windowStub.__DSH_DISABLE_FOCUS_VERIFY = false
 const ORIGIN = process.env.SEL_ORIGIN || 'http://127.0.0.1:3080'
 const sent = []
 const promoted = []
@@ -3196,6 +3198,37 @@ for (let i = 0; i < 80 && panel.style.display === 'none'; i += 1) await sleep(20
 for (let i = 0; i < 40 && !textOf(sections[0]).trim(); i += 1) await sleep(20)
 assert('内存空了也能回放最近一条小窗', panel.style.display !== 'none' && textOf(sections[0]).trim().length > 0, textOf(sections[0]).slice(0, 40))
 assert('回放走的是历史，不重新调模型', sent.length === sentBeforeReplay, `新增请求 ${sent.length - sentBeforeReplay}`)
+
+// 生成中按 Enter：提示"还在生成"，但**你打的字必须留着**
+// （以前是"先清空、再被 ask() 拒掉" —— 字直接丢了，只剩一句提示）
+{
+  const slowStart2 = sent.length
+  hook.open('中止探测', '', '生成中发消息')
+  for (let i = 0; i < 60 && sent.length === slowStart2; i += 1) await sleep(20)
+  for (let i = 0; i < 60 && hook.state().phase !== 'streaming'; i += 1) await sleep(20)
+  assert('（前提）这一轮正在流式输出', hook.state().phase === 'streaming', String(hook.state().phase))
+  hook.askValue('生成中想好的下一句')
+  const sentBeforeBusy = sent.length
+  askBox.dispatch('keydown', { key: 'Enter', preventDefault() {}, stopPropagation() {} })
+  // 立刻读：流式的计时器每秒会把 status 覆盖成"生成中… Ns"，晚读就看不到了
+  const statusNow = String(hook.state().status || '')
+  await sleep(60)
+  assert(
+    '生成中按 Enter：你打的字还在输入框里（不会被清掉）',
+    askBox.value === '生成中想好的下一句',
+    JSON.stringify(askBox.value),
+  )
+  // 注意：这条提示目前**只在 state.lastStatus 里**（界面上不渲染）—— 见提交说明里的发现。
+  assert(
+    '生成中按 Enter：记下还在生成这条状态（供后续接上可见提示）',
+    /还在生成/.test(statusNow),
+    JSON.stringify(statusNow),
+  )
+  assert('生成中按 Enter：没有真的发出去', sent.length === sentBeforeBusy, String(sent.length - sentBeforeBusy))
+  hook.askValue('')
+  hook.close()
+  await sleep(40)
+}
 
 // 收起小窗 = 中止这一轮，不该记成"失败"，而是"已停止"（点回来还能重新生成）
 const slowStart = sent.length

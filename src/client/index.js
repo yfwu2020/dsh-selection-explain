@@ -8131,6 +8131,17 @@ window.__ModuleLoader__.load({
           setStatus('正在取引用的上下文…')
           return
         }
+        // ⚠️ 到这里才算"收下了这条提问"，此刻才清空输入框。
+        //
+        // 以前是**调用方先清空、再调 ask()**：于是"生成中按 Enter"这种被 ask() 拒掉的情况，
+        // 输入框已经被清空 —— 用户打的字直接丢了（只剩一句"还在生成，请稍候…"）。
+        // 清空放在这里，就不会再出现"没送出去却清掉了"。
+        // 只清"确实是这条提问的内容"：ask() 也可能被程序用别的文本调用（测试钩子等），
+        // 那种情况下输入框里的东西不该被抹掉。
+        if (askBox.value && String(askBox.value).trim() === asked) {
+          askBox.value = ''
+          refreshAskState()
+        }
         // 引用是"下一条提问"的：立刻清空（提问已经在手上，别让下一轮又带上）
         if (quotes.length > 0) {
           state.quotes = []
@@ -9640,8 +9651,7 @@ window.__ModuleLoader__.load({
         var question = askBox.value
         // 空输入框照发**只在挂了引用时**成立（引用本身就是用户要送出去的内容）
         if (!question.trim() && state.quotes.length === 0) return
-        askBox.value = ''
-        refreshAskState()
+        // 清空交给 ask()：它收下才清（生成中被拒时保留你打的字）
         ask(question)
       })
 
@@ -9657,8 +9667,7 @@ window.__ModuleLoader__.load({
         }
         var question = askBox.value
         if (!question.trim() && state.quotes.length === 0) return
-        askBox.value = ''
-        refreshAskState()
+        // 清空交给 ask()：它收下才清
         ask(question)
       })
 
