@@ -2629,6 +2629,20 @@ for (let i = 0; i < 120 && hook.state().phase !== 'done'; i += 1) await sleep(20
   // 网页输出还得带上当前深浅：深色 Harness 里给一张白底页面会很刺眼（host 据此注入配色规范）
   assert('网页输出带上当前主题（dark/light）', webPayload.theme === 'dark' || webPayload.theme === 'light', JSON.stringify(webPayload.theme))
   await waitIdle()
+
+  // 主题检测必须优先读 **DSH 自己的信号**（body[data-ds-dark-theme]），而不是面板的合成底色。
+  // 踩过的坑：外观设成"跟随系统（暗）"时，面板底色取自 DSH 变量、自身透明 → 被算成浅色
+  // → 生成的网页是亮色（用户实测报的）。DSH 不管用户选哪一档，都会把最终配色投影到这个属性上。
+  {
+    body.setAttribute('data-ds-dark-theme', '')
+    const beforeDark = sent.length
+    hook.ask('深色下再来一次：三种方式对比')
+    for (let i = 0; i < 80 && sent.length === beforeDark; i += 1) await sleep(20)
+    const darkPayload = sent[sent.length - 1] || {}
+    assert('跟随系统的深色下，网页输出带 theme: dark', darkPayload.theme === 'dark', JSON.stringify(darkPayload.theme))
+    body.removeAttribute('data-ds-dark-theme')
+    await waitIdle()
+  }
   hook.setWebMode(false)
   const beforePlain = sent.length
   hook.ask('简单问题')

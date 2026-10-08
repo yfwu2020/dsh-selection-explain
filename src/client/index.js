@@ -3958,7 +3958,7 @@ window.__ModuleLoader__.load({
 
       function showButton(rect) {
         // 浮标也在同一套配色下：它的底色是"页面背景"（浮层自身透明），按它判深浅
-        if (!panelOpen) layer.setAttribute('data-theme', isDarkSurface(layer) ? 'dark' : 'light')
+        if (!panelOpen) layer.setAttribute('data-theme', currentSurfaceTheme())
         // 只在"浮现"那一次播动效；已经可见时（划选范围被拖动、键盘调整）只平移，避免一直闪
         if (placeFloat(button, rect)) {
           setButtonPop(false)
@@ -6798,8 +6798,9 @@ window.__ModuleLoader__.load({
         var translationReady = state.phase === 'done' && !!state.parts.translation
         var wide = syncPanelStage()
         // 配色按**面板实际底色**选（不看系统偏好）：主题实现方式怎么变都不影响
-        layer.setAttribute('data-theme', isDarkSurface(panel) ? 'dark' : 'light')
-        panel.setAttribute('data-theme', isDarkSurface(panel) ? 'dark' : 'light')
+        var surfaceTheme = currentSurfaceTheme()
+        layer.setAttribute('data-theme', surfaceTheme)
+        panel.setAttribute('data-theme', surfaceTheme)
         askRow.style.display = wide || translationReady || state.voiceAsk || state.quotes.length > 0 ? '' : 'none'
         // 展开 CTA：翻译还在跑（含思考期）时先不出现——那时候该看的是等待特效，
         // 摆在下面只会是个灰着的按钮，反而像"没反应"；发过追问之后也收起（见 syncExpandCta）。
@@ -7346,9 +7347,35 @@ window.__ModuleLoader__.load({
        */
       function currentSurfaceTheme() {
         try {
+          // ① 先读 **DSH 自己的信号**：`body[data-ds-dark-theme]`。
+          //    这是 DSH 把"当前配色方案"投影到 document 的结果 —— 用户选的是
+          //    「浅色 / 深色 / 跟随系统」哪一档都无所谓，这里拿到的都是**最终结论**。
+          // 踩过的坑：一开始只看面板的合成底色（isDarkSurface）—— 面板底色取自 DSH 变量、
+          // 自身与祖先的 background-color 往往是透明的，于是被算成浅色。
+          // 用户实测：外观设为"跟随系统（暗）"时，生成的网页却是亮色。
+          var bodyEl = document.body
+          if (bodyEl && bodyEl.getAttribute && bodyEl.getAttribute('data-ds-dark-theme') !== null) return 'dark'
+          // ② html 的 color-scheme：DSH 同时用它驱动原生控件，浅/深都会写上
+          var rootEl = document.documentElement
+          if (rootEl) {
+            var scheme = ''
+            try {
+              scheme = String((window.getComputedStyle(rootEl) || {}).colorScheme || '')
+            } catch (error) {
+              scheme = ''
+            }
+            if (!scheme && rootEl.style) scheme = String(rootEl.style.colorScheme || '')
+            if (scheme.indexOf('dark') >= 0) return 'dark'
+            if (scheme.indexOf('light') >= 0) return 'light'
+          }
+          // ③ 面板自己的 data-theme（painter 设过）
           var attr = panel && panel.getAttribute ? panel.getAttribute('data-theme') : ''
           if (attr === 'dark' || attr === 'light') return attr
-          return isDarkSurface(panel) ? 'dark' : 'light'
+          // ④ 合成底色兜底（可能误判，所以放在后面）
+          if (isDarkSurface(panel)) return 'dark'
+          // ⑤ 最后才问系统偏好（"跟随系统"且上面都读不到时的兜底）
+          if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark'
+          return 'light'
         } catch (error) {
           return 'light'
         }
