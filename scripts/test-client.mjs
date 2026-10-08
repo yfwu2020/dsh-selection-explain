@@ -1395,8 +1395,17 @@ if (HOST_UP) {
 
 // ── 以下全部是真实 host 集成断言（SSE 流式渲染 / 面板交互 / 历史 / 清理）──
 // CI 里没有宿主，跳过；本地开发有宿主时全跑。
+//
+// ⚠️⚠️ 这一节会**改真实配置**：模型选择用例会写 provider/model，还会点「恢复默认」。
+// 对着"用户正在用的插件"跑，副作用会留下来 —— 实测事故：联机测试把 provider/model 写成了
+// 夹具的 p1/m-fast，用户此后每次请求都失败（no adapter registered for provider "p1"）。
+// 所以这里先快照整份设置，本节结束时（见文件后面的 settingsSnapshot 还原）按快照写回。
+// 要跑"绝不留副作用"的设置用例，用 test-settings-host.mjs（隔离 DSH_HOME + 新加载宿主）。
 if (HOST_UP) {
 
+const settingsSnapshot = await (
+  await fetch(ORIGIN + '/selection-explain/api/settings', { headers: { accept: 'application/json' } })
+).json()
 const deadline = Date.now() + 90000
 while (Date.now() < deadline) {
   const state = hook.state()
@@ -2212,7 +2221,7 @@ assert(
   await new Promise((r) => setTimeout(r, 30))
 }
 
-// ⚠️ 这一段必须跑在**新加载**的宜主上（test-settings-host.mjs 用隔离目录新加载一份）。
+// ⚠️ 这一段必须跑在**新加载**的宿主上（test-settings-host.mjs 用隔离目录新加载一份）。
 // 直接对着“正在跑的插件”跑会失败 —— 那是上一次启动时加载的旧代码，
 // 除非用户重载过插件。
 if (process.env.SEL_SETTINGS_ONLY === '1') {
@@ -5366,6 +5375,27 @@ for (const dispose of disposers.reverse()) {
     console.log('cleanup 抛错:', error && error.message)
   }
 }
+// ⚠️ 放在**最后**：这一节前面/中间还有别的用例会写模型设置，早了会被覆盖掉。
+// 还原真实配置：这一段跑在"用户正在用的插件"上时，把进本节之前的快照写回去。
+// 隔离宿主（test-settings-host.mjs）下也无害 —— 那份宿主本来就是一次性的。
+{
+  const values = (settingsSnapshot && settingsSnapshot.values) || {}
+  // 只发有值的、且不是虚拟键的（虚拟键会被宿主拒掉，返回 rejected 里，无害但还是别发）
+  const restore = {}
+  Object.keys(values).forEach((key) => {
+    if (key === 'modelChoice') return
+    if (values[key] === undefined || values[key] === null) return
+    restore[key] = values[key]
+  })
+  if (Object.keys(restore).length) {
+    await fetch(ORIGIN + '/selection-explain/api/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ values: restore }),
+    })
+  }
+}
+
 assert('清理后 DOM 归零', mount.children.length === 0 && body.children.indexOf(container) >= 0)
 assert('清理后划词桥自己建的预览 blob 被回收', bridgeOwnedBlob !== '' && !blobStore.has(bridgeOwnedBlob), bridgeOwnedBlob)
 assert('清理后钩子移除', windowStub.__dshSelectionExplain === undefined)
