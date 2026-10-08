@@ -5106,10 +5106,27 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
 
   // 发送：跳过翻译与详解，直接进追问
   const beforeSend = hook.state()
+  // 焦点探针：发送后焦点应该落到小窗输入框，方便直接继续追问
+  let askFocused = 0
+  const realAskFocus = askBox.focus
+  askBox.focus = () => {
+    askFocused += 1
+  }
+  // 模拟真实情况：发送那一刻焦点正在临时输入框里（桩里 focus 是空实现，默认 activeElement 不是它）
+  documentStub.activeElement = box
   if (sendBtn) sendBtn.dispatch('click', { target: sendBtn, preventDefault() {}, stopPropagation() {} })
   await sleep(80)
   const afterSend = hook.state()
   assert('发送后卡片收起', hook.voiceCard().open === false, JSON.stringify(hook.voiceCard()))
+  assert(
+    '从临时输入框发送后，焦点自动落到小窗输入框（可以直接继续追问）',
+    askFocused > 0,
+    'focus 次数=' + String(askFocused),
+  )
+  askBox.focus = realAskFocus
+  // ⚠️ 还原焦点：不还原的话它会一直停在卡片输入框上，后面所有用例开卡片都会被
+  // "用户正在别处打字"那条守卫挡掉（实测：这么一改，后面 6 条全红）。
+  documentStub.activeElement = body
   assert('跳过解读：翻译一节是空的（没请求 /analyze）', !afterSend.translation, JSON.stringify(beforeSend) + ' → ' + JSON.stringify(afterSend))
   assert('直接进了追问：面板开着', panel.style.display !== 'none', String(panel.style.display))
 

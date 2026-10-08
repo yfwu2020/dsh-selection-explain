@@ -3625,6 +3625,15 @@ window.__ModuleLoader__.load({
        */
       /** 开窗后"还没聚焦过输入框"（见 focusComposerOnce）。 */
       var askFocusPending = false
+      /**
+       * 这一次开窗是"语音卡直接进追问"（用户在临时输入框里说完 → 发送）。
+       *
+       * 为什么需要它：下面那条"用户正在别处打字就不抢焦点"的守卫，会把**我们自己那张
+       * 正在关闭的卡片**当成"别处" —— 发送时焦点正停在卡片的输入框上，
+       * 于是自动聚焦被挡掉（用户实测："发送后焦点没进小窗输入框"）。
+       * 这种情况必须抢：卡片马上就没了，焦点本就该交给小窗。
+       */
+      var askFocusFromVoiceCard = false
       var offSlot = null
       if (ctx.slots && typeof ctx.slots.inject === 'function') {
         try {
@@ -5609,6 +5618,7 @@ window.__ModuleLoader__.load({
         // 这一轮是不是"从语音卡直接进追问"：paint() 靠它决定不画翻译/详解两节、
         // 并且让追问输入框直接可见（见 state.voiceAsk 的几处用法）
         state.voiceAsk = !!(options && options.askFirst)
+        askFocusFromVoiceCard = state.voiceAsk
         // 记下"这次划词发生在哪个会话"——小窗后续所有按会话解析的东西都用它
         panelSessionId = currentSessionId()
         state.payload = buildPayload(text, context, label)
@@ -6853,11 +6863,13 @@ window.__ModuleLoader__.load({
         // 注意别把普通的按钮焦点也算进去：点浮标时焦点正好落在浮标那个 <button> 上
         //（Chrome 点按钮会给它焦点），照"非 body 就不抢"的老写法会把我们自己挡在门外 ——
         // 这正是"开窗后没有自动聚焦"的原因。
-        if (!inside && isTypingTarget(active)) {
+        // 语音卡那条路例外：所谓"别处"就是正在关闭的卡片自己（见 askFocusFromVoiceCard）
+        if (!inside && !askFocusFromVoiceCard && isTypingTarget(active)) {
           askFocusPending = false // 人家真的在别处打字，这次开窗就不再抢
           return
         }
         askFocusPending = false
+        askFocusFromVoiceCard = false
         focusAskBox()
       }
 
