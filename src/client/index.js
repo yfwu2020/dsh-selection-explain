@@ -6591,6 +6591,12 @@ window.__ModuleLoader__.load({
             changed = Math.abs(clamped.w - startSize.w) + Math.abs(clamped.h - startSize.h)
             panel.style.width = Math.round(clamped.w) + 'px'
             panel.style.height = Math.round(clamped.h) + 'px'
+            // ⚠️ **必须同步抬高 max-height**。
+            // 开窗时 applyPanelSizeOnOpen() 会把"上次记住的高度"写成 max-height 当天花板；
+            // 拖拽如果只写 height，写大的部分会被那条旧天花板直接截掉 ——
+            // 用户实测就是"拖拽的上限不是视口高度减 8，而是上次关闭小窗之前的高度"。
+            // （反过来拖小没问题：height 小于旧天花板，看不出来。）
+            panel.style.maxHeight = Math.round(clamped.h) + 'px'
             panelSize = clamped
             panel.setAttribute('data-resized', '1')
             if (historyList.style.display === 'flex') placeHistoryList()

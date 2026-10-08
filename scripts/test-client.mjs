@@ -280,6 +280,8 @@ const sent = []
 const promoted = []
 /** A′：小窗历史的内存版存储（测试用）。 */
 const historyStore = new Map()
+/** 面板尺寸存档（桩）：拖拽/还原用例依赖它造出"上次记住的高度"。 */
+let sizeStore = null
 const historySaved = []
 let historyList = []
 const openedSessions = []
@@ -512,6 +514,16 @@ const routeFetch = (input, init) => {
       chatFollows: !(chat && chatFx),
     }
     return Promise.resolve(new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } }))
+  }
+  // 面板尺寸存档：内存版。以前没有桩 → 打到真实 host，既会改到用户的存档，
+  // 也没法造出"上次记住的高度"这个前提（而"拖拽上限被旧天花板卡住"正需要它）。
+  if (url.indexOf('/selection-explain/api/panel') >= 0) {
+    if (init && init.method === 'POST') {
+      const body = JSON.parse(String(init.body || '{}'))
+      sizeStore = body && body.clear === true ? null : body && body.size ? body.size : sizeStore
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, size: sizeStore }), { headers: { 'content-type': 'application/json' } }))
+    }
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, size: sizeStore }), { headers: { 'content-type': 'application/json' } }))
   }
   // 小窗历史（A′）：内存版实现，避免打到真实 host 拿到脏历史
   if (url.indexOf('/selection-explain/api/history') >= 0) {
@@ -5526,6 +5538,36 @@ for (const dispose of disposers.reverse()) {
     console.log('cleanup 抛错:', error && error.message)
   }
 }
+// ────────── 拖拽上限 = 视口高度 − 8，不是"上次关闭小窗之前的高度" ──────────
+// 踩过的坑：开窗时把"记住的高度"写成 max-height 当天花板，而拖拽只写 height、不抬天花板 →
+// 拖大的部分被那条旧天花板直接截掉。取证：maxHeight 仍停在开窗时的那条 300px。
+{
+  sizeStore = { w: 380, h: 300 } // 造一个很小的"上次记住的高度"
+  hook.close()
+  await sleep(40)
+  hook.open('size-ceiling-probe', '', '尺寸天花板用例')
+  for (let i = 0; i < 80 && hook.state().phase !== 'done'; i += 1) await sleep(20)
+  await sleep(30)
+  // 注：这里**不**断言"开窗时已应用记住的高度" —— loadPanelSize 整页只请求一次，
+  // 而它在本次用例跑之前（sizeStore 还是 null 时）就已经标记"问过了"，桩里造不出这个前提。
+  // 好在下面的断言本身就能抓住这个 bug：没有修复时拖拽只写 height、不抬 max-height，
+  // maxHeight 会停在开窗时的值（或为空），dragH > 300 直接不成立。
+  const grip = Array.from(walk(panel)).find((n) => String(n.className).indexOf('dsh-sel-grip-corner') >= 0)
+  assert('（前提）找得到右下角拖拽手柄', !!grip, String(grip && grip.className))
+  grip.dispatch('pointerdown', { button: 0, clientX: 0, clientY: 0, pointerId: 1, preventDefault() {}, stopPropagation() {} })
+  windowStub.dispatch('pointermove', { clientX: 0, clientY: 800 })
+  const dragH = parseInt(panel.style.maxHeight, 10)
+  assert('拖高之后天花板跟着抬高（不再被旧高度卡住）', dragH > 300, String(panel.style.maxHeight))
+  assert('上限是视口高度 − 8', dragH <= 900 - 8, String(panel.style.maxHeight))
+  assert('拖出来的高度当场生效（height 与天花板一致）', panel.style.height === panel.style.maxHeight, JSON.stringify({ h: panel.style.height, max: panel.style.maxHeight }))
+  windowStub.dispatch('pointerup', {})
+  await sleep(380) // 等防抖存档落盘（走桩，不会写进真实 host）
+  grip.dispatch('dblclick', { preventDefault() {}, stopPropagation() {} })
+  await sleep(40)
+  assert('双击手柄恢复默认（天花板清空）', panel.style.maxHeight === '', JSON.stringify(panel.style.maxHeight))
+  sizeStore = null
+}
+
 // ⚠️ 放在**最后**：这一节前面/中间还有别的用例会写模型设置，早了会被覆盖掉。
 // 还原真实配置：这一段跑在"用户正在用的插件"上时，把进本节之前的快照写回去。
 // 隔离宿主（test-settings-host.mjs）下也无害 —— 那份宿主本来就是一次性的。
