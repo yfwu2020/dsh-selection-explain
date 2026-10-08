@@ -86,11 +86,16 @@ window.__ModuleLoader__.load({
     /**
      * **兜底**：松手之后等文字"静默"多久才认定定稿（毫秒）。
      *
-     * 主信号是 compositionend（见 VOICE_SETTLE_COMPOSE_MS）。这条兜底用于两种情况：
-     * 输入法直接改 value 没走合成 API；以及整理提交发生在客户端察觉松手之前
-     * （轮询有最多一个间隔的滞后，那时 compositionend 已经过去了）。
+     * 主信号是 compositionend（见 VOICE_SETTLE_COMPOSE_MS），实测豆包的智能整理都走它，
+     * 所以这条兜底实际上很少被用到 —— 它管两种情况：
+     *   1. 输入法直接改 value、没走合成 API；
+     *   2. 整理提交发生在客户端察觉松手之前（轮询有最多一个间隔的滞后，那时 compositionend 已经过去了）。
+     *
+     * 取 500（用户指定，原为 700）：实测"松手 → 整理提交"是 71/257/328/393/515/600ms，
+     * 但那些**都带 compositionend**、走的是主信号，所以兜底提前到 500 不影响它们；
+     * 真要担心的是"没有合成信号"的场合 —— 那种情况没有实测数据，500 是个折中。
      */
-    var VOICE_SETTLE_MS = 700
+    var VOICE_SETTLE_MS = 500
     /**
      * 收到 compositionend 之后，再等多久才决定（毫秒）。
      *
@@ -4075,7 +4080,7 @@ window.__ModuleLoader__.load({
         listen(vcardBox, 'compositionend', syncVCardText)
         // 「等定稿」的主信号：输入法的智能整理**走合成 API 提交**（实测 8 次录音里 6 次都有
         // inputType=insertCompositionText + compositionend）。收到就在短窗口后决定，
-        // 不必等兜底的 700ms 静默；连着来两次（标点一次、改词一次）就重新计时。
+        // 不必等兜底的 500ms 静默；连着来两次（标点一次、改词一次）就重新计时。
         listen(vcardBox, 'compositionend', function () {
           if (!vcardState.settleTimer) return
           if (vcardState.settleComposeTimer) clearTimeout(vcardState.settleComposeTimer)
