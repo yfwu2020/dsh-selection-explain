@@ -2563,6 +2563,109 @@ window.__ModuleLoader__.load({
       var quotesBox = el('div', 'dsh-sel-quotes')
       askRow.appendChild(quotesBox)
       var askBox = el('textarea', 'dsh-sel-askbox')
+      /**
+       * ⚠️ **临时诊断（查完删掉）**：查"焦点在输入框上、却打不进字、也没有插入符"。
+       *
+       * 已经证实（focus-trace）：一轮结束后 activeElement 确实是 dsh-sel-askbox。
+       * 那么"打不进字"只可能是三种之一：
+       *   ① 输入框是 readOnly（可聚焦、但无插入符、也不接受输入）；
+       *   ② 文档没有系统焦点（activeElement 在本文档里，但键事件去了别处）；
+       *   ③ 键事件被某个 capture 处理器吃掉（preventDefault）。
+       * 所以在**每次按键**时记一份现场回传宿主，直接看键到了哪儿、输入框是什么状态。
+       */
+      var FOCUS_TRACE = true
+      var FOCUS_TRACE_PATH = '/selection-explain/api/focus-trace'
+      var focusTraceBuf = []
+      var focusTraceSentAt = 0
+
+      function focusTraceScene(note) {
+        var active = document.activeElement
+        var style = null
+        try {
+          style = window.getComputedStyle ? window.getComputedStyle(askBox) : null
+        } catch (error) {
+          style = null
+        }
+        return {
+          note: note,
+          active: active ? String(active.className || active.tagName || '?') : 'null',
+          activeIsAskBox: active === askBox,
+          docHasFocus: typeof document.hasFocus === 'function' ? document.hasFocus() : null,
+          visibility: String(document.visibilityState || ''),
+          hidden: !!document.hidden,
+          readOnly: !!askBox.readOnly,
+          disabled: !!askBox.disabled,
+          contentEditable: !!askBox.isContentEditable,
+          value: String(askBox.value || '').slice(0, 20),
+          style: style
+            ? {
+                caretColor: String(style.caretColor || ''),
+                color: String(style.color || ''),
+                userSelect: String(style.userSelect || ''),
+                pointerEvents: String(style.pointerEvents || ''),
+                display: String(style.display || ''),
+                visibility: String(style.visibility || ''),
+                opacity: String(style.opacity || ''),
+              }
+            : null,
+        }
+      }
+
+      function focusTraceFlush() {
+        if (!FOCUS_TRACE || !focusTraceBuf.length) return
+        var payload = { at: Date.now(), points: focusTraceBuf }
+        focusTraceBuf = []
+        focusTraceSentAt = Date.now()
+        try {
+          fetch(FOCUS_TRACE_PATH, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload),
+          }).catch(function () {})
+        } catch (error) {
+          /* 诊断失败不影响功能 */
+        }
+      }
+
+      function focusTraceAdd(note) {
+        if (!FOCUS_TRACE) return
+        focusTraceBuf.push(focusTraceScene(note))
+        if (focusTraceBuf.length >= 8) focusTraceFlush()
+        else later(focusTraceFlush, 600)
+      }
+
+      if (FOCUS_TRACE) {
+        // 按键：记 target 是谁、有没有被 preventDefault（preventDefault 只能在事件派发后读，
+        // 所以用一个 0ms 的延迟读 defaultPrevented）
+        listen(
+          document,
+          'keydown',
+          function (event) {
+            var note =
+              'keydown key=' + String(event.key) +
+              ' target=' + String((event.target && (event.target.className || event.target.tagName)) || '?')
+            later(function () {
+              focusTraceAdd(note + ' defaultPrevented=' + String(!!event.defaultPrevented))
+            }, 0)
+          },
+          true,
+        )
+        listen(
+          document,
+          'beforeinput',
+          function (event) {
+            focusTraceAdd('beforeinput inputType=' + String(event.inputType || '') + ' target=' + String((event.target && (event.target.className || event.target.tagName)) || '?'))
+          },
+          true,
+        )
+        listen(
+          askBox,
+          'input',
+          function () {
+            focusTraceAdd('askbox input 收到了（值长度 ' + String(String(askBox.value || '').length) + '）')
+          },
+        )
+      }
       askBox.rows = 1
       askBox.placeholder = '就这段文字继续追问…（Enter 发送，Shift+Enter 换行）'
       // 网页模式开关：打开后，追问里较复杂的问题默认用网页回答（并注入附带的设计规范）
@@ -3628,50 +3731,6 @@ window.__ModuleLoader__.load({
       /** 调试：最后一次"没聚焦"卡在哪一步（-1 表示聚焦成功）。 */
       /** 调试：最后一次"没聚焦"卡在哪一步（成功时是 'ok'）。自动聚焦这类问题很难从外部看出来。 */
       var focusBail = ''
-      /**
-       * ⚠️ **临时诊断（查完删掉）**：把"一轮结束后焦点到底在谁身上"记成时间线，回传宿主写文件。
-       * 用户是在 DeepSeek Harness 桌面版里用，让他开控制台不方便 —— 让插件自己把现场写下来。
-       */
-      var FOCUS_TRACE = true
-      var FOCUS_TRACE_PATH = '/selection-explain/api/focus-trace'
-      var focusTrace = null
-      var focusTraceAt = 0
-
-      function focusTraceSnapshot(label) {
-        if (!FOCUS_TRACE || !focusTrace) return
-        var active = document.activeElement
-        focusTrace.push({
-          t: Date.now() - focusTraceAt,
-          label: label,
-          active: active ? String(active.className || active.tagName || active.nodeName || '?') : 'null',
-          pending: !!askFocusPending,
-          open: !!panelOpen,
-          visible: composerVisible(),
-          bail: focusBail,
-        })
-      }
-
-      function focusTraceBegin() {
-        if (!FOCUS_TRACE) return
-        focusTrace = []
-        focusTraceAt = Date.now()
-        focusTraceSnapshot('收尾开始')
-      }
-
-      function focusTraceEnd() {
-        if (!FOCUS_TRACE || !focusTrace) return
-        var payload = focusTrace
-        focusTrace = null
-        try {
-          fetch(FOCUS_TRACE_PATH, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ at: focusTraceAt, points: payload }),
-          }).catch(function () {})
-        } catch (error) {
-          /* 诊断失败不影响功能 */
-        }
-      }
       var offSlot = null
       if (ctx.slots && typeof ctx.slots.inject === 'function') {
         try {
@@ -6888,14 +6947,7 @@ window.__ModuleLoader__.load({
         focusBail = 'pending=' + String(askFocusPending) + ' panel=' + String(panelOpen)
         if (!askFocusPending || !panelOpen) return
         focusBail = 'composerVisible=' + String(composerVisible()) + ' panelSel=' + String(hasPanelSelection())
-        if (!composerVisible()) {
-          // ⚠️ 这里**不能只是返回**：实测（focus-trace）一轮结束时输入框常常还没显示
-          // （首轮还在流式、DOM 刚渲染），如果就此放弃，等它 90ms 后显示出来时已经没人管了 ——
-          // 症状就是用户看到的"边框高亮着、却没有光标、字也打不进去"。
-          // 所以安排一条"等它显示出来再聚焦"的重试。
-          retryFocusWhenComposerVisible(8)
-          return
-        }
+        if (!composerVisible()) return
         // 小窗里正有一段选中文字（用户正在划词、准备点「❝ 引用」）：**这一下聚焦会把选区清掉**。
         // 让位给用户，并且不再补焦 —— 引用浮标是这个功能的主入口，不能因为抢焦点而让它消失。
         //（实测：开窗后那一帧恰好落在"首轮刚出完"的自动聚焦上，划好的词会瞬间没了。）
@@ -6959,60 +7011,12 @@ window.__ModuleLoader__.load({
        */
       function askFocusAfterTurn() {
         focusBail = 'panelOpen=' + String(panelOpen)
-        focusTraceBegin()
-        if (!panelOpen) {
-          focusTraceEnd()
-          return
-        }
+        if (!panelOpen) return
         askFocusPending = true
         focusComposerOnce()
-        focusTraceSnapshot('focusComposerOnce 之后')
-        ensureAskFocusLanded()
-        // 临时诊断：再看 +120ms / +400ms 两拍，抓"事后被谁抢走"
-        later(function () {
-          focusTraceSnapshot('+120ms')
-        }, 120)
-        later(function () {
-          focusTraceSnapshot('+400ms')
-          focusTraceEnd()
-        }, 400)
       }
 
-      /**
-       * 收尾复核：**高亮还在 composer 上、但焦点没落在输入框**时，把光标换回输入框。
-       *
-       * 为什么需要：composer 的高亮是 `:focus-within` —— 只要里面**任意一个后代**有焦点就亮，
-       * 所以"边框亮着"并不能证明光标在输入框里（可能停在发送键 / 模型选择 / 麦克风上）。
-       * 用户实测就是这样：回答完成后边框高亮、输入框里没有插入符。
-       * 只在焦点确实停在 composer 内部时才纠正，绝不从别处抢。
-       */
-      function ensureAskFocusLanded() {
-        later(function () {
-          if (!panelOpen) return
-          // 输入框还没显示：交给 retryFocusWhenComposerVisible 那条路，这里不动
-          if (!composerVisible()) return
-          var active = document.activeElement
-          if (active === askBox) return
-          var inComposer = !!(active && panel && panel.contains && panel.contains(active))
-          // 人家在**别处**正经打字：不抢
-          if (active && !inComposer && isTypingTarget(active)) return
-          // composer 里落在非输入控件上（比如卡片/焦点圈）：也不动
-          if (active && inComposer && !(active.tagName === 'BUTTON' || active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return
-          // 其余情况（焦点在输入类控件上但不在输入框里，或者压根没有焦点）→ 纠正
-          focusBail = '复核纠正（原焦点=' + String((active && (active.className || active.tagName)) || 'null') + '）'
-          askFocusPending = true
-          focusComposerOnce()
-        }, 160)
-      }
-
-      /**
-       * 把光标交给输入框（preventScroll：别因为聚焦把页面滚一下）。
-       *
-       * ⚠️ 这里有个**必须复核**的坑（用户实测症状："边框高亮着，但没有光标"）：
-       * 在元素还没真正显示时调 focus()，浏览器会把 activeElement 记成它、`:focus` 样式也生效，
-       * 但**不画插入符** —— 看上去就是"高亮了却没光标"。
-       * 所以聚焦之后要查一次 getClientRects：还没有盒子（= 还没显示）就等它显示出来再补一次。
-       */
+      /** 把光标交给输入框（preventScroll：别因为聚焦把页面滚一下）。 */
       function focusAskBox() {
         try {
           askBox.focus({ preventScroll: true })
@@ -7023,42 +7027,6 @@ window.__ModuleLoader__.load({
             /* 桩环境 */
           }
         }
-        if (typeof askBox.getClientRects === 'function' && askBox.getClientRects().length === 0) {
-          refocusAskBoxWhenVisible(6)
-        }
-      }
-
-      /**
-       * 输入框还没显示时，等它显示出来再聚焦（最多 8 次，每次 100ms）。
-       *
-       * 为什么必须有：收尾那一刻 `composerVisible()` 常常还是 false（流式刚结束、DOM 刚渲染），
-       * 而 `askFocusPending` 会被后续的 paint 消耗掉 —— 只返回不重试的话，
-       * 等输入框真的出现时已经没有任何人会去聚焦它（focus-trace 实测到的就是这个）。
-       */
-      function retryFocusWhenComposerVisible(left) {
-        if (left <= 0) return
-        later(function () {
-          if (!panelOpen) return
-          if (!composerVisible()) {
-            retryFocusWhenComposerVisible(left - 1)
-            return
-          }
-          askFocusPending = true
-          focusComposerOnce()
-        }, 100)
-      }
-
-      /** 等输入框真的可见了再聚焦一次（见 focusAskBox 的注释；最多补 6 次，每次 80ms）。 */
-      function refocusAskBoxWhenVisible(left) {
-        if (left <= 0) return
-        later(function () {
-          if (!panelOpen) return
-          if (typeof askBox.getClientRects === 'function' && askBox.getClientRects().length === 0) {
-            refocusAskBoxWhenVisible(left - 1)
-            return
-          }
-          focusAskBox()
-        }, 80)
       }
 
       /** 输入框这会儿真的看得见吗（藏着的元素聚焦没有意义）。 */
