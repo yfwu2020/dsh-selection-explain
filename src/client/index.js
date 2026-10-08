@@ -4358,7 +4358,20 @@ window.__ModuleLoader__.load({
         vcard.setAttribute('data-voiced', on ? '1' : '0')
         if (!vcardBox) return
         if (String(vcardBox.value || '').trim()) return
-        vcardBox.placeholder = on ? '正在听…' : '直接打字也行…'
+        vcardBox.placeholder = on ? '正在听…' : vcardIdlePlaceholder()
+      }
+
+      /**
+       * 松手之后、空框时该显示什么 —— **按设置如实说**。
+       *
+       * 原来一律写"直接打字也行…"，但开了「空录音收起」时那句话是假的：
+       * 一个字都没说 → 这张卡片马上就会被收掉，用户来不及打字。
+       * 开了「自动发送」同理：录到字就自己发出去了，"打字也行"也不算错但不如说清。
+       */
+      function vcardIdlePlaceholder() {
+        if (settingsLive.voiceCancelOnSilence === true) return '没听到内容，稍后自动收起…'
+        if (settingsLive.voiceAutoSend === true) return '说完会自动发送…'
+        return '直接打字也行…'
       }
 
       function focusVCard() {
@@ -4839,9 +4852,17 @@ window.__ModuleLoader__.load({
               return
             }
             if (matchingIme(data)) {
-              if (vcardState.suppress) return
               // 又开始录了：上一次的"等定稿"作废
               stopVoiceSettle()
+              // 小窗开着：把这次录音**引到小窗输入框**，而不是弹临时卡片。
+              // 此刻用户看的是小窗、划好的引用也挂在小窗上，弹卡片等于把上下文挪走；
+              // 引用先落进输入框、光标交给它，输入法接下来吐的字就直接落在小窗里。
+              if (panelOpen) {
+                commitQuoteSelection()
+                focusAskBox()
+                return
+              }
+              if (vcardState.suppress) return
               if (!vcardState.open) openVCard()
               else markVCardListening(true)
               return
@@ -9162,14 +9183,26 @@ window.__ModuleLoader__.load({
         event.stopPropagation()
       })
 
-      var offQuoteClick = listen(quoteButton, 'click', function (event) {
-        event.preventDefault()
-        event.stopPropagation()
+      /**
+       * 把"待引用"（浮标上那段）落进输入框。
+       *
+       * 两条入口共用：点 ❝ 浮标，以及**开录**（见 onMicState / startVoice）——
+       * 用户划完词直接开口说，意思是"把这句带上一起问"，再让他去点一下浮标是多余的一步，
+       * 而且录音一开始浮标就收了，想点也点不到。
+       */
+      function commitQuoteSelection() {
         var selection = state.quoteSelection
-        if (!selection) return
+        if (!selection) return false
         // 上下文在这里才采：引用**当时**在哪一段对话里，是这条引用最有用的信息
         addQuote(selection.text, selection.label, quoteContextFor(selection))
         hideQuoteButton()
+        return true
+      }
+
+      var offQuoteClick = listen(quoteButton, 'click', function (event) {
+        event.preventDefault()
+        event.stopPropagation()
+        commitQuoteSelection()
       })
 
       var offScroll = listen(window, 'scroll', function (event) {
@@ -10864,6 +10897,8 @@ window.__ModuleLoader__.load({
               resetWave()
               setVoiceActivity('', {})
               paintVoice()
+              // 划好的引用一并落进输入框（同 onMicState 那条路：开口说 = 把这句带上一起问）
+              commitQuoteSelection()
               // 光标交给输入框：实时字幕落字时要看见光标在末尾跳（textarea 没焦点就不画光标）
               focusAskForRecording()
               startVoiceTicker()

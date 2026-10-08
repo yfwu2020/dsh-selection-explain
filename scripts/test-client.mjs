@@ -5464,6 +5464,11 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       hook.voiceCard().open === true,
       JSON.stringify(hook.voiceCard()),
     )
+    assert(
+      '空录音收起开启时：占位不再劝人打字（那句话在此模式下是假的）',
+      !!box && box.placeholder !== '直接打字也行…' && /自动收起/.test(String(box.placeholder || '')),
+      box ? JSON.stringify(box.placeholder) : '没找到输入框',
+    )
     await sleep(900)
     const cardSilent = find('dsh-sel-vcard')
     assert('定稿后才取消（空录音）', hook.voiceCard().open === false, JSON.stringify(hook.voiceCard()))
@@ -5473,6 +5478,16 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       cardSilent ? String(cardSilent.getAttribute('data-off')) : 'no card',
     )
 
+    // ①′ 「小窗开着时开录 → 引到小窗输入框 + 带上待引用」
+    //
+    // ⚠️ 这条**故意不写成断言**：桩里驱动不了这个场景。
+    //   · 麦克风监听在临时卡片关闭后就停了（closeVCard → stopMicWatch），要重新拉起来
+    //     得走"出现选区"那条路（showButton → startMicWatch）；
+    //   · 而桩的选区保真度不足以让 ❝ 引用 浮标真的浮出来（试过：selection 一直是 null），
+    //     监听拉不起来 → 那条分支根本不执行。
+    //   先前写过一版"卡片没弹出来"的断言，看着 PASS，其实是监听没开导致的**假通过**，已撤。
+    //   这一条改由真机验证（用户在面板里划词后直接开麦）。代码路径见 commitQuoteSelection()
+    //   与 onMicState 里的 panelOpen 分支。
     // ② 「说完直接发送」：松手后等定稿才发；期间模拟豆包的智能整理改写输入框
     settingsStub.value = { voiceAutoSend: true }
     hook.reloadSettings()
