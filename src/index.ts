@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { appendFileSync, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
@@ -3832,29 +3832,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/analyze`, handler: handleAnalyze }),
     `${name}: analyze route`,
-  )
-  /**
-   * ⚠️ **临时诊断路由（查完删掉）**。
-   *
-   * 目的：查清"回答结束后光标为什么没进小窗输入框" —— 用户是在桌面版里用，
-   * 不一定打不开控制台，但让插件自己把现场写下来最省事。
-   * 客户端把一串带时间戳的现场（activeElement、各守卫的取值）POST 上来，这里写进固定文件。
-   */
-  const handleFocusTrace = (req: IncomingMessage, res: ServerResponse): void => {
-    void (async () => {
-      const raw = await readBody(req, 200_000)
-      const tracePath = join(homedir(), '.dsh', 'focus-trace.log')
-      appendFileSync(tracePath, `${new Date().toISOString()} ${raw}\n`, 'utf8')
-      ctx.logger.info(`[focus-trace] 已写入 ${tracePath}`)
-      sendJson(res, 200, { ok: true, path: tracePath })
-    })().catch((error: unknown) => {
-      sendJson(res, 500, { ok: false, error: String((error as Error)?.message ?? error) })
-    })
-  }
-
-  ctx.effect(
-    () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/focus-trace`, handler: handleFocusTrace }),
-    `${name}: focus-trace route (临时诊断)`,
   )
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/settings`, handler: handleSettings }),
