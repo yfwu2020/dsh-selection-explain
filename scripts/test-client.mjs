@@ -399,9 +399,58 @@ function withAbort(response, signal) {
  */
 const micStub = { value: { ok: true, available: false, capturing: false, processes: [], reason: 'stub-default' } }
 
+/**
+ * 设置桩：离线跑的时候给客户端一份"读得到"的设置。
+ * 默认空对象 = 所有设置都用各自的出厂默认（不写值的键，客户端按默认关处理）。
+ * 用例里改 settingsStub.value 之后要调 hook.reloadSettings() ——
+ * 客户端只在启动时读一次设置，不重读的话改桩值不会生效。
+ */
+const settingsStub = { value: {} }
+
 const routeFetch = (input, init) => {
   const url = typeof input === 'string' ? input : ''
   // 麦克风占用：读的是 host 上的 CoreAudio 探针，测试里由 micStub 决定
+  // ⚠️ 联机模式（SEL_ORIGIN 指向真宿主）下**不能**用空桩顶掉设置请求：
+  // 真实 spec 必须由宿主下发，否则设置页一个分类都画不出来（踩过）。
+  // 但用例又需要"临时把某个设置打开" —— 所以联机模式改成**代理**：
+  // 先读真宿主的设置拿到真实 spec，只把 values 里被用例覆盖的键换掉。
+  if (
+    process.env.SEL_ORIGIN &&
+    Object.keys(settingsStub.value).length &&
+    url.indexOf('/selection-explain/api/settings') >= 0 &&
+    !(init && init.method === 'POST')
+  ) {
+    return fetch(ORIGIN + '/selection-explain/api/settings', { headers: { accept: 'application/json' } })
+      .then((response) => response.json())
+      .then((payload) =>
+        new Response(
+          JSON.stringify(
+            Object.assign({}, payload, {
+              values: Object.assign({}, payload.values, settingsStub.value),
+            }),
+          ),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+      )
+  }
+  if (!process.env.SEL_ORIGIN && url.indexOf('/selection-explain/api/settings') >= 0) {
+    if (init && init.method === 'POST') {
+      try {
+        // ⚠️ 这个 API 的 POST body 是 { values: {...} } 包一层的（宿主侧见 handleSettings），
+        // 不是扁平对象 —— 按扁平解析会一个键都读不到。
+        var posted = JSON.parse(String(init.body || '{}'))
+        Object.assign(settingsStub.value, (posted && posted.values) || {})
+      } catch (error) {
+        /* 桩不校验，校验是宿主的事（见 test-settings-host.mjs） */
+      }
+    }
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({ ok: true, groups: [], values: Object.assign({}, settingsStub.value), defaults: {} }),
+        { headers: { 'content-type': 'application/json' } },
+      ),
+    )
+  }
   if (url.endsWith('/selection-explain/api/mic')) {
     return Promise.resolve(
       new Response(JSON.stringify(micStub.value), { headers: { 'content-type': 'application/json' } }),
@@ -2123,6 +2172,57 @@ assert(
   globalThis.__modelCatalogFixture = fixture
   hook.close()
   await new Promise((r) => setTimeout(r, 30))
+}
+
+// ⚠️ 这一段必须跑在**新加载**的宜主上（test-settings-host.mjs 用隔离目录新加载一份）。
+// 直接对着“正在跑的插件”跑会失败 —— 那是上一次启动时加载的旧代码，
+// 除非用户重载过插件。
+if (process.env.SEL_SETTINGS_ONLY === '1') {
+  // 新增的两个语音收尾开关（界面 · 语音输入）：必须在 spec 里、默认关、且只收布尔值。
+  // 尽量只读：唯一的写操作是"true → 再写回 false"，写完回到默认，不留副作用。
+  {
+    const payload = await (await fetch(ORIGIN + '/selection-explain/api/settings', { headers: { accept: 'application/json' } })).json()
+    const items = (payload.groups || []).reduce((acc, g) => acc.concat(g.items || []), [])
+    const cancelItem = items.find((i) => i.key === 'voiceCancelOnSilence')
+    const sendItem = items.find((i) => i.key === 'voiceAutoSend')
+    assert(
+      '语音收尾的两个开关都在设置 spec 里（kind=switch，挂在界面组）',
+      !!cancelItem && !!sendItem && cancelItem.kind === 'switch' && sendItem.kind === 'switch',
+      JSON.stringify({ cancel: !!cancelItem, send: !!sendItem, kinds: [cancelItem && cancelItem.kind, sendItem && sendItem.kind] }),
+    )
+    assert(
+      '两个语音开关**默认都是关**',
+      payload.defaults.voiceCancelOnSilence === false && payload.defaults.voiceAutoSend === false,
+      JSON.stringify({ cancel: payload.defaults.voiceCancelOnSilence, send: payload.defaults.voiceAutoSend }),
+    )
+    const bad = await (await fetch(ORIGIN + '/selection-explain/api/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ values: { voiceAutoSend: 'yes' } }),
+    })).json()
+    assert(
+      '语音开关只接受布尔值（字符串被拒，且不写进配置）',
+      bad.ok === false && (bad.rejected || []).some((r) => r.key === 'voiceAutoSend'),
+      JSON.stringify(bad).slice(0, 140),
+    )
+    await fetch(ORIGIN + '/selection-explain/api/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ values: { voiceAutoSend: true, voiceCancelOnSilence: true } }),
+    })
+    const on = await (await fetch(ORIGIN + '/selection-explain/api/settings', { headers: { accept: 'application/json' } })).json()
+    assert(
+      '两个语音开关能写回并读回',
+      on.values.voiceAutoSend === true && on.values.voiceCancelOnSilence === true,
+      JSON.stringify({ send: on.values.voiceAutoSend, cancel: on.values.voiceCancelOnSilence }),
+    )
+    // 写回默认，不留副作用
+    await fetch(ORIGIN + '/selection-explain/api/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ values: { voiceAutoSend: false, voiceCancelOnSilence: false } }),
+    })
+  }
 }
 
 if (process.env.SEL_SETTINGS_ONLY === '1') {
@@ -5067,6 +5167,74 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
     )
   } else {
     assert('Esc 收起语音卡', false, '卡片没能再次打开：' + JSON.stringify(reopened))
+  }
+
+  // ── 两个新开关（设置页「界面 · 语音输入」，默认都关）──
+  // 默认关时的行为（"卡片留着"）上面已经验过；这里验打开后的两条收尾。
+  // 设置只在启动时读一次，所以改完桩值必须 hook.reloadSettings()。
+  {
+    const IME = [{ pid: 513, bundleId: 'com.bytedance.inputmethod.doubaoime', name: 'DoubaoIme' }]
+
+    // ① 「空录音时收起」：开麦结束、一个字都没说 → 收起，且走取消路径（关机动画）
+    settingsStub.value = { voiceCancelOnSilence: true }
+    hook.reloadSettings()
+    await sleep(320)
+    hook.close()
+    micStub.value = { ok: true, available: true, capturing: true, processes: IME, reason: '' }
+    await sleep(420)
+    hook.voiceCardOpen()
+    if (box) {
+      box.value = ''
+      box.dispatch('input', { target: box, preventDefault() {}, stopPropagation() {} })
+    }
+    await sleep(80)
+    micStub.value = { ok: true, available: true, capturing: false, processes: [], reason: '' }
+    await sleep(420)
+    const cardSilent = find('dsh-sel-vcard')
+    assert(
+      '开关打开：空录音结束时卡片收起',
+      hook.voiceCard().open === false,
+      JSON.stringify(hook.voiceCard()),
+    )
+    assert(
+      '空录音收起走的是**取消**路径（关机动画 data-off=a，不是无声消失）',
+      !!cardSilent && cardSilent.getAttribute('data-off') === 'a',
+      cardSilent ? String(cardSilent.getAttribute('data-off')) : 'no card',
+    )
+
+    // ② 「说完直接发送」：开麦结束、有字 → 自动发送（卡片收起 + 开面板）
+    settingsStub.value = { voiceAutoSend: true }
+    hook.reloadSettings()
+    await sleep(320)
+    await sleep(780) // 等上一条关机动画彻底收尾
+    hook.close()
+    await sleep(20)
+    micStub.value = { ok: true, available: true, capturing: true, processes: IME, reason: '' }
+    await sleep(420)
+    hook.voiceCardOpen()
+    if (box) {
+      box.value = '这是在推迟还是提前？'
+      box.dispatch('input', { target: box, preventDefault() {}, stopPropagation() {} })
+    }
+    await sleep(80)
+    const panelBefore = panel.style.display
+    micStub.value = { ok: true, available: true, capturing: false, processes: [], reason: '' }
+    await sleep(420)
+    assert(
+      '开关打开：有字时自动发送（卡片收起）',
+      hook.voiceCard().open === false,
+      JSON.stringify(hook.voiceCard()),
+    )
+    assert(
+      '自动发送走的是**发送**路径（面板开着；发送前是收着的）',
+      panel.style.display !== 'none' && panelBefore === 'none',
+      'before=' + String(panelBefore) + ' after=' + String(panel.style.display),
+    )
+
+    // 收尾：设置清回默认，别影响后面的用例
+    settingsStub.value = {}
+    hook.reloadSettings()
+    await sleep(300)
   }
 
   micStub.value = { ok: true, available: false, capturing: false, processes: [], reason: 'stub-default' }

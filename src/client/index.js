@@ -4706,9 +4706,25 @@ window.__ModuleLoader__.load({
             }
             // 没人在录了：这一次录音结束，解除抑制（下一次开麦才允许再弹）
             vcardState.suppress = false
-            // 开麦结束了：**不退出**。卡片留着、焦点也留着 —— 一个字都没说时用户可以接着手动打字；
-            // "框突然消失"比"没听到就自己打"更打断人。只把"在听"停掉（见 markVCardListening）。
-            if (vcardState.open) markVCardListening(false)
+            if (!vcardState.open) return
+            // 开麦结束了。出厂行为是**不退出**：卡片留着、焦点也留着 ——
+            // 一个字都没说时用户可以接着手动打字；"框突然消失"比"没听到就自己打"更打断人。
+            // 只把"在听"停掉（见 markVCardListening）。
+            //
+            // 两个可选的收尾行为（设置页「界面 · 语音输入」，默认都关，见 Config 注释）：
+            //   · voiceAutoSend：有字 → 等于替用户点了发送键（发送自己会关卡片、开小窗）；
+            //   · voiceCancelOnSilence：没字 → 等于替用户按了 Esc（带关机动画）。
+            // 都从 settingsLive 现读，所以设置一改下一次松手就生效；读不到时（还没加载完）按默认关处理。
+            var spoken = String((vcardBox && vcardBox.value) || '').trim()
+            if (spoken && settingsLive.voiceAutoSend === true) {
+              sendVCard()
+              return
+            }
+            if (!spoken && settingsLive.voiceCancelOnSilence === true) {
+              closeVCard(true)
+              return
+            }
+            markVCardListening(false)
           })
           .catch(function () {
             vcardState.busy = false
@@ -10770,6 +10786,11 @@ window.__ModuleLoader__.load({
           }
         },
         /** 手工把卡打开/收起/发送（测试与调试用；正常路径由麦克风轮询驱动）。 */
+        /** 重新拉一次设置（测试用：设置只在启动时读一次，桩里改完值要能刷新）。 */
+        reloadSettings: function () {
+          loadSettings(true)
+          return Object.assign({}, settingsLive)
+        },
         voiceCardOpen: function () {
           openVCard()
           return window.__dshSelectionExplain.voiceCard()

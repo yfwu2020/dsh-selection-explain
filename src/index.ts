@@ -343,6 +343,21 @@ export interface Config {
    * 默认 10 秒：短于这个数会显得"刚看一眼就没了"，长了又失去"收起来不挡视线"的意义。
    */
   pillIdleMs: number
+  /**
+   * 开麦结束、**一个字都没说**时，直接收起临时输入框。
+   *
+   * 默认关：出厂行为是"卡片留着" —— 一个字没说时用户可以接着手动打字，
+   * "框突然消失"比"没听到就自己打"更打断人（用户原话）。
+   * 开了之后等于替用户按了 Esc（带关机动画），适合"语音只是偶尔用一下"的人。
+   */
+  voiceCancelOnSilence: boolean
+  /**
+   * 开麦结束、**已经说出文字**时，直接发送（跳过手动点发送键）。
+   *
+   * 默认关：发送是不可逆的（会开小窗、开始一次真实请求），默认让人看一眼再点。
+   * 开了之后等于替用户点了发送键，适合"说完就想直接追问"的人。
+   */
+  voiceAutoSend: boolean
 }
 
 /** 配置 schema（缺省值即推荐值）。 */
@@ -412,6 +427,10 @@ export const Config = z.object({
   pillEnabled: z.boolean().default(true),
   /** 静置收球时长（毫秒）——默认 10 秒，见 Config 注释。 */
   pillIdleMs: z.number().min(2000).max(600000).default(10000),
+  /** 空录音是否收起卡片（默认关，见 Config 注释）。 */
+  voiceCancelOnSilence: z.boolean().default(false),
+  /** 有字是否自动发送（默认关，见 Config 注释）。 */
+  voiceAutoSend: z.boolean().default(false),
 })
 
 /** 联网类工具名：用来判断"首选里的联网工具在不在"。 */
@@ -1404,6 +1423,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
     bridgeSidebarPreview: rawConfig?.bridgeSidebarPreview ?? true,
     pillEnabled: rawConfig?.pillEnabled ?? true,
     pillIdleMs: rawConfig?.pillIdleMs ?? 10000,
+    voiceCancelOnSilence: rawConfig?.voiceCancelOnSilence ?? false,
+    voiceAutoSend: rawConfig?.voiceAutoSend ?? false,
   }
 
   /**
