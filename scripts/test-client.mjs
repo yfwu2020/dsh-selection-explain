@@ -2626,6 +2626,8 @@ for (let i = 0; i < 120 && hook.state().phase !== 'done'; i += 1) await sleep(20
   for (let i = 0; i < 80 && sent.length === beforeWeb; i += 1) await sleep(20)
   const webPayload = sent[sent.length - 1] || {}
   assert('开启后追问请求带 webAnswer: true', webPayload.webAnswer === true, JSON.stringify({ webAnswer: webPayload.webAnswer, q: webPayload.question }))
+  // 网页输出还得带上当前深浅：深色 Harness 里给一张白底页面会很刺眼（host 据此注入配色规范）
+  assert('网页输出带上当前主题（dark/light）', webPayload.theme === 'dark' || webPayload.theme === 'light', JSON.stringify(webPayload.theme))
   await waitIdle()
   hook.setWebMode(false)
   const beforePlain = sent.length

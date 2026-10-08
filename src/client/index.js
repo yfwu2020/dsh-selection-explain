@@ -7337,6 +7337,23 @@ window.__ModuleLoader__.load({
       }
 
 
+      /**
+       * 当前面板底色是深还是浅（'dark' | 'light'）。
+       *
+       * 用途：网页输出时告诉 host 该按哪套配色生成页面 —— 深色 Harness 里给一张白底页面很刺眼。
+       * 判据优先用面板自己的 `data-theme`（painter 已经按实际底色设过），
+       * 没有就现算一次 `isDarkSurface`，再不行按浅色兜底。
+       */
+      function currentSurfaceTheme() {
+        try {
+          var attr = panel && panel.getAttribute ? panel.getAttribute('data-theme') : ''
+          if (attr === 'dark' || attr === 'light') return attr
+          return isDarkSurface(panel) ? 'dark' : 'light'
+        } catch (error) {
+          return 'light'
+        }
+      }
+
       /** 当前可见的原文。
        *
        * 以前这里会剥掉"伪造的工具调用"文本（DSML / ds_safety_tool_call），
@@ -8330,7 +8347,8 @@ window.__ModuleLoader__.load({
             sessionId: panelOrCurrentSessionId(),
             question: sent,
             history: history,
-            ...(state.webAnswer ? { webAnswer: true } : {}),
+            // 网页输出要跟着当前深浅走：深色 Harness 里给一张白底页面会很刺眼
+            ...(state.webAnswer ? { webAnswer: true, theme: currentSurfaceTheme() } : {}),
             ...(state.modelChoice ? { provider: state.modelChoice.provider, model: state.modelChoice.model } : {}),
             ...(state.effort ? { effort: state.effort } : {}),
             ...(state.toolDigest ? { toolDigest: state.toolDigest } : {}),

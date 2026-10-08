@@ -490,6 +490,8 @@ interface AnalyzeBody {
   model?: unknown
   /** 网页模式（小窗里的开关）：复杂问题默认用网页回答，并注入设计规范。 */
   webAnswer?: unknown
+  /** 客户端上报的当前深浅（'dark' | 'light'）：网页输出按它选配色。 */
+  theme?: unknown
   /** 追问模式下用户这一轮的问题。 */
   question?: unknown
   /** 追问模式下的历史轮次：[{ role: 'user' | 'assistant', text }]。 */
@@ -3250,7 +3252,14 @@ export function apply(ctx: Context, rawConfig: Config): void {
         '不要为了用网页而用网页，也不要把简单问题包装成页面。\n' +
         '拿不准时按"能不能用一小段话讲清"来判断：能，就文字。\n' +
         '用网页时，页面会渲染在大约 **500px 宽**的小窗里，按下面的设计规范做：\n\n' +
-        skill
+        skill +
+        (body.theme === 'dark'
+          ? '\n\n【配色：跟随宿主，当前是深色】宿主界面此刻是**深色模式**，页面必须是深色：' +
+            '背景用 #16181c~#1f2126 一档，正文 #e6e6e6，次级文字 #a1a1aa，分隔线 rgba(255,255,255,.12)，' +
+            '卡片底色比页面底再亮一档。**不要白底黑字**，也不要只写 prefers-color-scheme（宿主的深浅由用户设置决定，与系统不一定一致）。\n'
+          : '\n\n【配色：跟随宿主，当前是浅色】宿主界面此刻是**浅色模式**，页面必须是浅色：' +
+            '背景用 #ffffff~#f7f7f8 一档，正文 #171717，次级文字 #6b7280，分隔线 rgba(0,0,0,.10)，' +
+            '卡片底色与页面底拉开一档。**不要深色底**，也不要只写 prefers-color-scheme（宿主的深浅由用户设置决定，与系统不一定一致）。\n')
     }
     const fileRule = wantsFsTools
       ? `\n\n【文件访问】你可以用 read/grep/glob 查看当前项目里的文件（范围：${readRoot || '不限'}）。超出该范围的路径会被拒绝；引用文件内容时只取必要的一两行，不要整段粘贴。`
