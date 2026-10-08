@@ -3833,6 +3833,27 @@ export function apply(ctx: Context, rawConfig: Config): void {
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/analyze`, handler: handleAnalyze }),
     `${name}: analyze route`,
   )
+  /**
+   * ⚠️ **临时测量路由（测完删掉）**。
+   *
+   * 目的：确定"松手之后输入法的智能整理要多久、走不走 composition API"，
+   * 好把客户端那个 VOICE_SETTLE_MS 从猜的 700ms 换成测出来的值。
+   * 客户端把一串带时间戳的事件 POST 上来，这里原样写进宿主日志（用户不用开 devtools）。
+   */
+  const handleVoiceTrace = (req: IncomingMessage, res: ServerResponse): void => {
+    void (async () => {
+      const raw = await readBody(req, 200_000)
+      ctx.logger.info(`[voice-trace] ${raw}`)
+      sendJson(res, 200, { ok: true })
+    })().catch((error: unknown) => {
+      sendJson(res, 500, { ok: false, error: String((error as Error)?.message ?? error) })
+    })
+  }
+
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/voice-trace`, handler: handleVoiceTrace }),
+    `${name}: voice-trace route (临时测量)`,
+  )
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/settings`, handler: handleSettings }),
     `${name}: settings route`,

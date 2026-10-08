@@ -96,6 +96,54 @@ window.__ModuleLoader__.load({
     var VOICE_SETTLE_MAX_MS = 4000
     /** 观察文字有没有变的间隔（毫秒）。用轮询而不是 input 事件：智能整理可能是直接改 value，不一定发事件。 */
     var VOICE_SETTLE_POLL_MS = 200
+    /**
+     * ⚠️ **临时测量开关（测完删掉）**：把"松手之后输入框发生了什么"记成一串带时间戳的事件，
+     * 收尾时 POST 给宿主的 /voice-trace 路由（写进宿主日志）。
+     *
+     * 要回答两个问题：
+     *   1. 智能整理从松手到停止改写，实际间隔是多少（好定 VOICE_SETTLE_MS，现在是猜的 700ms）；
+     *   2. 它走不走 composition API（走的话就能用 compositionend 当准确信号，不用猜窗口）。
+     */
+    var VOICE_TRACE = true
+    var VOICE_TRACE_PATH = '/selection-explain/api/voice-trace'
+    var voiceTrace = null
+    /** 最后一次测量（发出去之后留一份，便于回看/断言）。 */
+    var lastVoiceTrace = null
+
+    function tracePush(kind, detail) {
+      if (!VOICE_TRACE || !voiceTrace) return
+      var item = { t: Date.now() - voiceTrace.startedAt, kind: kind }
+      if (detail) {
+        Object.keys(detail).forEach(function (key) {
+          item[key] = detail[key]
+        })
+      }
+      voiceTrace.events.push(item)
+    }
+
+    function traceStart(text) {
+      if (!VOICE_TRACE) return
+      voiceTrace = { startedAt: Date.now(), micOffText: String(text || ''), events: [] }
+    }
+
+    function traceFinish(decision, text) {
+      if (!VOICE_TRACE || !voiceTrace) return
+      voiceTrace.decision = decision
+      voiceTrace.finalText = String(text || '')
+      voiceTrace.durationMs = Date.now() - voiceTrace.startedAt
+      var payload = voiceTrace
+      lastVoiceTrace = payload
+      voiceTrace = null
+      try {
+        fetch(VOICE_TRACE_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        }).catch(function () {})
+      } catch (error) {
+        /* 测量失败不影响功能 */
+      }
+    }
     /** 正文最多 4 行（约 93px），再多内部滚动并停在最新一行（与追问框同一套）。 */
     var VCARD_TEXT_MAX = 96
     /**
@@ -4059,6 +4107,18 @@ window.__ModuleLoader__.load({
         listen(vcardBox, 'input', syncVCardText)
         // 输入法上屏有的环境只发 compositionend 而不发 input：补一次（幂等）
         listen(vcardBox, 'compositionend', syncVCardText)
+        if (VOICE_TRACE) {
+          // 临时测量：输入法的智能整理如果走合成 API，这里能看到；直接改 value 的话看不到
+          listen(vcardBox, 'input', function (event) {
+            tracePush('input', { inputType: String((event && event.inputType) || '') })
+          })
+          listen(vcardBox, 'compositionstart', function () {
+            tracePush('compositionstart', {})
+          })
+          listen(vcardBox, 'compositionend', function (event) {
+            tracePush('compositionend', { data: String((event && event.data) || '') })
+          })
+        }
         listen(vcardBox, 'keyup', syncVCardText)
         listen(vcardBox, 'keydown', function (event) {
           // Enter 发送、Shift+Enter 换行；输入法确认候选词的那个 Enter 不算（与追问框同一套判断）
@@ -4635,6 +4695,9 @@ window.__ModuleLoader__.load({
           clearInterval(vcardState.settleTimer)
           vcardState.settleTimer = null
         }
+        // ⚠️ 这里**不**上报测量：停表既发生在"正常决定之前"（那一拍马上就要 finishVoiceSettle），
+        // 也发生在"被提前打断"时。在这里上报会把决策一律记成 stopped（踩过）。
+        // 提前打断的场景由调用方各自上报（closeVCard / 新录音）。
         vcardState.settleLastText = ''
         vcardState.settleStableAt = 0
         vcardState.settleDeadline = 0
@@ -4645,13 +4708,16 @@ window.__ModuleLoader__.load({
         if (!vcardState.open) return
         var spoken = String(text || '').trim()
         if (spoken && settingsLive.voiceAutoSend === true) {
+          traceFinish('send', spoken)
           sendVCard()
           return
         }
         if (!spoken && settingsLive.voiceCancelOnSilence === true) {
+          traceFinish('cancel', spoken)
           closeVCard(true)
           return
         }
+        traceFinish('none', spoken)
         markVCardListening(false)
       }
 
@@ -4664,6 +4730,7 @@ window.__ModuleLoader__.load({
       function startVoiceSettle() {
         stopVoiceSettle()
         vcardState.settleLastText = String((vcardBox && vcardBox.value) || '')
+        traceStart(vcardState.settleLastText)
         vcardState.settleStableAt = Date.now()
         vcardState.settleDeadline = Date.now() + VOICE_SETTLE_MAX_MS
         vcardState.settleTimer = setInterval(function () {
@@ -4675,6 +4742,7 @@ window.__ModuleLoader__.load({
           var text = String((vcardBox && vcardBox.value) || '')
           if (text !== vcardState.settleLastText) {
             // 还在改写（智能整理）→ 重新计时，继续等
+            tracePush('value', { from: vcardState.settleLastText, to: text })
             vcardState.settleLastText = text
             vcardState.settleStableAt = now
             return
@@ -4687,6 +4755,8 @@ window.__ModuleLoader__.load({
 
       function closeVCard(animate) {
         if (!vcardState.open) return
+        // 临时测量：观察被提前打断（Esc / 点空白）也把数据发出去，别丢
+        if (voiceTrace) traceFinish('closed', vcardBox ? vcardBox.value : '')
         vcardState.open = false
         vcardState.range = null
         stopVoiceSettle()
@@ -4776,6 +4846,7 @@ window.__ModuleLoader__.load({
             if (matchingIme(data)) {
               if (vcardState.suppress) return
               // 又开始录了：上一次的"等定稿"作废
+              if (voiceTrace) traceFinish('superseded', vcardBox ? vcardBox.value : '')
               stopVoiceSettle()
               if (!vcardState.open) openVCard()
               else markVCardListening(true)
@@ -4801,8 +4872,11 @@ window.__ModuleLoader__.load({
             // settleFor 一直停在几十毫秒，卡片永远不动作）。
             if (
               !vcardState.settleTimer &&
-              (settingsLive.voiceAutoSend === true || settingsLive.voiceCancelOnSilence === true)
+              (VOICE_TRACE || settingsLive.voiceAutoSend === true || settingsLive.voiceCancelOnSilence === true)
             ) {
+              // 注意：临时测量期间即使两个开关都关着也会挂观察 —— 这样用户不用改设置就能测。
+              // 这种情况下 finishVoiceSettle 只会落到 "什么都不做"（就是原来的 markVCardListening(false)），
+              // 行为不变。
               startVoiceSettle()
             }
           })
@@ -10869,6 +10943,10 @@ window.__ModuleLoader__.load({
           }
         },
         /** 手工把卡打开/收起/发送（测试与调试用；正常路径由麦克风轮询驱动）。 */
+        /** 临时测量：当前这次"松手之后"的事件记录（测完删掉）。 */
+        voiceTrace: function () {
+          return voiceTrace || lastVoiceTrace
+        },
         /** 重新拉一次设置（测试用：设置只在启动时读一次，桩里改完值要能刷新）。 */
         reloadSettings: function () {
           loadSettings(true)

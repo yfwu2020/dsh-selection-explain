@@ -5252,6 +5252,14 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       JSON.stringify(sent.slice(sentBefore).map((b) => b && b.text)),
     )
 
+    // 临时测量链路自检（测完和 VOICE_TRACE 一起删）
+    const trace = hook.voiceTrace()
+    assert(
+      '临时测量：记录到了"松手之后的变化"，且带上最终文字',
+      !!trace && Array.isArray(trace.events) && trace.events.some((e) => e.kind === 'value') && trace.finalText === cleaned,
+      trace ? JSON.stringify({ decision: trace.decision, durationMs: trace.durationMs, events: trace.events.map((e) => e.t + ':' + e.kind) }) : 'none',
+    )
+
     // 收尾：设置清回默认，别影响后面的用例
     settingsStub.value = {}
     hook.reloadSettings()
