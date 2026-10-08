@@ -132,8 +132,8 @@ export const SETTINGS_GROUPS: SettingGroup[] = [
       {"key": "bridgeSidebarPreview", "kind": "switch", "label": "侧边栏网页划词", "hint": "选中文字后显示「解读」按钮。"},
       {"key": "pillEnabled", "kind": "switch", "label": "显示状态胶囊", "hint": "显示最近一次解读状态，点击打开或收起小窗。"},
       {"key": "pillIdleMs", "kind": "number", "label": "自动收起时间", "hint": "空闲达到此时长后缩成小球。", "unit": "秒", "min": 2000, "max": 600000, "step": 1000, "scale": 1000, "enabledBy": "pillEnabled"},
-      {"key": "voiceCancelOnSilence", "kind": "switch", "label": "空录音时收起", "hint": "开麦结束、一个字都没说时，直接收起卡片（等于替你按了 Esc）。默认关：卡片留着，可以接着手动打字。"},
-      {"key": "voiceAutoSend", "kind": "switch", "label": "说完直接发送", "hint": "开麦结束、已经说出文字时，直接发送（等于替你点了发送键）。默认关：发送不可逆，先看一眼再点。"},
+      {"key": "voiceCancelOnSilence", "kind": "switch", "label": "空录音时收起", "hint": "开麦结束、一个字都没说时收起卡片（等于替你按了 Esc）。会先等文字定稿约 0.7 秒 —— 输入法松手后还会做一次智能整理。默认关：卡片留着，可以接着手动打字。"},
+      {"key": "voiceAutoSend", "kind": "switch", "label": "说完直接发送", "hint": "开麦结束、已经说出文字时自动发送（等于替你点了发送键）。会先等文字定稿（输入法的智能整理改写完）再发。默认关：发送不可逆，先看一眼再点。"},
     ],
   },
   {

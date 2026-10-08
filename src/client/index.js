@@ -83,6 +83,19 @@ window.__ModuleLoader__.load({
      * 宽度不再随选区位置变化。
      */
     var VCARD_W = 360
+    /**
+     * 松手之后，等文字"定稿"的静默时长（毫秒）。
+     *
+     * 为什么不能一松手就决定：豆包在语音结束时还会做一次**智能整理** ——
+     * 标点、口头语、错别字都会被改写，**输入框内容会再变一次**（用户实测）。
+     * 一松手就发送，发出去的是没整理过的草稿；一松手就按"空录音"取消，
+     * 会把马上就要落进来的整理结果一起丢掉。所以两个收尾行为都必须等定稿。
+     */
+    var VOICE_SETTLE_MS = 700
+    /** 等定稿的**最长时间**（毫秒）：整理一直不停的话，到点就按当前内容决定，不能无限等。 */
+    var VOICE_SETTLE_MAX_MS = 4000
+    /** 观察文字有没有变的间隔（毫秒）。用轮询而不是 input 事件：智能整理可能是直接改 value，不一定发事件。 */
+    var VOICE_SETTLE_POLL_MS = 200
     /** 正文最多 4 行（约 93px），再多内部滚动并停在最新一行（与追问框同一套）。 */
     var VCARD_TEXT_MAX = 96
     /**
@@ -4018,6 +4031,11 @@ window.__ModuleLoader__.load({
         /** 关机动画的兜底定时器 / animationend 句柄。 */
         crtTimer: null,
         crtHandler: null,
+        /** "等文字定稿"的观察（松手后豆包还会智能整理，见 VOICE_SETTLE_MS）。 */
+        settleTimer: null,
+        settleLastText: '',
+        settleStableAt: 0,
+        settleDeadline: 0,
       }
 
       function ensureVCard() {
@@ -4611,10 +4629,67 @@ window.__ModuleLoader__.load({
        * 其余路径（发送 / 调试钩子）立刻收掉。
        * **不还回「✦ 解读」浮标**：取消就是取消，要解读就重新划一次。
        */
+      /** 停掉"等文字定稿"的观察（幂等）。 */
+      function stopVoiceSettle() {
+        if (vcardState.settleTimer) {
+          clearInterval(vcardState.settleTimer)
+          vcardState.settleTimer = null
+        }
+        vcardState.settleLastText = ''
+        vcardState.settleStableAt = 0
+        vcardState.settleDeadline = 0
+      }
+
+      /** 文字定稿后，才真正执行收尾（发送 / 取消 / 什么都不做）。 */
+      function finishVoiceSettle(text) {
+        if (!vcardState.open) return
+        var spoken = String(text || '').trim()
+        if (spoken && settingsLive.voiceAutoSend === true) {
+          sendVCard()
+          return
+        }
+        if (!spoken && settingsLive.voiceCancelOnSilence === true) {
+          closeVCard(true)
+          return
+        }
+        markVCardListening(false)
+      }
+
+      /**
+       * 松手之后，等文字定稿再决定收尾动作。
+       *
+       * 判据是"连续 VOICE_SETTLE_MS 没有变化"，最长等 VOICE_SETTLE_MAX_MS。
+       * 豆包的智能整理通常会在这段窗口里把内容改写一到两次；每改一次就重新计时。
+       */
+      function startVoiceSettle() {
+        stopVoiceSettle()
+        vcardState.settleLastText = String((vcardBox && vcardBox.value) || '')
+        vcardState.settleStableAt = Date.now()
+        vcardState.settleDeadline = Date.now() + VOICE_SETTLE_MAX_MS
+        vcardState.settleTimer = setInterval(function () {
+          if (!vcardState.open) {
+            stopVoiceSettle()
+            return
+          }
+          var now = Date.now()
+          var text = String((vcardBox && vcardBox.value) || '')
+          if (text !== vcardState.settleLastText) {
+            // 还在改写（智能整理）→ 重新计时，继续等
+            vcardState.settleLastText = text
+            vcardState.settleStableAt = now
+            return
+          }
+          if (now - vcardState.settleStableAt < VOICE_SETTLE_MS && now < vcardState.settleDeadline) return
+          stopVoiceSettle()
+          finishVoiceSettle(text)
+        }, VOICE_SETTLE_POLL_MS)
+      }
+
       function closeVCard(animate) {
         if (!vcardState.open) return
         vcardState.open = false
         vcardState.range = null
+        stopVoiceSettle()
         stopMicWatch()
         // 形变还没结束就被关掉时，正文宽度可能还钉着 —— 一并解开
         unpinVCardBox()
@@ -4700,6 +4775,8 @@ window.__ModuleLoader__.load({
             }
             if (matchingIme(data)) {
               if (vcardState.suppress) return
+              // 又开始录了：上一次的"等定稿"作废
+              stopVoiceSettle()
               if (!vcardState.open) openVCard()
               else markVCardListening(true)
               return
@@ -4715,16 +4792,19 @@ window.__ModuleLoader__.load({
             //   · voiceAutoSend：有字 → 等于替用户点了发送键（发送自己会关卡片、开小窗）；
             //   · voiceCancelOnSilence：没字 → 等于替用户按了 Esc（带关机动画）。
             // 都从 settingsLive 现读，所以设置一改下一次松手就生效；读不到时（还没加载完）按默认关处理。
-            var spoken = String((vcardBox && vcardBox.value) || '').trim()
-            if (spoken && settingsLive.voiceAutoSend === true) {
-              sendVCard()
-              return
-            }
-            if (!spoken && settingsLive.voiceCancelOnSilence === true) {
-              closeVCard(true)
-              return
-            }
+            // ⚠️ 松手这一刻**文字还没定稿**：豆包紧接着还会做一次智能整理，会改写输入框内容。
+            // 所以两个收尾行为都不在这里执行，而是先挂上"等定稿"的观察（见 startVoiceSettle）。
             markVCardListening(false)
+            // ⚠️ 这个分支在"麦克风关着"期间**每一拍都会走**（200ms 一次），
+            // 所以必须幂等：已经在等定稿就不要再 startVoiceSettle() ——
+            // 那会把"稳定起点"重置，永远等不到 VOICE_SETTLE_MS（实测就是这个坑：
+            // settleFor 一直停在几十毫秒，卡片永远不动作）。
+            if (
+              !vcardState.settleTimer &&
+              (settingsLive.voiceAutoSend === true || settingsLive.voiceCancelOnSilence === true)
+            ) {
+              startVoiceSettle()
+            }
           })
           .catch(function () {
             vcardState.busy = false
@@ -10771,6 +10851,9 @@ window.__ModuleLoader__.load({
             open: vcardState.open,
             closing: vcardState.closing,
             watching: !!vcardState.timer,
+            /** 正在等文字定稿（松手后输入法还会智能整理）；settleFor = 距上次文字变化多久（毫秒）。 */
+            settling: !!vcardState.settleTimer,
+            settleFor: vcardState.settleStableAt ? Date.now() - vcardState.settleStableAt : -1,
             voiced: !!(vcard && vcard.getAttribute('data-voiced') === '1'),
             hasText: !!(vcard && vcard.getAttribute('data-text') === '1'),
             text: vcardBox ? vcardBox.value : '',

@@ -5171,16 +5171,19 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
 
   // ── 两个新开关（设置页「界面 · 语音输入」，默认都关）──
   // 默认关时的行为（"卡片留着"）上面已经验过；这里验打开后的两条收尾。
-  // 设置只在启动时读一次，所以改完桩值必须 hook.reloadSettings()。
+  // 关键：松手**不是**决定时刻 —— 输入法在松手后还会做一次智能整理（改写输入框内容），
+  // 所以两个动作都要等文字定稿（连续 VOICE_SETTLE_MS=700ms 没变化）才发生。
   {
     const IME = [{ pid: 513, bundleId: 'com.bytedance.inputmethod.doubaoime', name: 'DoubaoIme' }]
+    const recording = { ok: true, available: true, capturing: true, processes: IME, reason: '' }
+    const stopped = { ok: true, available: true, capturing: false, processes: [], reason: '' }
 
-    // ① 「空录音时收起」：开麦结束、一个字都没说 → 收起，且走取消路径（关机动画）
+    // ① 「空录音时收起」：松手后不立刻收，等定稿才收（而且走取消路径）
     settingsStub.value = { voiceCancelOnSilence: true }
     hook.reloadSettings()
     await sleep(320)
     hook.close()
-    micStub.value = { ok: true, available: true, capturing: true, processes: IME, reason: '' }
+    micStub.value = recording
     await sleep(420)
     hook.voiceCardOpen()
     if (box) {
@@ -5188,47 +5191,65 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       box.dispatch('input', { target: box, preventDefault() {}, stopPropagation() {} })
     }
     await sleep(80)
-    micStub.value = { ok: true, available: true, capturing: false, processes: [], reason: '' }
-    await sleep(420)
-    const cardSilent = find('dsh-sel-vcard')
+    micStub.value = stopped
+    await sleep(300)
     assert(
-      '开关打开：空录音结束时卡片收起',
-      hook.voiceCard().open === false,
+      '松手后**不会立刻**取消（要等文字定稿：输入法松手后还会智能整理）',
+      hook.voiceCard().open === true,
       JSON.stringify(hook.voiceCard()),
     )
+    await sleep(900)
+    const cardSilent = find('dsh-sel-vcard')
+    assert('定稿后才取消（空录音）', hook.voiceCard().open === false, JSON.stringify(hook.voiceCard()))
     assert(
       '空录音收起走的是**取消**路径（关机动画 data-off=a，不是无声消失）',
       !!cardSilent && cardSilent.getAttribute('data-off') === 'a',
       cardSilent ? String(cardSilent.getAttribute('data-off')) : 'no card',
     )
 
-    // ② 「说完直接发送」：开麦结束、有字 → 自动发送（卡片收起 + 开面板）
+    // ② 「说完直接发送」：松手后等定稿才发；期间模拟豆包的智能整理改写输入框
     settingsStub.value = { voiceAutoSend: true }
     hook.reloadSettings()
     await sleep(320)
-    await sleep(780) // 等上一条关机动画彻底收尾
+    await sleep(800) // 等上一条关机动画彻底收尾
     hook.close()
     await sleep(20)
-    micStub.value = { ok: true, available: true, capturing: true, processes: IME, reason: '' }
+    micStub.value = recording
     await sleep(420)
     hook.voiceCardOpen()
     if (box) {
-      box.value = '这是在推迟还是提前？'
+      box.value = '这是 在推迟 还是提前' // 整理之前：有空格、没标点
       box.dispatch('input', { target: box, preventDefault() {}, stopPropagation() {} })
     }
     await sleep(80)
-    const panelBefore = panel.style.display
-    micStub.value = { ok: true, available: true, capturing: false, processes: [], reason: '' }
-    await sleep(420)
+    const sentBefore = sent.length
+    micStub.value = stopped
+    await sleep(300)
     assert(
-      '开关打开：有字时自动发送（卡片收起）',
+      '松手后**不会立刻**发送（要等文字定稿）',
+      hook.voiceCard().open === true && sent.length === sentBefore,
+      JSON.stringify(hook.voiceCard()) + ' / sent=' + String(sent.length - sentBefore),
+    )
+    // 模拟智能整理：松手之后才改写输入框，而且是**直接改 value、不派发 input**（真实情况就是这样）
+    const cleaned = '这是在推迟还是提前，release notes 要不要一起改。'
+    if (box) box.value = cleaned
+    await sleep(300)
+    assert(
+      '整理过程中仍然不发（每改一次就重新计时）',
+      hook.voiceCard().open === true && sent.length === sentBefore,
+      JSON.stringify(hook.voiceCard()) + ' / sent=' + String(sent.length - sentBefore),
+    )
+    await sleep(900)
+    assert(
+      '定稿后才发送（卡片收起）',
       hook.voiceCard().open === false,
       JSON.stringify(hook.voiceCard()),
     )
     assert(
-      '自动发送走的是**发送**路径（面板开着；发送前是收着的）',
-      panel.style.display !== 'none' && panelBefore === 'none',
-      'before=' + String(panelBefore) + ' after=' + String(panel.style.display),
+      '发出去的是**整理之后**的文字（不是松手那一刻的草稿）',
+      // 问题在 question 字段（text 是选中的原文）
+      sent.slice(sentBefore).some((b) => b && (b.question === cleaned || b.text === cleaned)),
+      JSON.stringify(sent.slice(sentBefore).map((b) => b && b.text)),
     )
 
     // 收尾：设置清回默认，别影响后面的用例
