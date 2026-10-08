@@ -4835,6 +4835,24 @@ window.__ModuleLoader__.load({
         if (!vcardState.open) return
         vcardState.open = false
         vcardState.range = null
+        // ⚠️ 必须**显式 blur**，不能只把卡片 display:none 掉。
+        //
+        // 输入法（豆包）的输入上下文是绑在"当前那个文本输入框"上的：卡片打开时我们把焦点
+        // 抢给它，上下文就绑在了卡片的 textarea 上；卡片只是被隐藏时，它**仍然是输入法的输入框**
+        // （display:none 不会让 macOS 的输入法自己解绑）。于是之后焦点虽然转到小窗输入框，
+        // 输入法的合成仍然发生在卡片上 —— 用户实测的症状就是：
+        //   小窗输入框能收到 keydown，却**永远收不到 beforeinput**（输入法合成），
+        //   打不进字、也没有插入符。
+        // focus-trace 抓到的实测序列：
+        //   临时卡片上有 beforeinput（正常）→ 小窗输入框上只有 keydown（打不进）
+        //   → 焦点回到宿主输入框后 beforeinput 立刻恢复。
+        if (vcardBox && typeof vcardBox.blur === 'function') {
+          try {
+            vcardBox.blur()
+          } catch (error) {
+            /* 桩环境 */
+          }
+        }
         stopVoiceSettle()
         stopMicWatch()
         // 形变还没结束就被关掉时，正文宽度可能还钉着 —— 一并解开
@@ -7016,8 +7034,19 @@ window.__ModuleLoader__.load({
         focusComposerOnce()
       }
 
-      /** 把光标交给输入框（preventScroll：别因为聚焦把页面滚一下）。 */
+      /**
+       * 把光标交给输入框（preventScroll：别因为聚焦把页面滚一下）。
+       *
+       * 先 blur 再 focus：如果输入法的输入上下文还绑在别处（见 closeVCard 里的注释 ——
+       * 典型就是刚收起的临时卡片），单叫 focus() 不足以让它重新绑定到这个输入框；
+       * 走一次 blur → focus 才能把输入法重新挂过来。已经是当前焦点时，blur 是无害的。
+       */
       function focusAskBox() {
+        try {
+          askBox.blur()
+        } catch (error) {
+          /* 桩环境 */
+        }
         try {
           askBox.focus({ preventScroll: true })
         } catch (error) {
