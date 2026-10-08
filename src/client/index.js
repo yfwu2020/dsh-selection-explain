@@ -3625,15 +3625,9 @@ window.__ModuleLoader__.load({
        */
       /** 开窗后"还没聚焦过输入框"（见 focusComposerOnce）。 */
       var askFocusPending = false
-      /**
-       * 这一次开窗是"语音卡直接进追问"（用户在临时输入框里说完 → 发送）。
-       *
-       * 为什么需要它：下面那条"用户正在别处打字就不抢焦点"的守卫，会把**我们自己那张
-       * 正在关闭的卡片**当成"别处" —— 发送时焦点正停在卡片的输入框上，
-       * 于是自动聚焦被挡掉（用户实测："发送后焦点没进小窗输入框"）。
-       * 这种情况必须抢：卡片马上就没了，焦点本就该交给小窗。
-       */
-      var askFocusFromVoiceCard = false
+      /** 调试：最后一次"没聚焦"卡在哪一步（-1 表示聚焦成功）。 */
+      /** 调试：最后一次"没聚焦"卡在哪一步（成功时是 'ok'）。自动聚焦这类问题很难从外部看出来。 */
+      var focusBail = ''
       var offSlot = null
       if (ctx.slots && typeof ctx.slots.inject === 'function') {
         try {
@@ -5618,7 +5612,6 @@ window.__ModuleLoader__.load({
         // 这一轮是不是"从语音卡直接进追问"：paint() 靠它决定不画翻译/详解两节、
         // 并且让追问输入框直接可见（见 state.voiceAsk 的几处用法）
         state.voiceAsk = !!(options && options.askFirst)
-        askFocusFromVoiceCard = state.voiceAsk
         // 记下"这次划词发生在哪个会话"——小窗后续所有按会话解析的东西都用它
         panelSessionId = currentSessionId()
         state.payload = buildPayload(text, context, label)
@@ -6848,28 +6841,33 @@ window.__ModuleLoader__.load({
        *   · preventScroll：别因为聚焦把页面滚一下（划完词页面跳走最难受）。
        */
       function focusComposerOnce() {
+        focusBail = 'pending=' + String(askFocusPending) + ' panel=' + String(panelOpen)
         if (!askFocusPending || !panelOpen) return
+        focusBail = 'composerVisible=' + String(composerVisible()) + ' panelSel=' + String(hasPanelSelection())
         if (!composerVisible()) return
         // 小窗里正有一段选中文字（用户正在划词、准备点「❝ 引用」）：**这一下聚焦会把选区清掉**。
         // 让位给用户，并且不再补焦 —— 引用浮标是这个功能的主入口，不能因为抢焦点而让它消失。
         //（实测：开窗后那一帧恰好落在"首轮刚出完"的自动聚焦上，划好的词会瞬间没了。）
         if (hasPanelSelection()) {
+          focusBail = '让位给小窗里的选区'
           askFocusPending = false
           return
         }
         var active = document.activeElement
         var inside = active && (active === panel || active === askBox || (panel.contains && panel.contains(active)))
+                focusBail = 'active=' + String((active && active.className) || active) + ' typing=' + String(isTypingTarget(active))
         // 只有"人家正在别处打字"才值得让路。
         // 注意别把普通的按钮焦点也算进去：点浮标时焦点正好落在浮标那个 <button> 上
         //（Chrome 点按钮会给它焦点），照"非 body 就不抢"的老写法会把我们自己挡在门外 ——
         // 这正是"开窗后没有自动聚焦"的原因。
-        // 语音卡那条路例外：所谓"别处"就是正在关闭的卡片自己（见 askFocusFromVoiceCard）
-        if (!inside && !askFocusFromVoiceCard && isTypingTarget(active)) {
+        if (!inside && isTypingTarget(active)) {
+          focusBail = '让位给别处正在打字（' + String((active && active.tagName) || active) + '.' + String((active && active.className) || '')
+            + ' 链=' + (function(){ var n=active, out=[]; while(n && out.length<5){ out.push(String(n.className||n.tagName)+':'+String((n.style&&n.style.display)||'')); n=n.parentNode } return out.join('>') })() + '）'
           askFocusPending = false // 人家真的在别处打字，这次开窗就不再抢
           return
         }
         askFocusPending = false
-        askFocusFromVoiceCard = false
+        focusBail = 'ok'
         focusAskBox()
       }
 
@@ -6889,8 +6887,30 @@ window.__ModuleLoader__.load({
       function isTypingTarget(node) {
         if (!node || node === askBox) return false
         var tag = String(node.tagName || '').toLowerCase()
-        if (tag === 'input' || tag === 'textarea' || tag === 'select') return true
-        return node.isContentEditable === true
+        var editable = tag === 'input' || tag === 'textarea' || tag === 'select' || node.isContentEditable === true
+        if (!editable) return false
+        // 已经隐藏起来的输入框不算"人家正在打字"：它既收不到键盘，也不该挡住我们聚焦。
+        // 典型场景就是临时语音卡收起后焦点还挂在它的 textarea 上（display:none 的元素
+        // 在部分浏览器里仍然是 activeElement）。
+        if (typeof node.getClientRects === 'function' && node.getClientRects().length === 0) return false
+        return true
+      }
+
+      /**
+       * 小窗自己的规则：**一轮输出结束（成功或失败）后，把光标交回输入框**。
+       *
+       * 为什么是规则而不是某个入口的特例：不管是划词解读、语音卡直接追问、还是打开历史，
+       * 用户看完一轮结果之后，下一步十有八九是接着追问 —— 光标本来就该在那儿。
+       *
+       * 与"开窗时聚焦一次"（focusComposerOnce 的首次调用）的区别：
+       * 那次可能因为"人家正在别处打字"而作废并就此作罢；这次是每轮结束都重新申请，
+       * 仍然尊重同一条礼貌规则（不抢正在别处打字的人的焦点）。
+       */
+      function askFocusAfterTurn() {
+        focusBail = 'panelOpen=' + String(panelOpen)
+        if (!panelOpen) return
+        askFocusPending = true
+        focusComposerOnce()
       }
 
       /** 把光标交给输入框（preventScroll：别因为聚焦把页面滚一下）。 */
@@ -7384,6 +7404,8 @@ window.__ModuleLoader__.load({
         state.raw = ''
         state.phase = 'done'
         state.error = ''
+        // 打开历史/命中缓存也是"已完成"状态 → 光标交回输入框
+        askFocusAfterTurn()
         state.sharedCache = false
         state.fromCache = source === 'local'
         state.fromHistory = source !== 'local'
@@ -8490,6 +8512,8 @@ window.__ModuleLoader__.load({
           // 用户收起小窗导致的中止：不算失败，记成"已停止"，重开还能接着看
           state.phase = state.aborted ? 'paused' : 'error'
           state.error = state.aborted ? '' : message
+          // 一轮失败/中止结束 → 同样把光标交回输入框，用户可以直接重试或换个问法
+          askFocusAfterTurn()
           state.toolBusy = false
           state.elapsed = Date.now() - state.startedAt
           stopTicker()
@@ -8500,6 +8524,8 @@ window.__ModuleLoader__.load({
 
         function succeed() {
           state.phase = 'done'
+          // 一轮成功结束 → 光标交回输入框（小窗自己的规则，见 askFocusAfterTurn）
+          askFocusAfterTurn()
           // 按内容归并（stage 只决定"请求哪一节"，不决定结果落到哪个格子）：
           // 模型偶尔会两节都写，或没写标题，这里都要接住
           var parsed = splitSections(visibleRaw())
@@ -10921,6 +10947,10 @@ window.__ModuleLoader__.load({
           }
         },
         /** 手工把卡打开/收起/发送（测试与调试用；正常路径由麦克风轮询驱动）。 */
+        /** 调试：最后一次自动聚焦卡在哪一步。 */
+        focusBail: function () {
+          return focusBail
+        },
         /** 重新拉一次设置（测试用：设置只在启动时读一次，桩里改完值要能刷新）。 */
         reloadSettings: function () {
           loadSettings(true)

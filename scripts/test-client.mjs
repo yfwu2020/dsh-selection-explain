@@ -29,7 +29,25 @@ class FakeEl {
     // 真实 DOM 里元素是 1、文本是 3：插件里有 target.nodeType 之类的判断，桩要跟上
     this.nodeType = String(tag) === '#text' ? 3 : 1
     this.children = []
+    // style 用**带 display setter** 的对象：真实浏览器里元素被 display:none 之后会失焦
+    // （activeElement 回到 body）。桩原来是个裸对象，不模拟这件事 —— 于是"卡片收起后
+    // 焦点还挂在它隐藏的 textarea 上"，让后面的"别处正在打字就不抢焦点"守卫误判
+    // （实测：自动聚焦规则一直不生效，查了半天才发现是桩不忠实）。
+    var displayValue = ''
     this.style = {}
+    Object.defineProperty(this.style, 'display', {
+      get: function () {
+        return displayValue
+      },
+      set: function (value) {
+        displayValue = value
+        if (value === 'none' && documentStub && documentStub.activeElement === this) {
+          documentStub.activeElement = body
+        }
+      },
+      enumerable: true,
+      configurable: true,
+    })
     this.dataset = {}
     this.attrs = {}
     this._text = ''
@@ -109,7 +127,17 @@ class FakeEl {
     }
     return { left: 40, top: 100, right: 500, bottom: 400, width: 460, height: 300 }
   }
+  /**
+   * 真实 DOM：display:none 的元素没有盒子（空列表）——**祖先隐藏也算**。
+   * 插件判断"这个输入框是不是还在页面上"靠它（临时语音卡收起时隐藏的是卡片，不是里面的输入框）。
+   * ⚠️ 合并进原来那个固定矩形版本：类方法同名会**后者覆盖前者**，留两个的话新写的会被悄悄盖掉（踩过）。
+   */
   getClientRects() {
+    var node = this
+    while (node) {
+      if (node.style && node.style.display === 'none') return []
+      node = node.parentNode
+    }
     return [{ left: 40, top: 100, right: 200, bottom: 118, width: 160, height: 18 }]
   }
   get firstChild() {
@@ -5106,26 +5134,35 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
 
   // 发送：跳过翻译与详解，直接进追问
   const beforeSend = hook.state()
-  // 焦点探针：发送后焦点应该落到小窗输入框，方便直接继续追问
+  // 焦点探针：小窗自己的规则 —— **一轮输出结束（成功或失败）后**把光标交回输入框。
+  // 注意这不是"从临时卡进小窗"的特例：划词解读、打开历史都走同一条规则。
   let askFocused = 0
   const realAskFocus = askBox.focus
   askBox.focus = () => {
     askFocused += 1
   }
-  // 模拟真实情况：发送那一刻焦点正在临时输入框里（桩里 focus 是空实现，默认 activeElement 不是它）
+  // 发送那一刻焦点确实在卡片输入框里（真实状态）——正是它让"开窗聚焦"那次让了路
   documentStub.activeElement = box
   if (sendBtn) sendBtn.dispatch('click', { target: sendBtn, preventDefault() {}, stopPropagation() {} })
   await sleep(80)
   const afterSend = hook.state()
   assert('发送后卡片收起', hook.voiceCard().open === false, JSON.stringify(hook.voiceCard()))
+  // 卡片隐藏后浏览器会把焦点收回 body —— 桩里不会（它不模拟"隐藏即失焦"），
+  // 所以这里持续保持这个**忠实状态**：否则焦点会一直挂在已隐藏的卡片输入框上，
+  // 后面的礼貌守卫就会误判成"人家正在别处打字"（实测就是这么卡的）。
+  for (let i = 0; i < 60 && hook.state().phase !== 'done'; i += 1) {
+    documentStub.activeElement = body
+    await sleep(60)
+  }
+  documentStub.activeElement = body
+  assert('（前提）这一轮输出已经结束', hook.state().phase === 'done', String(hook.state().phase))
   assert(
-    '从临时输入框发送后，焦点自动落到小窗输入框（可以直接继续追问）',
+    '小窗规则：一轮输出结束后，光标自动回到小窗输入框（可以直接继续追问）',
     askFocused > 0,
-    'focus 次数=' + String(askFocused),
+    'focus 次数=' + String(askFocused) + ' 卡在=' + String(hook.focusBail()),
   )
   askBox.focus = realAskFocus
-  // ⚠️ 还原焦点：不还原的话它会一直停在卡片输入框上，后面所有用例开卡片都会被
-  // "用户正在别处打字"那条守卫挡掉（实测：这么一改，后面 6 条全红）。
+  // 还原焦点：不还原的话它会一直停在别处，后面用例开卡片会被"别处正在打字"那条守卫挡掉
   documentStub.activeElement = body
   assert('跳过解读：翻译一节是空的（没请求 /analyze）', !afterSend.translation, JSON.stringify(beforeSend) + ' → ' + JSON.stringify(afterSend))
   assert('直接进了追问：面板开着', panel.style.display !== 'none', String(panel.style.display))
