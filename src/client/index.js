@@ -3628,6 +3628,50 @@ window.__ModuleLoader__.load({
       /** 调试：最后一次"没聚焦"卡在哪一步（-1 表示聚焦成功）。 */
       /** 调试：最后一次"没聚焦"卡在哪一步（成功时是 'ok'）。自动聚焦这类问题很难从外部看出来。 */
       var focusBail = ''
+      /**
+       * ⚠️ **临时诊断（查完删掉）**：把"一轮结束后焦点到底在谁身上"记成时间线，回传宿主写文件。
+       * 用户是在 DeepSeek Harness 桌面版里用，让他开控制台不方便 —— 让插件自己把现场写下来。
+       */
+      var FOCUS_TRACE = true
+      var FOCUS_TRACE_PATH = '/selection-explain/api/focus-trace'
+      var focusTrace = null
+      var focusTraceAt = 0
+
+      function focusTraceSnapshot(label) {
+        if (!FOCUS_TRACE || !focusTrace) return
+        var active = document.activeElement
+        focusTrace.push({
+          t: Date.now() - focusTraceAt,
+          label: label,
+          active: active ? String(active.className || active.tagName || active.nodeName || '?') : 'null',
+          pending: !!askFocusPending,
+          open: !!panelOpen,
+          visible: composerVisible(),
+          bail: focusBail,
+        })
+      }
+
+      function focusTraceBegin() {
+        if (!FOCUS_TRACE) return
+        focusTrace = []
+        focusTraceAt = Date.now()
+        focusTraceSnapshot('收尾开始')
+      }
+
+      function focusTraceEnd() {
+        if (!FOCUS_TRACE || !focusTrace) return
+        var payload = focusTrace
+        focusTrace = null
+        try {
+          fetch(FOCUS_TRACE_PATH, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ at: focusTraceAt, points: payload }),
+          }).catch(function () {})
+        } catch (error) {
+          /* 诊断失败不影响功能 */
+        }
+      }
       var offSlot = null
       if (ctx.slots && typeof ctx.slots.inject === 'function') {
         try {
@@ -6908,10 +6952,23 @@ window.__ModuleLoader__.load({
        */
       function askFocusAfterTurn() {
         focusBail = 'panelOpen=' + String(panelOpen)
-        if (!panelOpen) return
+        focusTraceBegin()
+        if (!panelOpen) {
+          focusTraceEnd()
+          return
+        }
         askFocusPending = true
         focusComposerOnce()
+        focusTraceSnapshot('focusComposerOnce 之后')
         ensureAskFocusLanded()
+        // 临时诊断：再看 +120ms / +400ms 两拍，抓"事后被谁抢走"
+        later(function () {
+          focusTraceSnapshot('+120ms')
+        }, 120)
+        later(function () {
+          focusTraceSnapshot('+400ms')
+          focusTraceEnd()
+        }, 400)
       }
 
       /**
