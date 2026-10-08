@@ -5648,7 +5648,17 @@ window.__ModuleLoader__.load({
         var cached = cache.get(cacheKey)
         state.cacheKey = cacheKey
         state.turns = []
-        // 换了一段选中文字 = 换了一次对话：上一段攒的引用不该跟过来
+        // 换了一段选中文字 = 换了一次对话：上一段攒的引用**和检索结果**都不该跟过来。
+        //
+        // ⚠️ toolDigest 原来漏在这一步（属遗漏，不是有意保留）。它的语义单位就是"一次对话"：
+        // 按历史条目落盘、按条目恢复，宿主发给模型的措辞也是「本会话已经查到的结果」。
+        // 但 state 是整页只建一次的，而它**只在历史回放时被恢复、别处从不复位** ——
+        // 于是只要某段对话搜过东西（比如问过一次新闻），之后**每一段新选区**的追问
+        // 都会把那段结果一并带给模型（用户实测："每次后面都带着我之前搜的新闻"）。
+        //
+        // 只清 digest、不动 tools/toolResidue/thought：那几个在请求开始处另有一份复位，
+        // digest 则该在这里（以及历史回放）动。
+        state.toolDigest = ''
         clearQuotes()
         state.parts = (cached && cached.parts) || { translation: '', detail: '' }
         state.stage = ''
@@ -7795,6 +7805,23 @@ window.__ModuleLoader__.load({
           })
       }
 
+      /**
+       * 撤掉"进行中"类提示：`conclusion-retry`（"查询已完成，正在整理结论…"）是**过程状态** ——
+       * 正文一开始到达、或者本轮结束，它就该消失。
+       *
+       * 踩过的坑：这条提示写进 answerTurn.notice 之后，**全代码没有任何地方清掉它** ——
+       * 回答早就写完了，黄条还挂在气泡上（用户截图报的现象）。
+       * 其余 notice（effort-clamped / effort-rejected / reasoning-leak）是"这条回答发生了什么"的
+       * 说明，属于该留下的信息，不在这里清。
+       */
+      function clearTransientNotice(turn) {
+        if (!turn) return false
+        if (String(turn.noticeCode || '') !== 'conclusion-retry') return false
+        turn.notice = ''
+        turn.noticeCode = ''
+        return true
+      }
+
       /** 工具名 → 中文标签（只用于内部摘要，不上界面）。 */
       function toolLabel(name) {
         // 小窗默认用的是 free-search 插件的工具（见 host 侧 toolNames 注释）
@@ -8307,6 +8334,8 @@ window.__ModuleLoader__.load({
           clearInterval(timer)
           state.asking = false
           state.toolBusy = false
+          // 本轮结束了："正在整理结论…"这类过程提示一律撤掉（结论轮一个字没吐时也别留着）
+          clearTransientNotice(answerTurn)
           answerTurn.asking = false
           answerTurn.streaming = false
           clearWaiting(chatLog)
@@ -8381,6 +8410,8 @@ window.__ModuleLoader__.load({
                   continue
                 }
                 if (message.type === 'delta') {
+                  // 正文开始到达 → 撤掉"正在整理结论…"这类过程提示（以前它永远挂着）
+                  clearTransientNotice(answerTurn)
                   if (!answerTurn.text.trim()) answerTurn.asking = false
                   answerTurn.text += message.text
                   scheduleTurnsRender()
@@ -8417,6 +8448,8 @@ window.__ModuleLoader__.load({
                   // host 发现档位被上游拒绝（400/401/500）会自动去掉档位重试，这里如实告诉用户，
                   // 并把"这个模型不吃这个档位"记下来 —— 下次不再拿同一个组合去撞墙
                   answerTurn.notice = String(message.text || '')
+                  // 记下 code：'conclusion-retry' 是"进行中"状态，正文到了/本轮结束就该撤
+                  answerTurn.noticeCode = String(message.code || '')
                   if ((message.code === 'effort-rejected' || message.code === 'reasoning-leak') && message.tier) {
                     rememberBadTier(message.tier, message.code === 'reasoning-leak' ? 'leak' : 'rejected')
                     // 回退到默认档：清掉持久化的选择，胶囊随即显示配置里的默认档

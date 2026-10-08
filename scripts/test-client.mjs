@@ -664,6 +664,38 @@ const routeFetch = (input, init) => {
     })
     return Promise.resolve(new Response(stream, { headers: { 'content-type': 'text/event-stream' } }))
   }
+  // 首轮夹具：给"摘要继承用例"用（用未知文本会走真实模型，首轮一直不结束 → 追问被拒）
+  if (body && body.text === 'digest-probe' && !body.question) {
+    const payload = [
+      `data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', stage: 'translation' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'delta', text: '## 翻译\n摘要用例的翻译\n' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'done', chars: 8 })}\n\n`,
+    ].join('')
+    return Promise.resolve(new Response(payload, { headers: { 'content-type': 'text/event-stream' } }))
+  }
+  // 结论轮提示：notice 先到、正文 350ms 后到 —— 用来验"提示在正文到达后消失"（附带的探针）
+  if (body && body.question && body.text === 'notice-probe') {
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      async start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', mode: 'chat', effort: 'high' })}\n\n`))
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'notice', code: 'conclusion-retry', text: '查询已完成，正在整理结论…' })}\n\n`))
+        await new Promise((r) => setTimeout(r, 350))
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'delta', text: '这是结论。' })}\n\n`))
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done', chars: 5 })}\n\n`))
+        controller.close()
+      },
+    })
+    return Promise.resolve(new Response(stream, { headers: { 'content-type': 'text/event-stream' } }))
+  }
+  if (body && body.text === 'notice-probe' && !body.question) {
+    const payload = [
+      `data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', stage: 'translation' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'delta', text: '## 翻译\n提示用例的翻译\n' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'done' })}\n\n`,
+    ].join('')
+    return Promise.resolve(new Response(payload, { headers: { 'content-type': 'text/event-stream' } }))
+  }
   // 分三段、每段隔 60ms 的追问流：用来验证滚动跟随（贴底→跟随 / 翻上去→不拽回）
   // 追问等待特效用例：首字前静默 450ms，用来观察气泡里的等待动画与走秒
   if (body && body.question && body.text === 'wait-ask-probe') {
@@ -3267,6 +3299,35 @@ assert('回放走的是历史，不重新调模型', sent.length === sentBeforeR
   hook.askValue('')
   hook.close()
   await sleep(40)
+}
+
+// 换选区不该继承上一段对话的检索结果（toolDigest 的语义单位是"一次对话"）
+// 踩过的坑：state 整页只建一次，digest 只在历史回放时按条目恢复、别处从不复位 ——
+// 于是某段对话搜过新闻之后，之后每一段新选区的追问都带着那段新闻。
+{
+  hook.open('digest-probe', '', '摘要继承用例')
+  for (let i = 0; i < 80 && hook.state().phase !== 'done'; i += 1) await sleep(20)
+  assert('新面板开局：检索摘要是空的', hook.state().toolDigest === '', JSON.stringify(String(hook.state().toolDigest).slice(0, 40)))
+  hook.ask('旁白追问')
+  for (let i = 0; i < 80 && !hook.state().toolDigest; i += 1) await sleep(20)
+  assert('工具检索会累进检索摘要', String(hook.state().toolDigest).length > 0, JSON.stringify(String(hook.state().toolDigest).slice(0, 40)))
+  hook.open('digest-probe-2', '', '另一段选区')
+  assert('换选区后不继承上一段的检索摘要', hook.state().toolDigest === '', JSON.stringify(String(hook.state().toolDigest).slice(0, 60)))
+  for (let i = 0; i < 40; i += 1) await sleep(20)
+}
+
+// 结论轮提示（"查询已完成，正在整理结论…"）在正文到达后必须消失
+// 踩过的坑：它写进 answerTurn.notice 之后再没有任何地方清掉 —— 回答早就写完了，黄条还挂着。
+{
+  const noticeEl = () => Array.from(walk(panel)).find((n) => String(n.className).indexOf('dsh-sel-notice') >= 0)
+  hook.open('notice-probe', '', '提示用例')
+  for (let i = 0; i < 80 && hook.state().phase !== 'done'; i += 1) await sleep(20)
+  hook.ask('这个提示会不会一直挂着')
+  for (let i = 0; i < 30 && !noticeEl(); i += 1) await sleep(20)
+  assert('结论轮提示会出现（过程状态）', !!noticeEl(), noticeEl() ? JSON.stringify(textOf(noticeEl()).slice(0, 20)) : '未找到')
+  for (let i = 0; i < 60 && noticeEl(); i += 1) await sleep(20)
+  assert('正文到达后提示消失（不再永远挂着）', !noticeEl(), noticeEl() ? JSON.stringify(textOf(noticeEl()).slice(0, 20)) : '')
+  for (let i = 0; i < 40; i += 1) await sleep(20)
 }
 
 // ⚠️ 临时诊断的用例（定位完随诊断一起删）：宿主在 done 里回传的逐轮诊断必须留下来。
