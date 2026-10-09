@@ -2388,11 +2388,6 @@ window.__ModuleLoader__.load({
         tools: [],
         /** 工具结果摘要：追问时带给模型，避免重复联网。 */
         toolDigest: '',
-        /**
-         * ⚠️ **临时诊断（定位完就删）**：宿主每轮的诊断（见 recordTurnDiag）。
-         * 随历史一起落盘，用来查"25% 的回答结尾是半个句子"到底掐在哪一环。
-         */
-        diagLog: [],
         /** 有工具正在跑（等待提示说"正在检索资料"，不显示是哪个工具、查了什么）。 */
         toolBusy: false,
         /** 模型输出了伪造的工具调用格式（已被剥掉）。 */
@@ -7405,75 +7400,6 @@ window.__ModuleLoader__.load({
       //   ③ 「最近聊过的」列表，点一条把那段对话整个调回来
 
       /** 把当前状态存成一条历史（整段覆盖）。 */
-      /**
-       * ⚠️ **临时诊断（定位完就删）**：把宿主每轮的诊断留下来。
-       *
-       * 为什么需要：历史里 24 条助手回答有 6 条（25%）**结尾是半个句子**，
-       * 而"为什么被掐断"每次都只能靠猜 —— 宿主其实每轮都发了这些字段
-       * （round / wrapUp / raw / emitted / think / residueDropped / finish / tools / outTokens），
-       * 客户端**收下就扔了**。这里把它们挂到本轮，并随历史落盘（history.json 的 diagLog），
-       * 复现一次就能判：是残渣过滤器吃了尾巴、是输出上限/上游掐流、还是轮次预算用尽。
-       */
-      function recordTurnDiag(message) {
-        if (!state.diagLog) state.diagLog = []
-        var rounds = Array.isArray(message.rounds) ? message.rounds : []
-        var slim = rounds.map(function (r) {
-          return {
-            round: r && r.round,
-            wrapUp: r && r.wrapUp,
-            ms: r && r.ms,
-            raw: r && r.raw,
-            emitted: r && r.emitted,
-            think: r && r.think,
-            residueDropped: r && r.residueDropped,
-            finish: r && r.finish,
-            tools: r && r.tools,
-            outTokens: r && r.outTokens,
-          }
-        })
-        var question = ''
-        var tail = ''
-        for (var i = state.turns.length - 1; i >= 0; i -= 1) {
-          var t = state.turns[i]
-          if (!question && t.role === 'user') question = String(t.text || '').slice(0, 60)
-          if (!tail && t.role === 'assistant') tail = String(t.text || '').slice(-28)
-          if (question && tail) break
-        }
-        var answerLen = 0
-        var notice = ''
-        for (var j = state.turns.length - 1; j >= 0; j -= 1) {
-          if (state.turns[j].role === 'assistant') {
-            answerLen = String(state.turns[j].text || '').length
-            notice = String(state.turns[j].notice || '')
-            break
-          }
-        }
-        state.diagLog.push({
-          at: Date.now(),
-          phase: state.phase,
-          question: question,
-          chars: message.chars,
-          stopped: !!state.stopped,
-          residue: !!message.residue,
-          answerTail: tail,
-          rounds: slim,
-          // ⚠️ 临时诊断（定位完就删）：结论轮（正文真正的来源）与交叉验证
-          conclusion: message.conclusion
-            ? {
-                tried: !!message.conclusion.tried,
-                chars: message.conclusion.chars,
-                rounds: message.conclusion.rounds,
-                error: message.conclusion.error,
-                finish: message.conclusion.finish,
-                outTokens: message.conclusion.outTokens,
-              }
-            : null,
-          answerLen: answerLen, // 客户端实际拿到的字数 vs 宿主的 chars
-          notice: notice,
-        })
-        if (state.diagLog.length > 12) state.diagLog = state.diagLog.slice(-12)
-      }
-
       function saveHistory(options) {
         var payload = state.payload
         if (!payload || !state.cacheKey) return
@@ -7497,7 +7423,6 @@ window.__ModuleLoader__.load({
               parts: state.parts,
               turns: turns,
               toolDigest: state.toolDigest,
-              diagLog: state.diagLog || [], // ⚠️ 临时诊断（定位完就删）
               pinned: !!(options && options.pinned),
             }),
           }).catch(function () {
@@ -8508,13 +8433,7 @@ window.__ModuleLoader__.load({
                     writeStore(EFFORT_KEY, '')
                     paintModelPill()
                   }
-                  scheduleTurnsRender()
-                } else if (message.type === 'done') {
-                  // ⚠️ 临时诊断（定位完就删）：追问这条流原来**没有 done 分支**
-                  // （它靠流结束触发 finish()），所以逐轮诊断在这里全丢了 ——
-                  // 而"半个句子"恰恰发生在追问上。
-                  recordTurnDiag(message)
-                } else if (message.type === 'error') {
+                  scheduleTurnsRender()                } else if (message.type === 'error') {
                   finish(message.message || '模型返回错误')
                 }
               }
@@ -8815,7 +8734,6 @@ window.__ModuleLoader__.load({
             } else if (message.type === 'error') {
               fail(message.message || '模型返回错误')
             } else if (message.type === 'done') {
-              recordTurnDiag(message) // ⚠️ 临时诊断（定位完就删）
               succeed()
             }
           }
@@ -11426,7 +11344,6 @@ window.__ModuleLoader__.load({
             tools: state.tools.length,
             toolBusy: state.toolBusy,
             toolDigest: state.toolDigest,
-            diagLog: state.diagLog, // ⚠️ 临时诊断（定位完就删）
             /** 自检用：有没有在飞的请求 / 是不是"收起小窗中止"的那一轮。 */
             thought: state.thought,
             status: state.lastStatus,

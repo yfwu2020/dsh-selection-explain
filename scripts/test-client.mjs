@@ -638,12 +638,9 @@ const routeFetch = (input, init) => {
     const payload = [
       `data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', stage: 'translation' })}\n\n`,
       `data: ${JSON.stringify({ type: 'delta', text: '## 翻译\n语音用例的翻译\n' })}\n\n`,
-      // ⚠️ 临时诊断（定位完随诊断一起删）：模拟宿主在 done 里回传的逐轮诊断
-      `data: ${JSON.stringify({
-        type: 'done',
-        chars: 8,
-        rounds: [{ round: 0, wrapUp: false, ms: 1234, raw: 140, emitted: 120, think: 0, residueDropped: 7, finish: 'tool_calls', tools: 1, outTokens: 42 }],
-      })}\n\n`,
+      `data: ${JSON.stringify({ type: 'done', chars: 8 })}
+
+`,
     ].join('')
     return Promise.resolve(new Response(payload, { headers: { 'content-type': 'text/event-stream' } }))
   }
@@ -717,13 +714,9 @@ const routeFetch = (input, init) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', mode: 'chat', effort: 'low' })}\n\n`))
         await new Promise((r) => setTimeout(r, 450))
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'delta', text: '等到了回答。' })}\n\n`))
-        // ⚠️ 临时诊断（定位完随诊断一起删）：追问流的 done 也带上逐轮诊断
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-          type: 'done',
-          chars: 6,
-          rounds: [{ round: 1, wrapUp: true, ms: 900, raw: 260, emitted: 240, think: 12, residueDropped: 0, finish: 'stop', tools: 0, outTokens: 233 }],
-          conclusion: { tried: true, chars: 17, rounds: 1, error: '', finish: 'length', outTokens: 777 },
-        })}\n\n`))
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}
+
+`))
         controller.close()
       },
     })
@@ -3083,35 +3076,6 @@ assert('追问等待期不重建节点（动画不被打断）', classesIn(askBu
 await sleep(400)
 const botBubbles = askBubbles()
 assert('首个字到达后等待特效换成正文', classesIn(botBubbles[botBubbles.length - 1], 'dsh-sel-wait').length === 0 && textOf(botBubbles[botBubbles.length - 1]).indexOf('等到了回答') >= 0, JSON.stringify(textOf(botBubbles[botBubbles.length - 1]).slice(0, 24)))
-
-// ⚠️ 临时诊断的断言（定位完随诊断一起删）：**追问**这条流也要留下逐轮诊断。
-// 背景：追问的 SSE 原来没有 done 分支（靠流结束触发 finish），诊断在这里全丢 ——
-// 而"25% 的回答结尾是半个句子"恰恰发生在追问上。
-{
-  for (let i = 0; i < 60 && !(hook.state().diagLog || []).some((d) => d.question); i += 1) await sleep(20)
-  const dgAsk = (hook.state().diagLog || []).filter((d) => d.question).pop()
-  assert(
-    '追问流也记下逐轮诊断（带当轮问题）',
-    !!dgAsk && dgAsk.question === '这个要等多久？' && dgAsk.rounds.length === 1 && dgAsk.rounds[0].finish === 'stop',
-    JSON.stringify(dgAsk && { q: dgAsk.question, tail: dgAsk.answerTail, rounds: dgAsk.rounds }),
-  )
-  assert(
-    '诊断记下了回答结尾（判断"是不是半个句子"靠它）',
-    !!dgAsk && typeof dgAsk.answerTail === 'string' && dgAsk.answerTail.indexOf('等到了回答') >= 0,
-    JSON.stringify(dgAsk && dgAsk.answerTail),
-  )
-  assert(
-    '诊断记下结论轮的结束原因（正文真正的来源，也是截断的嫌疑地）',
-    !!dgAsk && dgAsk.conclusion && dgAsk.conclusion.finish === 'length' && dgAsk.conclusion.chars === 17,
-    JSON.stringify(dgAsk && dgAsk.conclusion),
-  )
-  assert(
-    '诊断带上交叉验证字段（客户端实际字数 vs 宿主的 chars）',
-    !!dgAsk && dgAsk.answerLen === '等到了回答。'.length && dgAsk.chars === 6,
-    JSON.stringify(dgAsk && { answerLen: dgAsk.answerLen, chars: dgAsk.chars }),
-  )
-}
-
 // ───────────────────────── 本地缓存：同一个词再点一次必须秒回 ─────────────────────────
 hook.open('缓存探测词', '上下文片段 A', '缓存用例')
 for (let i = 0; i < 80 && hook.state().phase !== 'done'; i += 1) await sleep(20)
@@ -3360,30 +3324,6 @@ assert('回放走的是历史，不重新调模型', sent.length === sentBeforeR
   assert('正文到达后提示消失（不再永远挂着）', !noticeEl(), noticeEl() ? JSON.stringify(textOf(noticeEl()).slice(0, 20)) : '')
   for (let i = 0; i < 40; i += 1) await sleep(20)
 }
-
-// ⚠️ 临时诊断的用例（定位完随诊断一起删）：宿主在 done 里回传的逐轮诊断必须留下来。
-// 背景：历史里 25% 的助手回答结尾是半个句子，而"掐在哪一环"以前无从判断 ——
-// 宿主早就发了这些字段（residueDropped / finish / tools / outTokens），客户端却扔了。
-{
-  const diagBefore = (hook.state().diagLog || []).length
-  hook.open('voice-probe', '', '诊断用例')
-  for (let i = 0; i < 100 && (hook.state().diagLog || []).length === diagBefore; i += 1) await sleep(20)
-  const diagAll = hook.state().diagLog || []
-  const dg = diagAll[diagAll.length - 1]
-  assert(
-    '逐轮诊断被留下来（查"半个句子"的现场）',
-    !!dg && Array.isArray(dg.rounds) && dg.rounds.length === 1 && dg.rounds[0].residueDropped === 7,
-    JSON.stringify(dg && dg.rounds),
-  )
-  assert(
-    '诊断里带 finish / tools / outTokens（判掐断类型靠它们）',
-    !!dg && Array.isArray(dg.rounds) && dg.rounds.length === 1 && dg.rounds[0].finish === 'tool_calls' && dg.rounds[0].tools === 1 && dg.rounds[0].outTokens === 42,
-    JSON.stringify(dg && dg.rounds && dg.rounds[0]),
-  )
-  hook.close()
-  await sleep(40)
-}
-
 // 收起小窗 = 中止这一轮，不该记成"失败"，而是"已停止"（点回来还能重新生成）
 const slowStart = sent.length
 hook.open('中止探测', '', '中止用例')

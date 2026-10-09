@@ -1792,8 +1792,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
     turns?: { role?: unknown; text?: unknown }[]
     toolDigest?: unknown
     pinned?: unknown
-    /** ⚠️ 临时诊断（定位完就删）：见 HistoryEntry.diagLog */
-    diagLog?: unknown
   }
   interface HistoryEntry {
     key: string
@@ -1805,8 +1803,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
     turns: HistoryTurn[]
     toolDigest: string
     pinned: boolean
-    /** ⚠️ 临时诊断（定位完就删）：客户端回传的逐轮诊断（rounds 等） */
-    diagLog?: unknown[]
   }
 
   const history = new Map<string, HistoryEntry>()
@@ -2086,8 +2082,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
           }))
         : [],
       toolDigest: clampText(input.toolDigest, 2000),
-      // ⚠️ 临时诊断（定位完就删）：逐轮诊断原样收下（形状由客户端保证，这里不解析）
-      diagLog: Array.isArray(input.diagLog) ? (input.diagLog as unknown[]).slice(-12) : undefined,
       pinned: input.pinned === true || previous?.pinned === true,
     }
     history.delete(key)
@@ -2487,10 +2481,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
           parts: (body?.parts ?? {}) as { translation?: unknown; detail?: unknown },
           turns: (Array.isArray(body?.turns) ? body.turns : []) as { role?: unknown; text?: unknown }[],
           toolDigest: typeof body?.toolDigest === 'string' ? body.toolDigest : '',
-          // ⚠️ 临时诊断（定位完就删）：不加这段，宿主只挑已知字段存，diagLog 会被丢掉
-          diagLog: Array.isArray((body as { diagLog?: unknown }).diagLog)
-            ? ((body as { diagLog?: unknown[] }).diagLog as unknown[])
-            : undefined,
           pinned: body?.pinned === true,
         })
         sendJson(res, 200, { ok: true, size })
@@ -3364,14 +3354,11 @@ export function apply(ctx: Context, rawConfig: Config): void {
        * 用来回答"到底是模型没吐、还是被我们的过滤器吃掉了、还是上游掐流"——不靠猜。
        */
       const roundDiag: Array<Record<string, unknown>> = []
-      // ⚠️ 临时诊断（定位完就删）：加 finish / outTokens —— 结论轮是怎么结束的正是缺口
-      let conclusionInfo: { tried: boolean; chars: number; rounds: number; error: string; finish: string; outTokens: number } = {
+      let conclusionInfo: { tried: boolean; chars: number; rounds: number; error: string } = {
         tried: false,
         chars: 0,
         rounds: 0,
         error: '',
-        finish: '',      // ⚠️ 临时诊断（定位完就删）
-        outTokens: 0,    // ⚠️ 临时诊断（定位完就删）
       }
       const toolRounds = config.maxToolRounds
       // 档位被上游拒绝时（400/401/500）重试一次：清单里声明的档位是**建议值**，
@@ -3622,9 +3609,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
         // 这里自己补结论轮：**不重放工具调用链**，而是把结果写成一段自包含的提示 ——
         // 重放消息链的方式实测也不稳（模型面对 tool-call 历史仍可能继续吐工具调用）。
         conclusionInfo.tried = true
-        // ⚠️ 临时诊断（定位完就删）
-        conclusionInfo.finish = ''
-        conclusionInfo.outTokens = 0
         sse(res, { type: 'notice', code: 'conclusion-retry', text: '查询已完成，正在整理结论…' })
         const conclusionUser = [
           // ⚠️ **必须带上用户这一轮问的是什么**：这一段是最终正文的来源，而它以前只有
@@ -3683,9 +3667,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
               } else if (chunk.type === 'usage') {
                 usage = chunk.usage
               } else if (chunk.type === 'finish') {
-                // ⚠️ 临时诊断（定位完就删）：不管哪种结束原因都记下来
-                conclusionInfo.finish = String(chunk.reason.kind)
-                conclusionInfo.outTokens = (chunk as { usage?: { outputTokens?: number } }).usage?.outputTokens ?? 0
                 if (chunk.reason.kind === 'error') {
                   conclusionInfo.error = chunk.reason.failure?.message ?? '模型调用失败'
                 }
