@@ -294,8 +294,23 @@ async function main() {
     var range = selectIn(target.node, target.needle)
     check(label + '：能建出真选区', !!range, range ? range.toString().slice(0, 24) : '未找到目标文字')
     if (!range) return null
-    mouseUpOn(target.node)
-    var shown = await waitFor(function () { return hook.quoteState().visible === true }, 1500)
+    // ⚠️ 合成选区 vs 面板渲染有竞态：面板晚一步重绘会把刚选中的节点换掉，插件据此判定
+    // "那段文字没了"并收起浮标（这是对的），用例于是偶发红 —— 真浏览器冒烟在 CI 与本机
+    // 都复现过（改动前的基线同样 192/2）。所以这里**重试合成选区**（最多 3 次，每次都重新
+    // 取节点、重建 range），而不是放宽断言。
+    var shown = false
+    for (var attempt = 0; attempt < 3 && !shown; attempt += 1) {
+      if (attempt > 0) {
+        await settlePanel()
+        var fresh = find()
+        if (!fresh || !fresh.node) break
+        target = fresh
+        range = selectIn(target.node, target.needle)
+        if (!range) break
+      }
+      mouseUpOn(target.node)
+      shown = await waitFor(function () { return hook.quoteState().visible === true }, 1500)
+    }
     check(label + '：浮出「❝ 引用」', shown === true, JSON.stringify(hook.quoteState()))
     if (!shown) return null
     check(label + '：浮标在最上层（不被面板盖住）', onTop(quoteBtn), '')
@@ -622,15 +637,27 @@ async function main() {
     var node
     while ((node = walker.nextNode())) if (node.nodeValue.trim()) texts.push(node)
     if (texts.length && to.firstChild) {
-      var range = document.createRange()
-      range.setStart(texts[0], 0)
-      var endNode = to.firstChild.nodeType === 3 ? to.firstChild : to
-      range.setEnd(endNode, Math.min(4, (endNode.nodeValue || '').length))
-      var sel = window.getSelection()
-      sel.removeAllRanges()
-      sel.addRange(range)
-      mouseUpOn(to)
-      var shown = await waitFor(function () { return hook.quoteState().visible === true }, 1500)
+      // 与 quoteOnce 同一套重试（合成选区 vs 面板渲染的竞态）
+      var shown = false
+      for (var attempt2 = 0; attempt2 < 3 && !shown; attempt2 += 1) {
+        if (attempt2 > 0) await settlePanel()
+        var fromNow = sectionContent('translation')
+        var toNow = sectionContent('detail')
+        var textsNow = []
+        var walker2 = document.createTreeWalker(fromNow, NodeFilter.SHOW_TEXT, null)
+        var nodeNow
+        while ((nodeNow = walker2.nextNode())) if (nodeNow.nodeValue.trim()) textsNow.push(nodeNow)
+        if (!textsNow.length || !toNow.firstChild) break
+        var range = document.createRange()
+        range.setStart(textsNow[0], 0)
+        var endNode = toNow.firstChild.nodeType === 3 ? toNow.firstChild : toNow
+        range.setEnd(endNode, Math.min(4, (endNode.nodeValue || '').length))
+        var sel = window.getSelection()
+        sel.removeAllRanges()
+        sel.addRange(range)
+        mouseUpOn(toNow)
+        shown = await waitFor(function () { return hook.quoteState().visible === true }, 1500)
+      }
       check('跨节选择：也浮出「❝ 引用」', shown === true, JSON.stringify(hook.quoteState()))
       if (shown) {
         clickOn(quoteBtn)
