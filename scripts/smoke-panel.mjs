@@ -337,6 +337,50 @@ async function main() {
   // 因为 CSS 声明块漏了收尾花括号被整条丢弃（属性对、规则不生效，单测照样全绿）；
   // 修好闭合后它又暴露了"追问一下宽度就从 440 跳到 540"的问题 —— 两件事都只有真浏览器量得出来。
   // 现在宽度**不随阶段变**（恒 540），下面同时钉住"首轮就是 540"和"追问之后仍是 540"。
+  // ── 录音行不许把发送键顶到下一行（用户报：一开麦 ↑ 就掉到下面单独一行）──
+  // 真浏览器量布局：按录音态把 DOM 摆成插件摆的样子（亮出录音行、让位那几样工具），
+  // 再量发送键是否还与录音行同处一行。CSS 里那两条 flex-basis:0% + nowrap 就是为它服务的。
+  {
+    var toolsEl = document.querySelector('.dsh-sel-asktools')
+    var captureEl = document.querySelector('.dsh-sel-capture')
+    var sendEl = document.querySelector('.dsh-sel-asksend')
+    var waveEl = document.querySelector('.dsh-sel-vwave')
+    if (toolsEl && captureEl && sendEl) {
+      var yielding = ['.dsh-sel-pref', '.dsh-sel-askspace', '.dsh-sel-picker', '.dsh-sel-mic']
+        .map(function (sel) { return document.querySelector(sel) })
+        .filter(Boolean)
+      var restore = yielding.map(function (n) { return [n, n.style.display] })
+      // 必须**窄一点**量：波形那个 svg 的固有宽度是 384px（viewBox 640x40 按 24px 高推出来的），
+      // 540px 的面板刚好放得下、量不出问题；用户那个宽度才会露出来。面板本来就可调窄，这是真实场景。
+      var panelWide = document.querySelector('.dsh-sel-panel')
+      var widthBefore = panelWide ? panelWide.style.width : ''
+      if (panelWide) panelWide.style.width = '420px'
+      toolsEl.setAttribute('data-capturing', '1')
+      captureEl.setAttribute('data-show', '1')
+      captureEl.style.display = 'flex'
+      if (waveEl) waveEl.style.display = ''
+      yielding.forEach(function (n) { n.style.display = 'none' })
+      var captureRect = captureEl.getBoundingClientRect()
+      var sendRect = sendEl.getBoundingClientRect()
+      check(
+        '录音行出现时发送键仍在同一行（不被顶到下面）',
+        sendRect.height > 0 && sendRect.top < captureRect.bottom && Math.abs(sendRect.top - captureRect.top) <= 8,
+        JSON.stringify({
+          capture: [Math.round(captureRect.top), Math.round(captureRect.bottom)],
+          send: [Math.round(sendRect.top), Math.round(sendRect.bottom)],
+        }),
+      )
+      restore.forEach(function (pair) { pair[0].style.display = pair[1] })
+      if (panelWide) panelWide.style.width = widthBefore
+      captureEl.style.display = 'none'
+      captureEl.setAttribute('data-show', '0')
+      toolsEl.setAttribute('data-capturing', '0')
+      if (waveEl) waveEl.style.display = 'none'
+    } else {
+      check('录音行出现时发送键仍在同一行（不被顶到下面）', false, '没找到工具行/录音行/发送键')
+    }
+  }
+
   var WIDE_WIDTH = 540
   {
     var panelEl = document.querySelector('.dsh-sel-panel')

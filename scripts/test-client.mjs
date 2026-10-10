@@ -3646,6 +3646,16 @@ assert('点回来看到"已停止"的状态与可重试入口', hook.state().pha
 
   assert('CSS 契约：模型胶囊紧挨发送键、菜单向上弹', /\.dsh-sel-picker\{display:inline-flex/.test(css) && /\.dsh-sel-pickermenu\{position:absolute;right:10px;bottom:calc\(100% \+ 8px\)/.test(css), '')
   assert('CSS 契约：档位选中态为主色实心', /\.dsh-sel-tierbtn\[data-on="1"\]\{background:var\(--sel-fill/.test(css), '')
+  // 用户报：一开麦，输入框右下角那个 ↑ 就被顶到下面单独一行去了。
+  // 行内换行的判定用的是**收缩前**的假设宽度，而波形 svg 的固有宽度约 300px ——
+  // 所以录音行/波形必须 flex-basis:0%（不是 auto），并且录音时工具行锁死 nowrap。
+  assert(
+    'CSS 契约：录音时工具行不换行 + 录音行与波形按可用宽度分（flex-basis 0%）',
+    /\.dsh-sel-asktools\[data-capturing="1"\]\{flex-wrap:nowrap\}/.test(css) &&
+      /\.dsh-sel-capture\{display:none;flex:1 1 0%;min-width:0/.test(css) &&
+      /\.dsh-sel-vwave\{flex:1 1 0%;min-width:24px/.test(css),
+    '',
+  )
 
   const nodes = hook.modelNodes()
   // 桩里没有 querySelectorAll（客户端也不用它），用 walk 数节点

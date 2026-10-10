@@ -688,6 +688,9 @@ window.__ModuleLoader__.load({
       // flex-wrap 是给窄屏兜底的：这一行现在有 4 件东西（输出偏好 / 模型 / 麦克风 / 发送），
       // 窄面板下宁可折成两行，也不能把发送键挤出可视区（挤出去就点不到了）。
       '.dsh-sel-asktools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;row-gap:6px}',
+      // 录音行出现时**不许换行**：发送键必须留在同一行
+      //（用户报：一开麦，↑ 就被顶到下面单独一行去了）
+      '.dsh-sel-asktools[data-capturing="1"]{flex-wrap:nowrap}',
       '.dsh-sel-askspace{flex:1 1 auto}',
       // 页眉里的撑开占位（标题与右侧按钮之间）
       '.dsh-sel-headspace{flex:1 1 auto;min-width:8px}',
@@ -764,7 +767,11 @@ window.__ModuleLoader__.load({
       '.dsh-sel-mic[data-state="requesting"] svg{animation:dsh-sel-spin .9s linear infinite}',
       '.dsh-sel-mic:disabled{cursor:default;opacity:.35}',
       // 录音行：flex:1 让它吃掉中间那截（主会话也是 waveform flex:1）
-      '.dsh-sel-capture{display:none;flex:1 1 auto;min-width:0;align-items:center;gap:8px}',
+      // flex-basis 必须给 **0%**（不是 auto）：行内换行的判定用的是**收缩前**的假设宽度，
+      // 而波形那个 svg 的固有宽度约 300px —— 给 auto 时"这一行放不下"会被判成真，发送键于是
+      // 掉到下一行。给 0% 之后两者按可用宽度分；min-width:0 + 波形的 min-width:24px 保证
+      // 录音行照旧撑满、也不会塌成 0。
+      '.dsh-sel-capture{display:none;flex:1 1 0%;min-width:0;align-items:center;gap:8px}',
       '.dsh-sel-capture[data-show="1"]{display:flex}',
       // 圆键：和发送键同尺寸、同圆度；浅底 + hover 变深（主会话的 roundButton 也是这套）
       '.dsh-sel-round{flex:0 0 auto;width:26px;height:26px;padding:0;border:0;border-radius:13px;cursor:pointer;',
@@ -777,7 +784,7 @@ window.__ModuleLoader__.load({
       // 停止键：图标是实心方块（主会话的 IconStopFill），颜色取主文字色 —— 一眼是"停"
       '.dsh-sel-stop{color:var(--dsw-alias-label-primary,inherit)}',
       // 波形：80 根竖线、中间对齐、静音时是一条虚线（算法与主会话逐行一致，见 paintWave）
-      '.dsh-sel-vwave{flex:1 1 auto;min-width:24px;height:24px;display:block;color:var(--dsw-alias-label-secondary,inherit)}',
+      '.dsh-sel-vwave{flex:1 1 0%;min-width:24px;height:24px;display:block;color:var(--dsw-alias-label-secondary,inherit)}',
       // 状态文案（请允许使用麦克风… / 识别中… / 没听清…）：12px 次要色 + 可选呼吸点
       '.dsh-sel-vactivity{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.4;',
       'color:var(--dsw-alias-label-secondary,inherit);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
@@ -10386,6 +10393,8 @@ window.__ModuleLoader__.load({
         var capturing = phase !== 'idle'
         captureRow.setAttribute('data-show', capturing ? '1' : '0')
         captureRow.style.display = capturing ? 'flex' : 'none'
+        // 工具行也标记一下：录音时 flex-wrap 锁死（发送键必须还在这一行）
+        askTools.setAttribute('data-capturing', capturing ? '1' : '0')
         // 录音行出现时，工具行左边那三样（输出偏好 / 模型 / 🎤）让位——和主会话一样，
         // 录音时那行只讲一件事：怎么结束、结束之后会得到什么。
         webMode.style.display = capturing ? 'none' : ''
