@@ -3100,15 +3100,22 @@ window.__ModuleLoader__.load({
       function applyTierToSettings(id) {
         var item = effectiveItem()
         var slot = ''
+        var fallback = ''
         if (item && item.effortMap) {
           for (var i = 0; i < SLOT_ORDER.length; i += 1) {
-            if (item.effortMap[SLOT_ORDER[i]] === id) {
-              slot = SLOT_ORDER[i]
+            var candidate = SLOT_ORDER[i]
+            if (item.effortMap[candidate] !== id) continue
+            if (!fallback) fallback = candidate
+            // 多个格子落到同一档时（如 low>high>max：低→high、高→high），
+            // **名字对得上的那个优先** —— 用户点的是「高」，设置页就该亮「高」，
+            // 而不是先撞上的「低」（两者发出去的档位本来就一样，这里只挑显示得对的那个）
+            if (candidate === id) {
+              slot = candidate
               break
             }
           }
         }
-        var value = slot || String(id)
+        var value = slot || fallback || String(id)
         settingsLive.chatReasoningEffort = value
         state.effort = value
         writeStore(EFFORT_KEY, value)

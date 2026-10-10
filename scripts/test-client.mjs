@@ -2487,7 +2487,39 @@ if (process.env.SEL_SETTINGS_ONLY === '1') {
       )
     }
 
-    // 收尾：走「恢复默认」把配置写回出厂值，抽屉收起；面板也收掉
+    // 第三段：**多个格子落到同一档**时，折回"名字对得上"的那一格
+    // （low>high>max 这种：低→high、高→high，用户点「高」就该存 high，而不是先撞上的 low）
+    const two = {
+      provider: 'p2', providerName: 'Provider Two', model: 'm-two', name: 'Two Tier Model',
+      efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }, { id: 'max', name: 'Max' }],
+      defaultEffort: null, hasReasoning: true,
+      effortMap: { off: 'low', low: 'high', high: 'high', max: 'max' },
+    }
+    globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p2', model: 'm-two' }, models: [...fixture.models, weird, plain, two] }
+    const backToPanel2 = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sheetback')
+    backToPanel2.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 20))
+    settingsBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 80))
+    hook.openModel()
+    await new Promise((r) => setTimeout(r, 30))
+    const twoBtns = Array.from(walk(hook.modelNodes().menu)).filter((n) => String(n.className) === 'dsh-sel-tierbtn')
+    const highBtn = twoBtns.find((b) => textOf(b) === '高')
+    assert('（前提）这个模型的小窗档位是 低/高/Max', !!highBtn && twoBtns.length === 3, twoBtns.map((b) => textOf(b)).join('/'))
+    if (highBtn) {
+      highBtn.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+      await new Promise((r) => setTimeout(r, 30))
+      const seg3 = Array.from(walk(settingsSheet)).find(
+        (n) => String(n.className) === 'dsh-sel-seg' && n.attrs && n.attrs['aria-label'] === '追问',
+      )
+      assert(
+        '多个格子落到同一档时：点小窗的「高」→ 设置页亮「高」（不是先撞上的「低」）',
+        hook.modelState().effort === 'high' && !!seg3 && seg3.getAttribute('data-value') === 'high',
+        `小窗=${String(hook.modelState().effort)} 设置页=${seg3 ? seg3.getAttribute('data-value') : '(未找到)'}`,
+      )
+    }
+
+
     const resetBtn2 = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sbtn' && textOf(n).indexOf('恢复默认') >= 0)
     resetBtn2.dispatch('click', { stopPropagation() {}, preventDefault() {} })
     await new Promise((r) => setTimeout(r, 900))
