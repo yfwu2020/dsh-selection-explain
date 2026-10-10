@@ -43,7 +43,8 @@
   "scripts": {
     "build": "bash scripts/build.sh",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node scripts/test-filters.mjs && node scripts/test-prompt.mjs && node scripts/test-model-follow.mjs && node scripts/test-bridge.mjs && node scripts/smoke-bridge.mjs && node scripts/smoke-panel.mjs && node scripts/test-escape-focus.mjs && node scripts/test-client.mjs && node scripts/test-settings-host.mjs && node scripts/test-settings-behavior.mjs && node scripts/test-route-cache.mjs && node scripts/test-transcript.mjs && node scripts/test-guard.mjs && node scripts/test-settings.mjs && node scripts/test-format.mjs && node scripts/test-speech.mjs && node scripts/test-mic-idle.mjs && node scripts/smoke-voice.mjs",
+    "test": "node scripts/test-filters.mjs && node scripts/test-prompt.mjs && node scripts/test-model-follow.mjs && node scripts/test-bridge.mjs && node scripts/smoke-bridge.mjs && node scripts/smoke-panel.mjs && node scripts/test-escape-focus.mjs && node scripts/test-effort-retry.mjs && node scripts/test-client.mjs && node scripts/test-settings-host.mjs && node scripts/test-settings-behavior.mjs && node scripts/test-route-cache.mjs && node scripts/test-transcript.mjs && node scripts/test-guard.mjs && node scripts/test-settings.mjs && node scripts/test-format.mjs && node scripts/test-speech.mjs && node scripts/test-mic-idle.mjs && node scripts/smoke-voice.mjs",
+    "test:effort": "node scripts/test-effort-retry.mjs",
     "test:transcript": "node scripts/test-transcript.mjs",
     "test:guard": "node scripts/test-guard.mjs",
     "test:format": "node scripts/test-format.mjs",

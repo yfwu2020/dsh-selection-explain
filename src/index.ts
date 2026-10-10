@@ -346,9 +346,8 @@ export interface Config {
   /**
    * 开麦结束、**一个字都没说**时，直接收起临时输入框。
    *
-   * 默认关：出厂行为是"卡片留着" —— 一个字没说时用户可以接着手动打字，
-   * "框突然消失"比"没听到就自己打"更打断人（用户原话）。
-   * 开了之后等于替用户按了 Esc（带关机动画），适合"语音只是偶尔用一下"的人。
+   * 默认开（2026-10-09 用户指定）：等于替用户按了 Esc（带关机动画）。
+   * 关掉则回到"卡片留着" —— 一个字没说时可以接着手动打字。
    *
    * 注意"结束"不是"松手那一瞬间"：输入法在松手后还会做一次**智能整理**（改写输入框内容），
    * 所以真正动作要等到文字定稿（见客户端的 VOICE_SETTLE_MS）。否则会取消掉马上就要落进来的整理结果。
@@ -357,8 +356,8 @@ export interface Config {
   /**
    * 开麦结束、**已经说出文字**时，直接发送（跳过手动点发送键）。
    *
-   * 默认关：发送是不可逆的（会开小窗、开始一次真实请求），默认让人看一眼再点。
-   * 开了之后等于替用户点了发送键，适合"说完就想直接追问"的人。
+   * 默认开（2026-10-09 用户指定）：等于替用户点了发送键。
+   * 关掉则回到"先看一眼再点" —— 发送会开小窗、开始一次真实请求，不可逆。
    *
    * 同样要等文字定稿：松手那一刻输入法还没整理完，立刻发送发出去的是没整理的草稿。
    */
@@ -432,10 +431,10 @@ export const Config = z.object({
   pillEnabled: z.boolean().default(true),
   /** 静置收球时长（毫秒）——默认 10 秒，见 Config 注释。 */
   pillIdleMs: z.number().min(2000).max(600000).default(10000),
-  /** 空录音是否收起卡片（默认关，见 Config 注释）。 */
-  voiceCancelOnSilence: z.boolean().default(false),
-  /** 有字是否自动发送（默认关，见 Config 注释）。 */
-  voiceAutoSend: z.boolean().default(false),
+  /** 空录音是否收起卡片（默认开，见 Config 注释）。 */
+  voiceCancelOnSilence: z.boolean().default(true),
+  /** 有字是否自动发送（默认开，见 Config 注释）。 */
+  voiceAutoSend: z.boolean().default(true),
 })
 
 /** 联网类工具名：用来判断"首选里的联网工具在不在"。 */
@@ -657,6 +656,85 @@ function looksLikeLeakedReasoning(text: string): boolean {
   if (!/[\u4e00-\u9fff]/.test(tail)) return false
   const letters = head.replace(/[^A-Za-z]/g, '').length
   return letters / head.length >= 0.5
+}
+
+/** 档位阶梯（从"最省"到"最深"）：模型声明了档位时，按它声明的顺序走。 */
+const EFFORT_LADDER = ['off', 'low', 'medium', 'high', 'max']
+
+/**
+ * 清单里查不到这个模型时的兜底阶梯。
+ * 只列**最常见**的四档（与客户端 `FALLBACK_TIERS` 同一份）：多出来的 `medium` 很多模型
+ * 并不声明，而 dsh-llm 对"声明里没有的档"是**直接抛错**（不 clamp）—— 兜底时不该去撞它。
+ */
+const EFFORT_LADDER_FALLBACK = ['off', 'low', 'high', 'max']
+
+/** 档位的中文名（notice 文案用，与客户端 TIER_LABEL 一致）。 */
+const EFFORT_LABEL: Record<string, string> = { off: '关', low: '低', medium: '中', high: '高', max: '最大' }
+
+/**
+ * 这条上游错误是不是"**我们发的这个档位**不被接受"。
+ *
+ * ⚠️ 判据必须窄。免费/预览端点的上游会**偶发**返回
+ * `Reasoning is mandatory for this endpoint and cannot be disabled.` ——
+ * 2026-10-09 实测（`opencode-go/step-5-preview-free`，交错发送排除时间漂移）：
+ *   · effort=low 成功 5/8；effort=high 成功 5/8 —— **同一档位时好时坏，档位不是变量**；
+ *   · 对照模型 `longcat-2.5-preview-free` 6/6 成功（连 off 都收）。
+ * 所以只认"明确说这个档位无效"的措辞；"必须开推理"另有一条判据
+ * （见 looksLikeReasoningRequired，只在**我们发的是关档**时才算数）。
+ * 把偶发失败当成"档位不支持"会连锁出三个错：给用户一句错诊断、把失败永久记进
+ * noOffRoutes（以后再也不发这个档）、清掉用户选的档位。
+ */
+function looksLikeUnsupportedTier(message: string): boolean {
+  const tier = '(?:reasoning|effort|thinking|推理|思考|档位?)'
+  const bad = '(?:unsupported|not\\s+support|invalid|unrecognized|不支持|无效|不认识)'
+  return (
+    new RegExp(`${bad}[^。\\n]{0,24}${tier}`, 'i').test(message) ||
+    new RegExp(`${tier}[^。\\n]{0,24}${bad}`, 'i').test(message)
+  )
+}
+
+/** 上游要求"必须开推理"——只有在**我们这次把推理关掉**（发的 off）时，这句才是冲我们来的。 */
+function looksLikeReasoningRequired(message: string): boolean {
+  return (
+    /(?:reasoning|thinking|推理|思考)/i.test(message) &&
+    /(?:mandatory|required|must|cannot\s+be\s+disabled|必须|不能(?:被)?关闭|不可关闭)/i.test(message)
+  )
+}
+
+/**
+ * 换一个"没试过的"档位（重试用）。
+ *
+ * 为什么**绝不能省略档位**（老代码就是省略）：省略 = 请求里不带 reasoning，
+ * 对"必须开推理"的端点等于把推理关掉 —— 实测 20 次这样的重试 **0 次成功**，
+ * 而同一档位首发成功率约 60%。省略比"发一个可能不被接受的档"更糟。
+ *
+ * 顺序：模型自己声明的 defaultEffort → 沿档位阶梯往上走一格（离"关"越远越安全）。
+ * 返回空串表示"没档位可换了"，调用方就不重试。
+ */
+function pickNextEffort(
+  declared: string[],
+  defaultEffort: string | null | undefined,
+  rejected: string,
+  tried: Set<string>,
+): string {
+  const usable = (id: string | null | undefined): id is string => !!id && id !== rejected && !tried.has(id)
+  if (usable(defaultEffort)) return defaultEffort
+  const pool = declared.length > 0 ? EFFORT_LADDER.filter((id) => declared.includes(id)) : EFFORT_LADDER_FALLBACK
+  const order = pool.length > 0 ? pool : EFFORT_LADDER_FALLBACK
+  const start = order.indexOf(rejected)
+  // ① 先往上走：离「关」越远越安全（不吃 off 的模型通常都吃更高的档）
+  for (let i = (start < 0 ? 0 : start + 1); i < order.length; i += 1) {
+    const id = order[i]
+    if (usable(id)) return id
+  }
+  // ② 再按"通常最稳"的顺序退（模型拒的是 max 时往上没得走，该退到 high，而不是退回 off ——
+  //    off 恰恰是最容易被拒的那一档）
+  for (const id of ['high', 'medium', 'low', 'max', 'off']) {
+    if (order.includes(id) && usable(id)) return id
+  }
+  // ③ 兜底：声明里剩下的
+  for (const id of order) if (usable(id)) return id
+  return ''
 }
 
 function splitLeakedReasoning(text: string): { prefix: string; rest: string } {
@@ -1328,8 +1406,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
     bridgeSidebarPreview: rawConfig?.bridgeSidebarPreview ?? true,
     pillEnabled: rawConfig?.pillEnabled ?? true,
     pillIdleMs: rawConfig?.pillIdleMs ?? 10000,
-    voiceCancelOnSilence: rawConfig?.voiceCancelOnSilence ?? false,
-    voiceAutoSend: rawConfig?.voiceAutoSend ?? false,
+    voiceCancelOnSilence: rawConfig?.voiceCancelOnSilence ?? true,
+    voiceAutoSend: rawConfig?.voiceAutoSend ?? true,
   }
 
   /**
@@ -1458,12 +1536,20 @@ export function apply(ctx: Context, rawConfig: Config): void {
     try {
       const raw = await readFile(leakyFile(), 'utf8')
       const parsed = JSON.parse(raw) as { routes?: unknown; noOff?: unknown }
-      if (Array.isArray(parsed?.routes)) {
-        for (const item of parsed.routes) if (typeof item === 'string' && item) leakyOnOff.add(item)
+      let dropped = 0
+      const accept = (item: unknown, into: Set<string>): void => {
+        if (typeof item !== 'string' || !item) return
+        // 落盘文件是**跨重启的经验**，但也可能被测试夹具写脏（实测有 p1/m-strong）：
+        // provider 不存在的条目直接丢掉，并顺手把文件写回干净版。
+        if (!isRealProvider(item.split('/')[0] ?? '')) {
+          dropped += 1
+          return
+        }
+        into.add(item)
       }
-      if (Array.isArray(parsed?.noOff)) {
-        for (const item of parsed.noOff) if (typeof item === 'string' && item) noOffRoutes.add(item)
-      }
+      if (Array.isArray(parsed?.routes)) for (const item of parsed.routes) accept(item, leakyOnOff)
+      if (Array.isArray(parsed?.noOff)) for (const item of parsed.noOff) accept(item, noOffRoutes)
+      if (dropped > 0) saveLeaky()
     } catch {
       /* 没有这个文件是常态 */
     }
@@ -1476,9 +1562,30 @@ export function apply(ctx: Context, rawConfig: Config): void {
     })
   }
 
+  /**
+   * 这条 route 的 provider 是不是**这台机器上真有的**。
+   *
+   * 为什么落盘前要查一下：这两个集合会写进 `~/.dsh/selection-explain/leaky-off.json`，
+   * 而请求体里的 provider 是可以伪造的（`resolveRoute` 在清单没加载出来时只做形状校验）。
+   * 实测踩过：`test-client.mjs` 的夹具 provider `p1` 被写进了用户真实的落盘文件
+   * （`p1/m-strong`、`p1/m-fast`）—— 之后再也没人清掉它。
+   * 宁可不记（顶多多撞一次上游，反正有重试），也不要往用户的文件里写不存在的东西。
+   */
+  function isRealProvider(provider: string): boolean {
+    if (!provider) return false
+    try {
+      const llm = ctx.get('llm') as { listProviders?: () => Array<{ id?: string }> } | undefined
+      const list = llm?.listProviders?.() ?? []
+      return list.some((item) => String(item?.id ?? '') === provider)
+    } catch {
+      return false
+    }
+  }
+
   /** 记住一个"关档会泄漏"的模型（内存 + 落盘）。 */
   function markLeaky(route: string): void {
     if (leakyOnOff.has(route)) return
+    if (!isRealProvider(route.split('/')[0] ?? '')) return
     leakyOnOff.add(route)
     if (leakyLoaded) saveLeaky()
   }
@@ -1486,8 +1593,20 @@ export function apply(ctx: Context, rawConfig: Config): void {
   /** 记住一个"不接受关档"的模型（内存 + 落盘）：下次直接改用 low，不再先撞一次。 */
   function markNoOff(route: string): void {
     if (noOffRoutes.has(route)) return
+    if (!isRealProvider(route.split('/')[0] ?? '')) return
     noOffRoutes.add(route)
     if (leakyLoaded) saveLeaky()
+  }
+
+  /** 档位阶梯与判据都在模块层（纯函数，可单测）：这里只把清单数据喂给它。 */
+  function nextEffortFor(route: string, rejected: string, tried: Set<string>): string {
+    const item = modelCache.items.find((entry) => `${entry.provider}/${entry.model}` === route)
+    return pickNextEffort(
+      (item?.efforts ?? []).map((effort) => effort.id),
+      item?.defaultEffort,
+      rejected,
+      tried,
+    )
   }
   const MODEL_CACHE_MS = 60_000
 
@@ -3367,8 +3486,14 @@ export function apply(ctx: Context, rawConfig: Config): void {
       // 以前这里限定了 `isChat && bodyEffort.length > 0` —— 只有追问、且客户端显式传了档位才重试。
       // 于是**首轮**（档位来自配置、默认 off）撞上不吃 off 的模型时无人兜底，整个划词解读全挂。
       // 现在按"这一轮实际在发显式档位"判，三种轮次一视同仁。
-      const canRetryEffort = requestEffort.length > 0
-      let effortRetried = false
+      //
+      // 2026-10-09 改：重试**不再"去掉档位"**，而是换一个没试过的档（见 nextEffortFor）。
+      // 老代码对非 off 档的重试是 `roundEffort = ''`（省略 reasoning），
+      // 而省略对"必须开推理"的端点就是关掉推理 —— 实测 20 次重试 0 次成功。
+      // 同时给两次机会：上游偶发失败约一半，两次能把成功率抬到 ~90%（代价是多一次往返）。
+      const EFFORT_RETRY_LIMIT = 2
+      let effortRetries = requestEffort.length > 0 ? EFFORT_RETRY_LIMIT : 0
+      const triedEfforts = new Set<string>(requestEffort ? [requestEffort] : [])
       let roundEffort = requestEffort
       for (let round = 0; round <= toolRounds; round += 1) {
         const roundStartedAt = Date.now()
@@ -3454,7 +3579,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
             roundFinish = String(chunk.reason.kind)
             if (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted') {
               errored = true
-              // 先只记下来：如果接下来要"去掉档位重试"，这条错误就不该发给用户
+              // 先只记下来：如果接下来要"换档重试"，这条错误就不该发给用户
               // （否则客户端先渲染一条失败提示，重试的正文就贴在失败提示后面了）
               errorMessage =
                 chunk.reason.failure?.message ?? `模型调用${chunk.reason.kind === 'aborted' ? '被中断' : '失败'}`
@@ -3476,31 +3601,39 @@ export function apply(ctx: Context, rawConfig: Config): void {
           outTokens: (usage as { outputTokens?: number } | null)?.outputTokens,
         })
         if (errored) {
-          // 一个字都没吐出来 + 是显式档位导致的失败 → 去掉档位重试**同一轮**
-          // （保守：已经吐出正文的失败不重试，避免把半截答案丢掉）
-          if (canRetryEffort && !effortRetried && roundText.length === 0) {
-            effortRetried = true
+          // 一个字都没吐出来 → 可以安全重试**同一轮**（保守：已经吐出正文的失败不重试，
+          // 免得把半截答案丢掉）。重试换一个没试过的档位，而不是把档位去掉。
+          if (roundText.length === 0 && effortRetries > 0) {
             const rejected = roundEffort
-            if (rejected === 'off') {
-              // "关"被拒：记下这个 route，改用 low（最接近关的可接受档位），并让重试也用 low。
-              // 只去掉档位（交给供应商默认）在有些模型上等于开了深度思考 —— 又慢又可能把思考写进正文。
-              markNoOff(routeKey)
-              requestEffort = 'low'
-              roundEffort = 'low'
-            } else {
-              roundEffort = ''
+            const next = nextEffortFor(routeKey, rejected, triedEfforts)
+            if (next) {
+              effortRetries -= 1
+              triedEfforts.add(next)
+              // 只有"我们发的这个档位确实不被接受"才值得记成事实：
+              //   · 发的是关档 + 上游说"必须开推理" → 这个 route 不吃关档，记下来；
+              //   · 发的是开着的档（low/high/max）+ 上游还在说"推理不能关" → **这句不是冲我们来的**
+              //     （我们没关它），是上游偶发抽风（实测同档位 5/8 成功）。这种情况不记、不诊断，
+              //     只如实说"上游返回了错误，已换档重试"。
+              const tierIssue = rejected === 'off'
+                ? looksLikeReasoningRequired(errorMessage)
+                : looksLikeUnsupportedTier(errorMessage)
+              if (rejected === 'off' && tierIssue) markNoOff(routeKey)
+              requestEffort = next
+              roundEffort = next
+              errored = false
+              sse(res, {
+                type: 'notice',
+                code: tierIssue ? 'effort-rejected' : 'upstream-retry',
+                ...(tierIssue ? { tier: rejected } : {}),
+                text: tierIssue
+                  ? rejected === 'off'
+                    ? `该模型不接受「关」档，已自动改用「${EFFORT_LABEL[next] ?? next}」档（以后不再尝试关档）`
+                    : `「${EFFORT_LABEL[rejected] ?? rejected}」档该模型不支持，已改用「${EFFORT_LABEL[next] ?? next}」档重试`
+                  : '上游这次返回了错误，已自动重试',
+              })
+              round -= 1
+              continue
             }
-            errored = false
-            sse(res, {
-              type: 'notice',
-              code: 'effort-rejected',
-              tier: rejected,
-              text: rejected === 'off'
-                ? '该模型不支持「关」档，已自动改用「低」档（以后不再尝试关档）'
-                : `「${rejected}」档位该模型不支持，已按默认档位重试`,
-            })
-            round -= 1
-            continue
           }
           sse(res, { type: 'error', message: errorMessage, code: errorCode })
           break
@@ -3604,7 +3737,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
           toolDigestLines.push(`· ${call.name}（${label2 || '查询'}）：${digest.preview}`)
         }
       }
-      if (!errored && answer.trim().length === 0 && toolCalls > 0 && !effortRetried) {
+      if (!errored && answer.trim().length === 0 && toolCalls > 0 && triedEfforts.size === 1) {
         // 收尾轮常常"只吐一段工具调用、不写正文"（实测「今天的新闻」一个字都没有）。
         // 这里自己补结论轮：**不重放工具调用链**，而是把结果写成一段自包含的提示 ——
         // 重放消息链的方式实测也不稳（模型面对 tool-call 历史仍可能继续吐工具调用）。
@@ -3628,8 +3761,14 @@ export function apply(ctx: Context, rawConfig: Config): void {
           '不要复述选中文字，也不要解释它是什么 —— 除非问题问的就是它。',
           '不要再请求工具，不要输出任何工具调用格式，也不要写"我先看看""让我核对一下"这类过程。',
         ].join('\n')
-        // 先按当前档位试一次；空则用「关」档再试（有的模型在这一档更"直接给答案"）
-        for (const attemptEffort of [roundEffort, 'off']) {
+        // 先按当前档位试一次；空则**换一个档位**再试（同一档重发没意义）。
+        // 以前这里写死 `'off'`：对"必须开推理"的端点（noOffRoutes 里的那些）等于注定失败一轮 ——
+        // 用户看到的"工具查询完成了，但模型没有产出正文"就常有它一份。
+        const conclusionEfforts = [
+          roundEffort,
+          nextEffortFor(routeKey, roundEffort, new Set(roundEffort ? [roundEffort] : [])),
+        ].filter((id) => id.length > 0)
+        for (const attemptEffort of conclusionEfforts) {
           if (answer.trim().length > 0) break
           conclusionInfo.rounds += 1
           try {
@@ -3810,4 +3949,7 @@ export const __internals = {
   splitLeakedReasoning,
   looksLikeLeakedReasoning,
   resolveToolNames,
+  looksLikeUnsupportedTier,
+  looksLikeReasoningRequired,
+  pickNextEffort,
 }

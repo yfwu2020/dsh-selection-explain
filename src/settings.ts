@@ -126,14 +126,14 @@ export const SETTINGS_GROUPS: SettingGroup[] = [
     sections: [
       {"label": "划词入口", "keys": ["bridgeSidebarPreview"]},
       {"label": "悬浮入口", "keys": ["pillEnabled", "pillIdleMs"], "note": "费用胶囊显示时保持展开。"},
-      {"label": "语音输入", "keys": ["voiceCancelOnSilence", "voiceAutoSend"], "note": "松手（麦克风关闭）那一刻生效。"},
+      {"label": "语音输入", "keys": ["voiceCancelOnSilence", "voiceAutoSend"], "note": "结束语音输入后不会立刻动作：先等输入法把字定下来（它还会补标点、改错词；约半秒，最长 4 秒）。"},
     ],
     items: [
       {"key": "bridgeSidebarPreview", "kind": "switch", "label": "侧边栏网页划词", "hint": "选中文字后显示「解读」按钮。"},
       {"key": "pillEnabled", "kind": "switch", "label": "显示状态胶囊", "hint": "显示最近一次解读状态，点击打开或收起小窗。"},
       {"key": "pillIdleMs", "kind": "number", "label": "自动收起时间", "hint": "空闲达到此时长后缩成小球。", "unit": "秒", "min": 2000, "max": 600000, "step": 1000, "scale": 1000, "enabledBy": "pillEnabled"},
-      {"key": "voiceCancelOnSilence", "kind": "switch", "label": "空录音时收起", "hint": "开麦结束、一个字都没说时收起卡片（等于替你按了 Esc）。会先等输入法的智能整理提交（实测约 0.1–0.6 秒）。默认关：卡片留着，可以接着手动打字。"},
-      {"key": "voiceAutoSend", "kind": "switch", "label": "说完直接发送", "hint": "开麦结束、已经说出文字时自动发送（等于替你点了发送键）。会先等输入法的智能整理提交完再发（实测会补标点、去重复词，甚至改听错的词）。默认关：发送不可逆，先看一眼再点。"},
+      {"key": "voiceCancelOnSilence", "kind": "switch", "label": "空录音时收起", "hint": "结束语音输入后，输入框里没字就收起卡片（等于按 Esc）。"},
+      {"key": "voiceAutoSend", "kind": "switch", "label": "说完直接发送", "hint": "结束语音输入后，输入框里有字就直接发送（等于按发送键）。"},
     ],
   },
   {

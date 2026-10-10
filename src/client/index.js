@@ -113,6 +113,20 @@ window.__ModuleLoader__.load({
     var VOICE_SETTLE_MAX_MS = 4000
     /** 观察文字有没有变的间隔（毫秒）。用轮询而不是 input 事件：智能整理可能是直接改 value，不一定发事件。 */
     var VOICE_SETTLE_POLL_MS = 200
+    /**
+     * 卡片 → 小窗的交接（用户选定的方案：**缩放长出**）。
+     *
+     * 以前这两步是"瞬切"：卡片 `display:none`、小窗 `display:flex`，中间零过渡；
+     * 而且几何本身也换了 —— 卡片 360 宽、**右缘**贴选区右缘，小窗 540 宽、**左缘**贴选区左缘，
+     * 所以看起来是"跳"。现在让小窗**从卡片那一格开始**：起手用 transform 把面板压到卡片的矩形上，
+     * 260ms 回到自身（曲线与插件既有的"浮标 → 卡片"形变同一族）。
+     *
+     * 为什么只动 transform（不动 width/left/top）：那四个是布局属性，每帧都会重排整个面板
+     * （面板里有富文本、代码块，网页模式下还有 iframe）—— 形变期间会掉帧。transform 只走合成器。
+     * 代价是起手那几帧内容被压扁（缩放态），这正是"长出来"这个观感的来源。
+     */
+    var PANEL_GROW_MS = 260
+    var PANEL_GROW_EASE = 'cubic-bezier(.2,.8,.2,1)'
     /** 正文最多 4 行（约 93px），再多内部滚动并停在最新一行（与追问框同一套）。 */
     var VCARD_TEXT_MAX = 96
     /**
@@ -2434,6 +2448,12 @@ window.__ModuleLoader__.load({
          * 追问于是永远发 low —— 表现为"推理等级的设置没起作用"。
          */
         stageEffort: '',
+        /**
+         * 首轮/详解期间 host 发的 notice（换档重试、上游偶发错误…）。
+         * 以前首轮那条 SSE 处理器**没有 notice 分支**，host 说的话全被丢掉 ——
+         * 用户只看到"卡了十几秒"，不知道插件正在换档重试。
+         */
+        notice: '',
         /** 网页模式（小窗开关）：复杂问题默认用网页回答。 */
         webAnswer: false,
         /** 追问是否正在流式返回。 */
@@ -4001,6 +4021,9 @@ window.__ModuleLoader__.load({
           void quoteButton.offsetWidth
           setQuotePop(true)
         }
+        // 浮标亮着就盯"输入法有没有开麦"（幂等）：这时开麦的语义是"引用这段 + 把光标移进小窗"，
+        // 见 autoQuoteFromVoice。没浮标就没人问 —— 探针也跟着停（它只在被问时活着）。
+        startMicWatch()
       }
 
       // ══════════════════ 语音卡：选中文字 + 输入法正在语音输入 ══════════════════
@@ -4018,12 +4041,38 @@ window.__ModuleLoader__.load({
       // 时序是整件事成立的关键：检测到开麦（≤400ms）→ 弹卡 + 抢焦点 → 用户继续说 →
       // **松手时**输入法才上屏。抢焦点发生在开始时、上屏发生在结束时，中间有几秒余量；
       // 反过来"等检测到文字再弹框"就已经晚了 —— 字会落到原来那个焦点里去。
+      //
+      // ── 两条路，按"小窗开没开"分（2026-10-09 起）──
+      //   · 小窗**没开**：上面这套语音卡（选区是"要解读的对象"，说完进一个新的追问）。
+      //   · 小窗**开着**：划词浮出的是「❝ 引用」浮标，这时开麦等于**点一下那个浮标** ——
+      //     选中的文字挂进小窗、光标移到小窗输入框，输入法上屏的字直接落进小窗，
+      //     和引用一起成为下一条追问（`autoQuoteFromVoice`）。
+      //     两种情形互斥：面板一开，`state.selection` 就被清成 null，语音卡那套根本不启动。
+      //     轮询也只跟着浮标走（浮标亮着才问 /api/mic），没浮标就没人问。
 
       var vcard = null
       var vcardBox = null
       var vcardSend = null
       /** 关机动画那条亮线（懒建）。 */
       var crtLine = null
+      /**
+       * 发送那一刻卡片的矩形（视口坐标）—— 小窗据此"从那一格长出来"。
+       * 只在 sendVCard 里写、只在 showPanel 里消费（用完即清）：其余开窗路径（划词解读 /
+       * 历史回放 / 升格）这里是 null，因此不受影响、保持原来的"瞬开"。
+       */
+      var vcardHandoff = null
+      /** 交接动画的兜底定时器与 transitionend 句柄（收尾要把内联的 transform/transition 清干净）。 */
+      var panelGrowTimer = null
+      var panelGrowHandler = null
+      /**
+       * 这一次录音周期里，"开麦 → 自动加引用 + 移光标"处理过没有。
+       *
+       * 为什么要这个：麦克风是每 200ms 问一次的，同一次录音会被问到十几遍 ——
+       * 不抑制的话引用会被反复加（虽然 addQuote 对重复文本会挡掉，但 hideQuoteButton /
+       * focusAskBox 会被反复执行，输入法的输入上下文也会被反复重绑）。
+       * 与 vcardState.suppress 同一套思路：录音**停止**时复位（见 micTick 的 !matchingIme 分支）。
+       */
+      var quoteVoiceHandled = false
       /** 选中提示：下划线层 / 牵引线 / 牵引线起点的小圆点（懒建）。 */
       var selMark = null
       var selThread = null
@@ -4686,11 +4735,11 @@ window.__ModuleLoader__.load({
       function finishVoiceSettle(text) {
         if (!vcardState.open) return
         var spoken = String(text || '').trim()
-        if (spoken && settingsLive.voiceAutoSend === true) {
+        if (spoken && settingsLive.voiceAutoSend !== false) {
           sendVCard()
           return
         }
-        if (!spoken && settingsLive.voiceCancelOnSilence === true) {
+        if (!spoken && settingsLive.voiceCancelOnSilence !== false) {
           closeVCard(true)
           return
         }
@@ -4771,6 +4820,9 @@ window.__ModuleLoader__.load({
           return
         }
         var contextInfo = collectContext(rangeSelection(selection.range))
+        // 交接起点：卡片**现在**的矩形。必须在 closeVCard 之前量 —— 之后它 display:none，量出来是 0。
+        // 小窗会从这一格"长出来"（见 growPanelFromCard）。
+        vcardHandoff = vcardRect()
         closeVCard()
         openPanelWith(
           selection.text,
@@ -4783,6 +4835,17 @@ window.__ModuleLoader__.load({
         clearDocSelection()
         // 选区连同它的记录一起作废（与 openForSelection 一致）
         state.selection = null
+      }
+
+      /** 卡片当前的视口矩形（拿不到就返回 null —— 那就不做交接动画，老实瞬开）。 */
+      function vcardRect() {
+        if (!vcard || typeof vcard.getBoundingClientRect !== 'function') return null
+        try {
+          var rect = vcard.getBoundingClientRect()
+          return rect && rect.width && rect.height ? rect : null
+        } catch (error) {
+          return null
+        }
       }
 
       /** host 报的占用者里，有没有已知输入法。 */
@@ -4804,13 +4867,26 @@ window.__ModuleLoader__.load({
        */
       function startMicWatch() {
         if (vcardState.timer) return
-        if (!state.selection) return
+        // 两条路都要盯麦克风：解读选区（面板没开 → 语音卡）与引用选区（面板开着 → 自动引用）
+        if (!state.selection && !state.quoteSelection) return
         vcardState.timer = setInterval(micTick, MIC_POLL_MS)
         timers.push(vcardState.timer)
         micTick()
       }
 
       function stopMicWatch() {
+        // ⚠️ 抑制标记必须**跟着轮询一起复位**，不能只放在"轮询到没在录"那一拍上：
+        // 自动引用做完就会 hideQuoteButton → 停轮询（浮标收了就没什么可等的），
+        // 那一拍于是可能永远不来，标记就一直挂着 true。
+        //
+        // 靠"下一次划词自愈"也不可靠：只有浮标亮起来那一刻麦克风**已经关着**，
+        // 最早那一拍才会答"没在录"、顺手把它复位；麦克风正开着时每一拍都答"在录"，
+        // 标记就没机会复位。真实用法里这个顺序几乎凑不出来（鼠标一划，语音就断了），
+        // 所以它更像颗埋着的雷而不是现行 bug —— 但状态机不该建立在
+        // "用户凑不出这个顺序"上（将来若给这条路加"说完直接发送"，它就立刻变成真问题）。
+        //
+        // 语义上这样才对：一次观察窗口（浮标亮着的这段时间）里只处理第一次开麦。
+        quoteVoiceHandled = false
         if (!vcardState.timer) return
         clearInterval(vcardState.timer)
         vcardState.timer = null
@@ -4818,7 +4894,8 @@ window.__ModuleLoader__.load({
 
       function micTick() {
         if (vcardState.busy) return
-        if (!state.selection) {
+        // 两个都空了（选区没了 / 引用浮标收了）：没什么可等的，停掉轮询
+        if (!state.selection && !state.quoteSelection) {
           stopMicWatch()
           return
         }
@@ -4834,6 +4911,14 @@ window.__ModuleLoader__.load({
               return
             }
             if (matchingIme(data)) {
+              // ── 小窗开着：引用那条路（开麦 = 点一下「❝ 引用」+ 光标进小窗输入框）──
+              // 与语音卡互斥：panelOpen 时前者根本不该启动（openVCard 自己也会拒）。
+              if (panelOpen && state.quoteSelection && !vcardState.open) {
+                if (quoteVoiceHandled) return
+                quoteVoiceHandled = true
+                autoQuoteFromVoice()
+                return
+              }
               if (vcardState.suppress) return
               // 又开始录了：上一次的"等定稿"作废
               stopVoiceSettle()
@@ -4841,17 +4926,20 @@ window.__ModuleLoader__.load({
               else markVCardListening(true)
               return
             }
-            // 没人在录了：这一次录音结束，解除抑制（下一次开麦才允许再弹）
+            // 没人在录了：这一次录音结束，解除抑制（下一次开麦才允许再弹 / 再加引用）
             vcardState.suppress = false
+            quoteVoiceHandled = false
             if (!vcardState.open) return
-            // 开麦结束了。出厂行为是**不退出**：卡片留着、焦点也留着 ——
-            // 一个字都没说时用户可以接着手动打字；"框突然消失"比"没听到就自己打"更打断人。
-            // 只把"在听"停掉（见 markVCardListening）。
+            // 开麦结束了。卡片**不立刻退出**：下面两个收尾行为都要等文字定稿
+            //（松手那一刻输入法还会做一次智能整理，见 startVoiceSettle）。
+            // 两个开关都关掉时卡片就留着 —— 一个字都没说也能接着手动打字。
+            // 这里只把"在听"停掉（见 markVCardListening）。
             //
-            // 两个可选的收尾行为（设置页「界面 · 语音输入」，默认都关，见 Config 注释）：
+            // 两个收尾行为（设置页「界面 · 语音输入」，**默认都开**，见 Config 注释）：
             //   · voiceAutoSend：有字 → 等于替用户点了发送键（发送自己会关卡片、开小窗）；
             //   · voiceCancelOnSilence：没字 → 等于替用户按了 Esc（带关机动画）。
-            // 都从 settingsLive 现读，所以设置一改下一次松手就生效；读不到时（还没加载完）按默认关处理。
+            // 都从 settingsLive 现读，所以设置一改下一次松手就生效；判断用 `!== false` ——
+            // 还没加载完 / 读失败时按**出厂默认（开）**处理，与 host 侧 Config 的缺省值一致。
             // ⚠️ 松手这一刻**文字还没定稿**：豆包紧接着还会做一次智能整理，会改写输入框内容。
             // 所以两个收尾行为都不在这里执行，而是先挂上"等定稿"的观察（见 startVoiceSettle）。
             markVCardListening(false)
@@ -4861,7 +4949,7 @@ window.__ModuleLoader__.load({
             // settleFor 一直停在几十毫秒，卡片永远不动作）。
             if (
               !vcardState.settleTimer &&
-              (settingsLive.voiceAutoSend === true || settingsLive.voiceCancelOnSilence === true)
+              (settingsLive.voiceAutoSend !== false || settingsLive.voiceCancelOnSilence !== false)
             ) {
               startVoiceSettle()
             }
@@ -4872,9 +4960,43 @@ window.__ModuleLoader__.load({
           })
       }
 
+      /**
+       * 开麦 = 点一下「❝ 引用」（用户 2026-10-09 定的行为）。
+       *
+       * 小窗开着时，划词浮出的是引用浮标；这时用户按下输入法的语音键，我们做的正是
+       * "点一下那个浮标"那件事：把选中的文字挂进小窗、并把光标移到小窗输入框 ——
+       * 于是输入法上屏的字直接落进小窗，和引用一起成为下一条追问。
+       *
+       * 为什么必须在**开麦那一刻**做：输入法上屏发生在松手那一刻，焦点得提前挪好
+       * （与语音卡抢焦点同一条时序，见文件上方那段注释）。检测延迟由"探针 125ms +
+       * 页面轮询 200ms"构成，豆包从按下到松手通常有几秒，够用。
+       *
+       * 守卫与 openVCard 完全一致（页面没焦点 / 用户正在别处打字 → 不抢，否则就是把
+       * 人家在别处的听写拽进小窗），另外多加一条：插件自己的 🎤 正在录音时不抢 ——
+       * 那套走 host 识别、与输入法语音是两回事，焦点该留给它。
+       *
+       * 用户取消语音（Esc）或一个字没说：**引用留着**（可一键 ✕ 删）。撤销会让"引用到底
+       * 加没加"变得难预期，而且点浮标那条路也是加了就加了。
+       */
+      function autoQuoteFromVoice() {
+        var selection = state.quoteSelection
+        if (!panelOpen || !selection) return
+        if (typeof document.hasFocus === 'function' && !document.hasFocus()) return
+        if (isTypingTarget(document.activeElement)) return
+        if (voice && voice.phase !== 'idle') return
+        // 与点浮标同一条路：上下文在这一刻才采（"引用当时在哪一段对话里"最有用的就是它）
+        addQuote(selection.text, selection.label, quoteContextFor(selection))
+        hideQuoteButton()
+        // addQuote 在"重复引用 / 到上限"时会提前 return（那两条路不会聚焦），但"说话的字要落进
+        // 小窗"这件事仍然必须成立 —— 所以焦点在这里再兜一次（composerVisible 已由 addQuote 保证）。
+        if (composerVisible()) focusAskBox()
+      }
+
       function hideQuoteButton() {
         quoteButton.style.display = 'none'
         setQuotePop(false)
+        // 浮标收了就没什么可等的了（与 hideButton 同一条规则）；语音卡开着时不能停
+        if (!vcardState.open) stopMicWatch()
       }
 
       // ────────────────────── 引用（❝）：把别处的文字挂进输入框 ──────────────────────
@@ -5625,7 +5747,7 @@ window.__ModuleLoader__.load({
        * 打开面板的公共路径：真实选区与自检钩子**共用**这一条，
        * 否则钩子会绕过缓存（缓存行为只能靠人工点选才能验证）。
        */
-      function openPanelWith(text, context, label, anchor, keyContext, options) {
+      function openPanelWithInner(text, context, label, anchor, keyContext, options) {
         // 这一轮是不是"从语音卡直接进追问"：paint() 靠它决定不画翻译/详解两节、
         // 并且让追问输入框直接可见（见 state.voiceAsk 的几处用法）
         state.voiceAsk = !!(options && options.askFirst)
@@ -5701,6 +5823,24 @@ window.__ModuleLoader__.load({
         restoreFromHistory(cacheKey, function () {
           runRequest(state.payload, cacheKey)
         })
+      }
+
+      /**
+       * 开窗（带"卡片 → 小窗"的交接动画）。
+       *
+       * 为什么动画放在**内容画完之后**、而不是 showPanel 里面：showPanel 那一刻面板还挂着
+       * 上一轮的 DOM（新内容要到后面的 renderTurns / paint 才换上去），在那里量高度量到的是旧的 ——
+       * 实测起点 scaleY 用的是上一轮的 398px 高度，而这一轮内容是 354px。
+       * 起点本来就要把面板压到卡片那一格（视觉上一样），但拿旧高度算缩放会让中段多一折。
+       *
+       * 只有"从语音卡发送"那条路会留下起点（vcardHandoff）；其余开窗路径这里是 null，
+       * 行为与以前完全一致（瞬开）。
+       */
+      function openPanelWith(text, context, label, anchor, keyContext, options) {
+        openPanelWithInner(text, context, label, anchor, keyContext, options)
+        var handoff = vcardHandoff
+        vcardHandoff = null
+        growPanelFromCard(handoff)
       }
       /** 由 Range 还原一个 selection 形状的对象（collectContext 只用到这两个方法）。 */
       function rangeSelection(range) {
@@ -6460,10 +6600,32 @@ window.__ModuleLoader__.load({
         panel.setAttribute('data-resized', '1')
       }
 
+      /**
+       * 面板的**布局**矩形（不受"卡片 → 小窗"交接动画的 transform 影响）。
+       *
+       * 为什么需要它：交接那 260ms 里面板带着 `translate+scale`，这时 `getBoundingClientRect()`
+       * 给的是**缩放后**的框 —— 谁在这段时间里量它（拖拽、夹进视口、历史列表定位、测试钩子），
+       * 拿到的都是错的（比如把面板拖到卡片那个小格子的位置上去）。
+       * `offsetLeft/Top/Width/Height` 是布局值，不受 transform 影响；面板是 position:fixed，
+       * 所以它们本来就是视口坐标，与 getBoundingClientRect 同源。
+       */
+      function panelLayoutRect() {
+        var width = panel.offsetWidth
+        var height = panel.offsetHeight
+        var left = panel.offsetLeft
+        var top = panel.offsetTop
+        // 拿不到布局值时（单测的桩 DOM、面板隐藏着量到 0×0）退回渲染矩形：
+        // 那两种情况下也不可能有交接动画，退回是安全的，而且与改动前的行为一致。
+        if (!isFinite(width) || !isFinite(height) || !isFinite(left) || !isFinite(top) || (width === 0 && height === 0)) {
+          var rect = panel.getBoundingClientRect()
+          return { left: rect.left, top: rect.top, width: rect.width, height: rect.height, right: rect.right, bottom: rect.bottom }
+        }
+        return { left: left, top: top, width: width, height: height, right: left + width, bottom: top + height }
+      }
+
       /** 当前尺寸（读实际渲染值，比拿变量算更稳 —— 拖拽过程中变量会漂）。 */
       function currentPanelSize() {
-        var rect = panel.getBoundingClientRect()
-        return { w: rect.width, h: rect.height }
+        return { w: panel.offsetWidth, h: panel.offsetHeight }
       }
 
       /** 夹进视口：改大小/窗口变化后都调，保证手柄还在屏幕里、小窗不会超出可视区。 */
@@ -6484,7 +6646,7 @@ window.__ModuleLoader__.load({
        * 优先保住左上角（那是用户看到的锚点），右边/下边放不下才往回收。
        */
       function clampPanelPosition() {
-        var rect = panel.getBoundingClientRect()
+        var rect = panelLayoutRect()
         var maxLeft = Math.max(4, window.innerWidth - rect.width - 4)
         var maxTop = Math.max(4, window.innerHeight - rect.height - 4)
         panel.style.left = Math.round(Math.min(Math.max(rect.left, 4), maxLeft)) + 'px'
@@ -6659,6 +6821,64 @@ window.__ModuleLoader__.load({
         warmModelCatalog()
       }
 
+      /**
+       * 让小窗"从卡片那一格长出来"（260ms，只动 transform）。
+       *
+       * 起手把面板用 transform 压到卡片矩形上（`translate(dx,dy) scale(sx,sy)`，原点取左上角），
+       * 再回到 `transform:none` —— 于是"卡片 → 小窗"是一段连续的量变，而不是两次 display 切换。
+       *
+       * 几个必须这么写的点：
+       *   · 量 `to` 之前先**清掉残留的 transform**：否则量到的是上一次动画的半截几何；
+       *   · 先 `transition:none` 摆好起点、强制重排，再开过渡 —— 否则浏览器会把"设起点"和
+       *     "设终点"合并成一次样式变更，动画根本不播（插件在 openVCard 里踩过同一个坑）；
+       *   · 收尾必须把内联的 `transform/transition/transformOrigin` 清干净 —— 面板之后还要被
+       *     拖拽改大小、还要开设置抽屉（抽屉是 inset:0 贴在面板上的），留着 transform 会连累它们；
+       *   · 系统要求减少动效时**不做**（与 playCrtOff 同一条规矩）。
+       */
+      function growPanelFromCard(from) {
+        if (!from || !panel || !from.width || !from.height) return
+        if (prefersReducedMotion()) return
+        panel.style.transition = 'none'
+        panel.style.transform = ''
+        panel.style.transformOrigin = ''
+        var to = panel.getBoundingClientRect()
+        if (!to.width || !to.height) return
+        var sx = from.width / to.width
+        var sy = from.height / to.height
+        var dx = from.left - to.left
+        var dy = from.top - to.top
+        // 卡片正好在面板位置上（差不到 1px）就没必要做 —— 那是"没动"，别白播一段
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(1 - sx) < 0.02 && Math.abs(1 - sy) < 0.02) return
+        panel.style.transformOrigin = '0 0'
+        panel.style.transform = 'translate(' + dx.toFixed(1) + 'px,' + dy.toFixed(1) + 'px) scale(' + sx.toFixed(4) + ',' + sy.toFixed(4) + ')'
+        void panel.offsetWidth
+        panel.style.transition = 'transform ' + PANEL_GROW_MS + 'ms ' + PANEL_GROW_EASE
+        panel.style.transform = 'none'
+        if (panelGrowTimer) {
+          clearTimeout(panelGrowTimer)
+          panelGrowTimer = null
+        }
+        var settle = function () {
+          if (panelGrowTimer) {
+            clearTimeout(panelGrowTimer)
+            panelGrowTimer = null
+          }
+          if (panelGrowHandler) {
+            panel.removeEventListener('transitionend', panelGrowHandler)
+            panelGrowHandler = null
+          }
+          panel.style.transition = ''
+          panel.style.transform = ''
+          panel.style.transformOrigin = ''
+        }
+        panelGrowHandler = function (event) {
+          if (event.target === panel && event.propertyName === 'transform') settle()
+        }
+        panel.addEventListener('transitionend', panelGrowHandler)
+        // transitionend 是主路径；标签页在后台时动画不跑、事件也就不会来，所以另挂兜底
+        panelGrowTimer = later(settle, PANEL_GROW_MS + 140)
+      }
+
       function closePanel() {
         closeModelMenu()
         // 小窗关掉时设置抽屉也一起收：否则下次开窗会直接停在设置页上
@@ -6667,6 +6887,20 @@ window.__ModuleLoader__.load({
         closeSettings()
         panelOpen = false
         panel.style.display = 'none'
+        // 交接动画还没跑完就被关掉：连同它的定时器一起收干净，别把半截 transform 留在面板上
+        // （下次开窗量几何会量到它，拖拽改大小也会被它带偏）
+        if (panelGrowTimer) {
+          clearTimeout(panelGrowTimer)
+          panelGrowTimer = null
+        }
+        if (panelGrowHandler) {
+          panel.removeEventListener('transitionend', panelGrowHandler)
+          panelGrowHandler = null
+        }
+        panel.style.transition = ''
+        panel.style.transform = ''
+        panel.style.transformOrigin = ''
+        vcardHandoff = null
         hideHistoryList()
         // 小窗收起来了：引用浮标跟着走（它只在"小窗开着"时有意义）
         hideQuoteButton()
@@ -6756,6 +6990,7 @@ window.__ModuleLoader__.load({
             // 创建时 start 事件还没到，state.effort 是空的；用函数实时读，档位才不会显示成兜底值
             effortOf: function () { return state.stageEffort || 'low' },
             thoughtOf: function () { return state.thought },
+            noticeOf: function () { return state.notice },
           })
         } else if (state.phase === 'error') {
           translationSection.content.textContent = ''
@@ -6788,6 +7023,7 @@ window.__ModuleLoader__.load({
             effort: state.effort,
             effortOf: function () { return state.stageEffort || 'high' },
             thoughtOf: function () { return state.thought },
+            noticeOf: function () { return state.notice },
           })
         }
 
@@ -6974,7 +7210,7 @@ window.__ModuleLoader__.load({
       /** 内容变高后把面板拉回视口内。 */
       function keepInsideViewport() {
         if (!panelOpen) return
-        var rect = panel.getBoundingClientRect()
+        var rect = panelLayoutRect()
         var width = Math.min(rect.width, window.innerWidth - 12)
         var left = clamp(rect.left, 6, Math.max(6, window.innerWidth - width - 6))
         var top = clamp(rect.top, 6, Math.max(6, window.innerHeight - 64))
@@ -7518,7 +7754,7 @@ window.__ModuleLoader__.load({
        * 高度跟面板对齐（上限视口高度），自带滚动条。
        */
       function placeHistoryList() {
-        var rect = panel.getBoundingClientRect()
+        var rect = panelLayoutRect()
         var width = 250
         var gap = 10
         var viewportW = window.innerWidth || 1200
@@ -7746,7 +7982,12 @@ window.__ModuleLoader__.load({
        */
       function clearTransientNotice(turn) {
         if (!turn) return false
-        if (String(turn.noticeCode || '') !== 'conclusion-retry') return false
+        var code = String(turn.noticeCode || '')
+        // conclusion-retry：进行中状态，正文到了就撤；
+        // upstream-retry：上游偶发错误（host 已换档重试），重试成功时正文会到、失败时走 error，
+        //   两种情况都不该把这句一直挂在回答上面。
+        // effort-rejected / reasoning-leak 是"这个模型这一档有问题"的结论性说明，留着。
+        if (code !== 'conclusion-retry' && code !== 'upstream-retry') return false
         turn.notice = ''
         turn.noticeCode = ''
         return true
@@ -7878,7 +8119,7 @@ window.__ModuleLoader__.load({
        */
       function ensurePanelInsideViewportNow() {
         if (!panelOpen || panelInteracting) return
-        var rect = panel.getBoundingClientRect()
+        var rect = panelLayoutRect()
         if (rect.bottom <= window.innerHeight - 4) return
         clampPanelPosition()
       }
@@ -8546,6 +8787,7 @@ window.__ModuleLoader__.load({
         entry.effort = opts.effort || ''
         entry.effortOf = opts.effortOf || null
         entry.thoughtOf = opts.thoughtOf || null
+        entry.noticeOf = opts.noticeOf || null
         entry.busyOf = opts.busyOf || toolBusyNow
         updateWaitClocks()
         return entry
@@ -8577,9 +8819,14 @@ window.__ModuleLoader__.load({
           if (!entry.hint) continue
           var thinking = entry.thoughtOf ? String(entry.thoughtOf() || '') : ''
           thinking = thinking.replace(/\s+/g, ' ').trim()
+          var notice = entry.noticeOf ? String(entry.noticeOf() || '') : ''
+          notice = notice.replace(/\s+/g, ' ').trim()
           if (entry.busyOf && entry.busyOf()) {
             // 检索阶段：只说"在查资料"。查询词/命中/链接都不进小窗（那是模型的原料，不是结果）
             entry.hint.textContent = '🔍 正在检索资料…'
+          } else if (notice) {
+            // host 的"正在换档重试 / 上游偶发错误"比思考尾巴更该让人看见（它解释了这段时间去哪了）
+            entry.hint.textContent = '↻ ' + notice.slice(-72)
           } else if (thinking) {
             // 看得见它在想什么，就不会以为"没反应"了
             entry.hint.textContent = '💭 ' + thinking.slice(-72)
@@ -8614,6 +8861,7 @@ window.__ModuleLoader__.load({
         state.aborted = false
         state.stageEffort = ''
         state.thought = ''
+        state.notice = ''
         state.tools = []
         state.startedAt = Date.now()
         state.elapsed = 0
@@ -8705,7 +8953,13 @@ window.__ModuleLoader__.load({
             } else if (message.type === 'delta') {
               state.raw += message.text
               state.phase = 'streaming'
+              // 正文到了 = 那次换档重试成功了，等待提示里那句"已自动重试"不必再挂着
+              state.notice = ''
               dirty = true
+            } else if (message.type === 'notice') {
+              // host 的"正在换档重试 / 上游偶发错误"：以前这条分支不存在，全被丢掉。
+              // 不 schedulePaint：由 200ms 的 ticker 写字，和 thought 同一条路。
+              state.notice = String(message.text || '')
             } else if (message.type === 'thought') {
               // 只留尾巴：等待提示里显示"正在想什么"，不给正文添乱；
               // 刻意不 schedulePaint —— 由 200ms 的 ticker 写字，思考流不会把界面刷爆
@@ -11013,7 +11267,7 @@ window.__ModuleLoader__.load({
         if (promoteButton.contains(event.target) || closeButton.contains(event.target)) return
         if (settingsButton.contains(event.target) || historyButton.contains(event.target)) return
         event.preventDefault()
-        var rect = panel.getBoundingClientRect()
+        var rect = panelLayoutRect()
         var offsetX = event.clientX - rect.left
         var offsetY = event.clientY - rect.top
         panelInteracting = true
@@ -11110,7 +11364,7 @@ window.__ModuleLoader__.load({
         },
         /** 当前小窗几何（测试用：直接读渲染值，不经过变量）。 */
         panelGeom: function () {
-          var rect = panel.getBoundingClientRect()
+          var rect = panelLayoutRect()
           return { x: rect.left, y: rect.top, w: rect.width, h: rect.height, resized: panel.getAttribute('data-resized') === '1' }
         },
         /** 重新读一次 host 上的胶囊位置（测试用；正常路径只在挂载时读一次）。 */

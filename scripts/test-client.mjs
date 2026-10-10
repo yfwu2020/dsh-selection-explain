@@ -429,11 +429,16 @@ function withAbort(response, signal) {
  * 默认 available:false —— 和其它用例一样"这台机器没有这个能力"，谁都不受影响；
  * 语音卡那条用例把它改成"豆包输入法正在录"，走完整条链路。
  */
-const micStub = { value: { ok: true, available: false, capturing: false, processes: [], reason: 'stub-default' } }
+const micStub = {
+  value: { ok: true, available: false, capturing: false, processes: [], reason: 'stub-default' },
+  /** 被问了几次（"只在引用浮标亮着时轮询"这条要数它，见 ⑨）。 */
+  hits: 0,
+}
 
 /**
  * 设置桩：离线跑的时候给客户端一份"读得到"的设置。
- * 默认空对象 = 所有设置都用各自的出厂默认（不写值的键，客户端按默认关处理）。
+ * 默认空对象 = 所有设置都用各自的出厂默认（不写值的键，客户端按默认处理；
+ * 语音那两个收尾开关的出厂默认是**开**，所以下面「卡片留着」那段要先显式设成 false）。
  * 用例里改 settingsStub.value 之后要调 hook.reloadSettings() ——
  * 客户端只在启动时读一次设置，不重读的话改桩值不会生效。
  */
@@ -484,6 +489,7 @@ const routeFetch = (input, init) => {
     )
   }
   if (url.endsWith('/selection-explain/api/mic')) {
+    micStub.hits += 1
     return Promise.resolve(
       new Response(JSON.stringify(micStub.value), { headers: { 'content-type': 'application/json' } }),
     )
@@ -820,6 +826,29 @@ const routeFetch = (input, init) => {
       )
     }
     const extra = globalThis.__askExtra || {}
+    // noticeGapMs：在 notice 与正文之间留一段空档。
+    // 验"过程提示在正文到达前看得见"必须有观察窗口 —— 一口气发完的话，
+    // 提示会在同一批 SSE 里被 delta 立刻撤掉，轮询根本抓不到。
+    if (extra.noticeGapMs) {
+      const encoder = new TextEncoder()
+      const stream = new ReadableStream({
+        async start(controller) {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', mode: 'chat', effort: 'low' })}\n\n`),
+          )
+          if (extra.notice) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'notice', ...extra.notice })}\n\n`))
+          }
+          await new Promise((r) => setTimeout(r, extra.noticeGapMs))
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ type: 'delta', text: extra.delta || '这是对追问的回答：' + body.question })}\n\n`),
+          )
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done', chars: 12, toolCalls: 0 })}\n\n`))
+          controller.close()
+        },
+      })
+      return Promise.resolve(new Response(stream, { headers: { 'content-type': 'text/event-stream' } }))
+    }
     const payload = [
       `data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', mode: 'chat', effort: 'low' })}\n\n`,
       ...(extra.notice && !extra.strip ? [`data: ${JSON.stringify({ type: 'notice', ...extra.notice })}\n\n`] : []),
@@ -2275,8 +2304,8 @@ assert(
 // 直接对着“正在跑的插件”跑会失败 —— 那是上一次启动时加载的旧代码，
 // 除非用户重载过插件。
 if (process.env.SEL_SETTINGS_ONLY === '1') {
-  // 新增的两个语音收尾开关（界面 · 语音输入）：必须在 spec 里、默认关、且只收布尔值。
-  // 尽量只读：唯一的写操作是"true → 再写回 false"，写完回到默认，不留副作用。
+  // 新增的两个语音收尾开关（界面 · 语音输入）：必须在 spec 里、默认开、且只收布尔值。
+  // 尽量只读：唯一的写操作是"写回默认值"，写完回到默认，不留副作用。
   {
     const payload = await (await fetch(ORIGIN + '/selection-explain/api/settings', { headers: { accept: 'application/json' } })).json()
     const items = (payload.groups || []).reduce((acc, g) => acc.concat(g.items || []), [])
@@ -2288,8 +2317,8 @@ if (process.env.SEL_SETTINGS_ONLY === '1') {
       JSON.stringify({ cancel: !!cancelItem, send: !!sendItem, kinds: [cancelItem && cancelItem.kind, sendItem && sendItem.kind] }),
     )
     assert(
-      '两个语音开关**默认都是关**',
-      payload.defaults.voiceCancelOnSilence === false && payload.defaults.voiceAutoSend === false,
+      '两个语音开关**默认都是开**（2026-10-09 用户指定）',
+      payload.defaults.voiceCancelOnSilence === true && payload.defaults.voiceAutoSend === true,
       JSON.stringify({ cancel: payload.defaults.voiceCancelOnSilence, send: payload.defaults.voiceAutoSend }),
     )
     const bad = await (await fetch(ORIGIN + '/selection-explain/api/settings', {
@@ -2305,19 +2334,19 @@ if (process.env.SEL_SETTINGS_ONLY === '1') {
     await fetch(ORIGIN + '/selection-explain/api/settings', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ values: { voiceAutoSend: true, voiceCancelOnSilence: true } }),
+      body: JSON.stringify({ values: { voiceAutoSend: false, voiceCancelOnSilence: false } }),
     })
-    const on = await (await fetch(ORIGIN + '/selection-explain/api/settings', { headers: { accept: 'application/json' } })).json()
+    const off = await (await fetch(ORIGIN + '/selection-explain/api/settings', { headers: { accept: 'application/json' } })).json()
     assert(
-      '两个语音开关能写回并读回',
-      on.values.voiceAutoSend === true && on.values.voiceCancelOnSilence === true,
-      JSON.stringify({ send: on.values.voiceAutoSend, cancel: on.values.voiceCancelOnSilence }),
+      '两个语音开关能写回并读回（关掉也记得住）',
+      off.values.voiceAutoSend === false && off.values.voiceCancelOnSilence === false,
+      JSON.stringify({ send: off.values.voiceAutoSend, cancel: off.values.voiceCancelOnSilence }),
     )
-    // 写回默认，不留副作用
+    // 写回默认（开），不留副作用
     await fetch(ORIGIN + '/selection-explain/api/settings', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ values: { voiceAutoSend: false, voiceCancelOnSilence: false } }),
+      body: JSON.stringify({ values: { voiceAutoSend: true, voiceCancelOnSilence: true } }),
     })
   }
 }
@@ -3637,6 +3666,43 @@ assert('点回来看到"已停止"的状态与可重试入口', hook.state().pha
   hook.openModel()
   const bad = Array.from(walk(hook.modelNodes().menu)).filter((n) => n.getAttribute && n.getAttribute('data-bad') === '1')
   assert('菜单里把被拒的档位标出来（划斜线 + tooltip）', bad.length === 1 && textOf(bad[0]) === '最大', bad.map((b) => textOf(b)).join(','))
+
+  // ② 上游**偶发**错误（host 已换档重试）：提示要出现，但绝不能当成"这一档不支持" ——
+  //    2026-10-09 实测：同一档位时好时坏（low/high 各 5/8 成功），所以它不能清档位、不能标 bad。
+  {
+    const highBtn = tiers().find((b) => textOf(b) === '高')
+    highBtn.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+    assert('（前提）先把档位设成「高」', hook.modelState().effort === 'high', String(hook.modelState().effort))
+    hook.close()
+    await sleep(30)
+    globalThis.__askExtra = { notice: { code: 'upstream-retry', text: '上游这次返回了错误，已自动重试' }, noticeGapMs: 400 }
+    hook.ask('上游偶发错误的用例')
+    let sawNotice = false
+    for (let i = 0; i < 200 && hook.turns().some((t) => t.streaming === true); i += 1) {
+      if (String((hook.turns()[hook.turns().length - 1] || {}).notice || '').indexOf('已自动重试') >= 0) sawNotice = true
+      await sleep(20)
+    }
+    await sleep(60)
+    const afterUpstream = hook.turns()[hook.turns().length - 1] || {}
+    assert('上游偶发错误的提示出现过', sawNotice, String(afterUpstream.notice))
+    assert(
+      '正文到了之后这句**过程提示**撤掉（不是挂在回答上的结论）',
+      String(afterUpstream.notice || '') === '',
+      String(afterUpstream.notice),
+    )
+    assert(
+      '偶发错误**不动**用户的档位选择（这是与 effort-rejected 的关键区别）',
+      hook.modelState().effort === 'high',
+      String(hook.modelState().effort),
+    )
+    hook.openModel()
+    const badAfter = Array.from(walk(hook.modelNodes().menu)).filter((n) => n.getAttribute && n.getAttribute('data-bad') === '1')
+    assert(
+      '偶发错误不写进"实测该模型不支持"（菜单里仍然只有「最大」被标）',
+      badAfter.length === 1 && textOf(badAfter[0]) === '最大',
+      badAfter.map((b) => textOf(b)).join(','),
+    )
+  }
   globalThis.__askExtra = null
 }
 
@@ -5225,11 +5291,17 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
     'width=' + String(box.style.width) + ' flex=' + String(box.style.flex),
   )
 
-  // 开麦结束、一个字都没说：卡片**不退出**（用户可以接着手动打字），只是不再显示"在听"
+  // 开麦结束、一个字都没说 —— 先验**关掉**这两个收尾开关时的老行为：
+  // 卡片**不退出**（用户可以接着手动打字），只是不再显示"在听"。
+  // ⚠️ 这两个开关的出厂默认是**开**（2026-10-09 用户指定），所以这里必须显式设成 false；
+  //    打开后的两条收尾在文件末尾单独验。
+  settingsStub.value = { voiceCancelOnSilence: false, voiceAutoSend: false }
+  hook.reloadSettings()
+  await sleep(120)
   micStub.value = { ok: true, available: true, capturing: false, processes: [], reason: '' }
   await sleep(520)
   const silent = hook.voiceCard()
-  assert('开麦结束但一个字都没说：卡片留着不退出', silent.open === true, JSON.stringify(silent))
+  assert('（关掉时）开麦结束但一个字都没说：卡片留着不退出', silent.open === true, JSON.stringify(silent))
   assert('此时不再显示「在听」（麦克风已经松开了）', silent.voiced === false, JSON.stringify(silent))
   // 恢复"正在录"：后面几步按原样继续
   micStub.value = {
@@ -5258,12 +5330,40 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
   askBox.focus = () => {
     askFocused += 1
   }
+  // 交接动画（方案二「缩放长出」）的观测点：必须在点发送**之前**挂上 ——
+  // 插件会在 showPanel 里连续写两次 style.transform（先摆起点、再设 none），
+  // 桩 DOM 没有布局，量不出真实矩形，但"起点是不是把面板压到卡片那一格"可以从写入值上直接验。
+  const panelEl = find('dsh-sel-panel')
+  const growWrites = []
+  let panelTransformNow = panelEl.style.transform
+  Object.defineProperty(panelEl.style, 'transform', {
+    configurable: true,
+    get: () => panelTransformNow,
+    set: (value) => { growWrites.push(value); panelTransformNow = value },
+  })
   // 发送那一刻焦点确实在卡片输入框里（真实状态）——正是它让"开窗聚焦"那次让了路
   documentStub.activeElement = box
   if (sendBtn) sendBtn.dispatch('click', { target: sendBtn, preventDefault() {}, stopPropagation() {} })
   await sleep(80)
   const afterSend = hook.state()
   assert('发送后卡片收起', hook.voiceCard().open === false, JSON.stringify(hook.voiceCard()))
+  // 卡片矩形是桩给的 940,222,360×42；面板是通用矩形 40,100,460×300
+  //   → 起点 translate(900,122) scale(360/460, 42/300)
+  const growStart = 'translate(900.0px,122.0px) scale(0.7826,0.1400)'
+  assert(
+    '交接起点：把面板压到卡片那一格（translate + scale，原点左上），终点回到 none',
+    growWrites.indexOf(growStart) >= 0 &&
+      growWrites.indexOf(growStart) === growWrites.length - 2 &&
+      growWrites[growWrites.length - 1] === 'none' &&
+      panelEl.style.transformOrigin === '0 0',
+    JSON.stringify({ writes: growWrites, origin: panelEl.style.transformOrigin }),
+  )
+  assert(
+    '交接只动 transform，260ms 同一族曲线（不动 width/left/top —— 那是布局属性，会掉帧）',
+    String(panelEl.style.transition) === 'transform 260ms cubic-bezier(.2,.8,.2,1)',
+    String(panelEl.style.transition),
+  )
+
   // 卡片隐藏后浏览器会把焦点收回 body —— 桩里不会（它不模拟"隐藏即失焦"），
   // 所以这里持续保持这个**忠实状态**：否则焦点会一直挂在已隐藏的卡片输入框上，
   // 后面的礼貌守卫就会误判成"人家正在别处打字"（实测就是这么卡的）。
@@ -5286,6 +5386,14 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
   askBox.focus = realAskFocus
   // 还原焦点：不还原的话它会一直停在别处，后面用例开卡片会被"别处正在打字"那条守卫挡掉
   documentStub.activeElement = body
+  // 交接动画必须**自己收尾**：把内联的 transform / transition / transformOrigin 清干净。
+  // 留着的话下一次开窗量几何会量到半截 transform（拖拽改大小、设置抽屉都会跟着歪）。
+  await sleep(460) // 260ms 动画 + 140ms 兜底（桩里没有 transitionend，走的就是兜底那条）
+  assert(
+    '交接收尾：内联 transform / transition / transformOrigin 全部清掉',
+    !panelEl.style.transform && !panelEl.style.transition && !panelEl.style.transformOrigin,
+    JSON.stringify({ tf: panelEl.style.transform, tr: panelEl.style.transition, og: panelEl.style.transformOrigin }),
+  )
 
   // 追问失败也要把光标交回输入框 —— 这条路原来漏了规则（用户实测："报错之后输入框没有光标"）
   {
@@ -5375,17 +5483,17 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
     assert('Esc 收起语音卡', false, '卡片没能再次打开：' + JSON.stringify(reopened))
   }
 
-  // ── 两个新开关（设置页「界面 · 语音输入」，默认都关）──
-  // 默认关时的行为（"卡片留着"）上面已经验过；这里验打开后的两条收尾。
+  // ── 两个语音收尾开关（设置页「界面 · 语音输入」，**默认都开**）──
+  // 关掉时的行为（"卡片留着"）上面已经验过；这里验打开后的两条收尾。
   // 关键：松手**不是**决定时刻 —— 输入法在松手后还会做一次智能整理（改写输入框内容），
-  // 所以两个动作都要等文字定稿（连续 VOICE_SETTLE_MS=700ms 没变化）才发生。
+  // 所以两个动作都要等文字定稿（连续 VOICE_SETTLE_MS=500ms 没变化）才发生。
   {
     const IME = [{ pid: 513, bundleId: 'com.bytedance.inputmethod.doubaoime', name: 'DoubaoIme' }]
     const recording = { ok: true, available: true, capturing: true, processes: IME, reason: '' }
     const stopped = { ok: true, available: true, capturing: false, processes: [], reason: '' }
 
     // ① 「空录音时收起」：松手后不立刻收，等定稿才收（而且走取消路径）
-    settingsStub.value = { voiceCancelOnSilence: true }
+    settingsStub.value = { voiceCancelOnSilence: true, voiceAutoSend: false }
     hook.reloadSettings()
     await sleep(320)
     hook.close()
@@ -5414,7 +5522,7 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
     )
 
     // ② 「说完直接发送」：松手后等定稿才发；期间模拟豆包的智能整理改写输入框
-    settingsStub.value = { voiceAutoSend: true }
+    settingsStub.value = { voiceCancelOnSilence: false, voiceAutoSend: true }
     hook.reloadSettings()
     await sleep(320)
     await sleep(800) // 等上一条关机动画彻底收尾
@@ -5460,10 +5568,181 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       JSON.stringify(sent.slice(sentBefore).map((b) => b && b.question)),
     )
 
+    // ③ 出厂默认就是开：桩里**不写这两个键**时，空录音同样等定稿后收起。
+    // 这一条挡住"设置还没加载完 / 读失败就退回关"的回归 —— 那会和 host 侧 Config 的缺省值不一致。
+    settingsStub.value = {}
+    hook.reloadSettings()
+    await sleep(320)
+    await sleep(800) // 等上一条发送彻底收尾
+    hook.close()
+    await sleep(20)
+    micStub.value = recording
+    await sleep(420)
+    hook.voiceCardOpen()
+    if (box) {
+      box.value = ''
+      box.dispatch('input', { target: box, preventDefault() {}, stopPropagation() {} })
+    }
+    await sleep(80)
+    micStub.value = stopped
+    await sleep(900)
+    assert(
+      '默认（桩里不写这两个键）也是开：空录音照样等定稿后收起',
+      hook.voiceCard().open === false,
+      JSON.stringify(hook.voiceCard()),
+    )
+
     // 收尾：设置清回默认，别影响后面的用例
     settingsStub.value = {}
     hook.reloadSettings()
     await sleep(300)
+  }
+
+  // ── ⑨ 小窗开着时开麦 = 点一下「❝ 引用」（2026-10-09 定的行为）──
+  //   ① 只在引用浮标亮着时才问麦克风；② 开麦 → 引用挂进来 + 光标进小窗输入框；
+  //   ③ **不弹语音卡**（卡片是"面板没开、字没处落"的产物）；④ 同一次录音只处理一次；
+  //   ⑤ 别处正在打字 → 不加引用、也不抢焦点。
+  {
+    const recording2 = {
+      ok: true,
+      available: true,
+      capturing: true,
+      processes: [{ pid: 513, bundleId: 'com.bytedance.inputmethod.doubaoime', name: 'DoubaoIme' }],
+      reason: '',
+    }
+    const stopped2 = { ok: true, available: true, capturing: false, processes: [], reason: '' }
+    // 选区桩本段自带：上面两族的 selectText / selectOn 都是块内作用域，这里够不着。
+    // textEl 是模块级的（划词那一段就在用它），所以直接搭在它上面。
+    const quoteRect9 = { left: 40, top: 620, right: 320, bottom: 640, width: 280, height: 20 }
+    const selectDoc = (text) => {
+      const range = {
+        startContainer: textEl,
+        endContainer: textEl,
+        cloneRange: () => range,
+        getClientRects: () => [quoteRect9],
+        getBoundingClientRect: () => quoteRect9,
+      }
+      windowStub.getSelection = () => ({
+        isCollapsed: false,
+        rangeCount: 1,
+        toString: () => text,
+        getRangeAt: () => range,
+      })
+    }
+    const priorSelection = windowStub.getSelection
+    micStub.value = stopped2
+    hook.close()
+    await sleep(40)
+    hook.open('voice-quote-probe', '开麦引用的上下文片段', '开麦引用')
+    for (let i = 0; i < 120 && hook.state().phase !== 'done'; i += 1) await sleep(20)
+    assert('（前提）开麦引用用例的首轮出完', hook.state().phase === 'done', hook.state().phase)
+    assert('（前提）引用区是空的', hook.quotes().length === 0, JSON.stringify(hook.quotes().map((q) => q.text)))
+
+    const focusHits = { count: 0 }
+    const realAskFocus3 = askBox.focus
+    askBox.focus = () => {
+      focusHits.count += 1
+    }
+
+    // ① 没有引用浮标 → 不问麦克风（探针只在被问时活着）
+    const hitsIdle = micStub.hits
+    await sleep(520)
+    assert('没有引用浮标时**不**轮询麦克风（省掉常驻探针）', micStub.hits === hitsIdle, `${hitsIdle} → ${micStub.hits}`)
+
+    // ② 浮标亮着 → 开始问
+    selectDoc('这半句是要被引用的')
+    documentStub.dispatch('mouseup', { target: textEl })
+    await sleep(30)
+    assert('（前提）引用浮标亮着', hook.quoteState().visible === true, JSON.stringify(hook.quoteState()))
+    const hitsFloat = micStub.hits
+    await sleep(520)
+    assert('引用浮标亮着时才问麦克风', micStub.hits > hitsFloat, `${hitsFloat} → ${micStub.hits}`)
+
+    // ③ 开麦 → 引用挂进来 + 光标进小窗输入框 + 不弹语音卡
+    micStub.value = recording2
+    await sleep(320)
+    const autoQuotes = hook.quotes()
+    assert(
+      '开麦 → 选中的那段自动挂进引用（= 点一下引用浮标）',
+      autoQuotes.length === 1 && autoQuotes[0].text === '这半句是要被引用的' && autoQuotes[0].label === '主界面选中',
+      JSON.stringify(autoQuotes),
+    )
+    assert('开麦 → 引用浮标自己收了（"已经进去了"的信号）', hook.quoteState().visible === false, JSON.stringify(hook.quoteState()))
+    assert('开麦 → 光标进了小窗输入框（输入法上屏的字落在这儿）', focusHits.count > 0, 'focus 次数=' + focusHits.count)
+    assert('开麦 → **不**弹语音卡（面板开着时字直接落进小窗）', hook.voiceCard().open === false, JSON.stringify(hook.voiceCard()))
+    assert('开麦 → 状态里交代了这次引用', /已加入引用/.test(String(hook.state().status)), String(hook.state().status))
+
+    // ④ 同一次录音里只处理一次（200ms 一拍，不抑制会反复加 / 反复抢焦点）
+    const focusAfterAuto = focusHits.count
+    await sleep(340)
+    assert(
+      '同一次录音只处理一次（不反复加引用、不反复抢焦点）',
+      hook.quotes().length === 1 && focusHits.count === focusAfterAuto,
+      `引用=${hook.quotes().length} focus=${focusAfterAuto}→${focusHits.count}`,
+    )
+
+    // ⑤ 别处正在打字 → 不抢（守卫与语音卡那条完全一致）
+    micStub.value = stopped2
+    await sleep(320) // 这一轮结束：抑制复位
+    const otherBox = documentStub.createElement('textarea')
+    documentStub.activeElement = otherBox
+    selectDoc('别处打字时不该被抢')
+    documentStub.dispatch('mouseup', { target: textEl })
+    await sleep(30)
+    assert('（前提）浮标又亮了', hook.quoteState().visible === true, JSON.stringify(hook.quoteState()))
+    const focusBeforeGuard = focusHits.count
+    micStub.value = recording2
+    await sleep(320)
+    assert('别处正在打字：不加引用', hook.quotes().length === 1, JSON.stringify(hook.quotes().map((q) => q.text)))
+    assert(
+      '别处正在打字：不抢焦点（人家的听写不能被拽进小窗）',
+      focusHits.count === focusBeforeGuard,
+      `focus=${focusBeforeGuard}→${focusHits.count}`,
+    )
+
+    // ⑥ 自动引用**做过一次之后**，机制还得活着（不能因为抑制标记没复位就"下次不响应了"）
+    //    这一步专门挡那条回归：交接后浮标收起 → 轮询停 → 若复位只挂在"轮到没在录"那一拍上，
+    //    标记会一直 true，下一次开麦什么都不发生（实测就是这么静默失效的）。
+    micStub.value = stopped2
+    documentStub.activeElement = body
+    selectDoc('第二次开麦也要能自动引用')
+    documentStub.dispatch('mouseup', { target: textEl })
+    await sleep(30)
+    assert('（前提）浮标第三次亮起', hook.quoteState().visible === true, JSON.stringify(hook.quoteState()))
+    const focusBeforeSecond = focusHits.count
+    micStub.value = recording2
+    await sleep(340)
+    const second = hook.quotes()
+    assert(
+      '上一次自动引用之后，下一次开麦照样生效（抑制标记跟着轮询复位）',
+      second.length === 2 && second[1].text === '第二次开麦也要能自动引用' && focusHits.count > focusBeforeSecond,
+      JSON.stringify({ quotes: second.map((q) => q.text), focus: `${focusBeforeSecond}→${focusHits.count}` }),
+    )
+
+    // ⑦ **一口气说不停**时换一段引用也要能生效：麦克风一直没松（探针一直报"在录"），
+    //    这时若"这次录音处理过没有"的标记只在"轮到没在录"那一拍才复位，就永远没机会复位 ——
+    //    下一次划词纵有浮标也毫无反应。这条用例专门盯那个死锁（撤掉 stopMicWatch 里的复位就会红）。
+    // ⚠️ 这里**不能**断言"浮标亮着"：麦克风本来就开着，浮标一亮就会被这一拍立刻收走
+    //    （动作比断言快 —— 实测就是"前提"红、主断言绿）。直接看结果。
+    const hitsBeforeThird = micStub.hits
+    selectDoc('一直说不停时换的这段引用')
+    documentStub.dispatch('mouseup', { target: textEl })
+    await sleep(360)
+    assert('（前提）换选区后轮询确实又跑起来了', micStub.hits > hitsBeforeThird, `${hitsBeforeThird} → ${micStub.hits}`)
+    const third = hook.quotes()
+    assert(
+      '麦克风一直没松、这时换一段引用：照样自动挂进来（不靠"没在录"那一拍复位）',
+      third.length === 3 && third[2].text === '一直说不停时换的这段引用',
+      JSON.stringify({ quotes: third.map((q) => q.text), mic: micStub.value.capturing }),
+    )
+
+    // 收尾：焦点 / 麦克风 / 选区 / 面板都还原，别影响后面的用例
+    askBox.focus = realAskFocus3
+    micStub.value = stopped2
+    documentStub.activeElement = body
+    windowStub.getSelection = priorSelection
+    hook.close()
+    await sleep(40)
   }
 
   micStub.value = { ok: true, available: false, capturing: false, processes: [], reason: 'stub-default' }
