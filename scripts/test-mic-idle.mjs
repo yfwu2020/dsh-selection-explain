@@ -19,6 +19,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// ⚠️ 这个功能**只在 macOS 上有**：探针读的是 CoreAudio（宿主在非 darwin 上直接报
+// available=false，见 src/index.ts 的平台门禁）。别的平台上这些用例必然全红 ——
+// 与真浏览器冒烟同一套约定：**跑不了就 SKIP、退出码 0**，别把发布流水线卡在一台
+// 没有这个能力的机器上（2026-10-10 实测：ubuntu CI 上 6/7 条红，v0.9.1 那次 CI 之后
+// 才把本用例加进 npm test 链，所以这是第一次真跑到 Linux 上）。
+if (process.platform !== 'darwin') {
+  console.log('SKIP  麦克风探针是 macOS 专属（宿主在非 darwin 上直接报 available=false）—— 本机跳过')
+  process.exit(0)
+}
+
 const dir = await mkdtemp(join(tmpdir(), 'dsh-mic-idle-'))
 const logPath = join(dir, 'probe.log')
 // ⚠️ 环境变量必须在 **import 之前** 设好：宿主那几个常量是在模块求值时读的，
