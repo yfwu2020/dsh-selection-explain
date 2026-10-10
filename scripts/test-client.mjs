@@ -2433,6 +2433,68 @@ if (process.env.SEL_SETTINGS_ONLY === '1') {
     String((hintNode() || {}).textContent || ''),
   )
 
+  // 反向同步：在**小窗的档位控件**里改，设置页那一行要跟着变（两处读的原本不是同一份数据）
+  {
+    hook.openModel()
+    await new Promise((r) => setTimeout(r, 30))
+    const tierBtns = Array.from(walk(hook.modelNodes().menu)).filter((n) => String(n.className) === 'dsh-sel-tierbtn')
+    const pick = tierBtns.find((b) => textOf(b) === '高') || tierBtns.find((b) => textOf(b) === '最大') || tierBtns[0]
+    assert('（前提）小窗菜单里有档位按钮', !!pick, String(tierBtns.length))
+    pick.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+    await new Promise((r) => setTimeout(r, 30))
+    const chosen = hook.modelState().effort
+    assert('（前提）小窗记下了这个档位', typeof chosen === 'string' && chosen.length > 0, String(chosen))
+
+    // 设置页那一行读的是 host 配置：开抽屉看它的 data-value
+    settingsBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 60))
+    const seg = Array.from(walk(settingsSheet)).find(
+      (n) => String(n.className) === 'dsh-sel-seg' && n.attrs && n.attrs['aria-label'] === '追问',
+    )
+    assert('（前提）找得到设置页的「追问」档位行', !!seg, String(!!seg))
+    assert(
+      '在小窗里选档位 → 设置页那一行立刻跟着选中同一个档（不再是各写各的）',
+      !!seg && seg.getAttribute('data-value') === chosen,
+      `小窗=${chosen} 设置页=${seg ? seg.getAttribute('data-value') : '(未找到)'}`,
+    )
+
+    // 第二段：模型的档位**折回四个格子** —— weird（low>medium>high>xhigh）上点它的 Medium，
+    // 设置页应当存成「低」（因为它就是"低"那一格映射到的档位），这样两处才是同一件事。
+    globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p2', model: 'm-weird' }, models: [...fixture.models, weird, plain] }
+    const backToPanel = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sheetback')
+    backToPanel.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 20))
+    settingsBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 80))
+    hook.openModel()
+    await new Promise((r) => setTimeout(r, 30))
+    const weirdBtns = Array.from(walk(hook.modelNodes().menu)).filter((n) => String(n.className) === 'dsh-sel-tierbtn')
+    // 按钮文案走 tierLabel：认识的 id 显示中文（low→低、medium→中、high→高），
+    // 不认识（xhigh）就显示模型自己的名字
+    const mediumBtn = weirdBtns.find((b) => textOf(b) === '中')
+    assert('（前提）小窗里列的是这个模型自己的档位（low/medium/high/xhigh → 低/中/高/Xhigh）', !!mediumBtn, weirdBtns.map((b) => textOf(b)).join('/'))
+    if (mediumBtn) {
+      mediumBtn.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+      await new Promise((r) => setTimeout(r, 30))
+      const seg2 = Array.from(walk(settingsSheet)).find(
+        (n) => String(n.className) === 'dsh-sel-seg' && n.attrs && n.attrs['aria-label'] === '追问',
+      )
+      const saved = hook.modelState().effort
+      assert(
+        '模型档位折回四格：小窗点它自己的「中」（medium）→ 设置页那一行落在「低」，小窗也记成「低」（发请求时再映射回 Medium）',
+        saved === 'low' && !!seg2 && seg2.getAttribute('data-value') === 'low',
+        `小窗=${String(saved)} 设置页=${seg2 ? seg2.getAttribute('data-value') : '(未找到)'}`,
+      )
+    }
+
+    // 收尾：走「恢复默认」把配置写回出厂值，抽屉收起；面板也收掉
+    const resetBtn2 = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sbtn' && textOf(n).indexOf('恢复默认') >= 0)
+    resetBtn2.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 900))
+    hook.close()
+    await new Promise((r) => setTimeout(r, 30))
+  }
+
   // 收尾：抽屉还原、夹具还原（别影响后面的用例）
   const backBtn3 = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sheetback')
   backBtn3.dispatch('click', { stopPropagation() {}, preventDefault() {} })

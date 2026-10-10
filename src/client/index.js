@@ -3085,6 +3085,42 @@ window.__ModuleLoader__.load({
         return String(id)
       }
 
+      /**
+       * 小窗里选了追问档位 → **写回设置页那一行**。
+       *
+       * 两处读的**不是同一份数据**：设置页读 host 配置（`chatReasoningEffort`），而小窗这个控件
+       * 以前只写浏览器本地（localStorage）+ 内存里的 `state.effort`（发请求时用它覆盖配置）。
+       * 于是"在小窗里改档位"反映不到设置页 —— 这里补上写回：改配置 + 存本地 + 存盘。
+       *
+       * 小窗列的是**该模型自己的档位**（可能叫 minimal/xhigh），而设置页只有四个固定格子，
+       * 所以先把它折回格子（`effortMap` 的逆：谁的落点是它就选谁）；折不回去的档
+       *（六档模型上没被四格覆盖的 medium/xhigh）就**原样存** —— host 侧对认不出的值原样发，
+       * 而它本来就是该模型声明过的档，照样能用（设置页那一行会没有格子被选中，这是如实的）。
+       */
+      function applyTierToSettings(id) {
+        var item = effectiveItem()
+        var slot = ''
+        if (item && item.effortMap) {
+          for (var i = 0; i < SLOT_ORDER.length; i += 1) {
+            if (item.effortMap[SLOT_ORDER[i]] === id) {
+              slot = SLOT_ORDER[i]
+              break
+            }
+          }
+        }
+        var value = slot || String(id)
+        settingsLive.chatReasoningEffort = value
+        state.effort = value
+        writeStore(EFFORT_KEY, value)
+        var entry = settingsByKey.chatReasoningEffort
+        if (entry) {
+          setControlValue('chatReasoningEffort', value)
+          paintSegPill(entry)
+        }
+        renderSettingsNote('')
+        scheduleSettingsSave()
+      }
+
       function paintEffortMapHint() {
         if (!settingsEffortHints.length) return
         var choice = state.modelChoice
@@ -3239,7 +3275,13 @@ window.__ModuleLoader__.load({
           entry.cells[i].setAttribute('aria-checked', picked ? 'true' : 'false')
           if (picked) on = entry.cells[i]
         }
-        if (!on) return
+        // 值不在四格里（小窗选了模型自己的 medium/xhigh 这种）：一个格子都不点亮、
+        // 滑块也收起来 —— 留着上一次的位置会假装它还选中着
+        if (!on) {
+          entry.pill.style.display = 'none'
+          return
+        }
+        entry.pill.style.display = ''
         entry.pill.style.left = String(on.offsetLeft) + 'px'
         entry.pill.style.width = String(on.offsetWidth) + 'px'
       }
@@ -9850,6 +9892,8 @@ window.__ModuleLoader__.load({
               event.stopPropagation()
               state.effort = id
               writeStore(EFFORT_KEY, id)
+              // 反向同步：设置页那行读的是 host 配置，只写本地的话它不会变（用户报的）
+              applyTierToSettings(id)
               paintModelPill()
               renderModelMenu()
               setStatus('追问档位：' + tierLabel(id))
