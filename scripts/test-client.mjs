@@ -5681,11 +5681,11 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       hook.voiceCard().open === true,
       JSON.stringify(hook.voiceCard()),
     )
-    // 开着「空录音时收起」时，这段"等定稿"的窗口里框里**什么都不显示**：
+    // 开着「空录音时收起」时，这段"等定稿"的窗口里框里显示「正在关闭…」：
     // 卡片马上要被收掉，写"直接打字也行…"是句假话（用户明确要求取消时不要显示任何文字）
     assert(
-      '（开着「空录音时收起」）空框里不显示任何文字（连占位也没有）',
-      !!box && String(box.placeholder) === '' && String(box.value) === '',
+      '（开着「空录音时收起」）空框里如实显示「正在关闭…」（不是"直接打字也行…"那种假邀请）',
+      !!box && String(box.placeholder) === '正在关闭…' && String(box.value) === '',
       JSON.stringify({ placeholder: box ? String(box.placeholder) : '(无卡片)', value: box ? String(box.value) : '' }),
     )
     await sleep(900)
@@ -5794,8 +5794,8 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
     documentStub.dispatch('keydown', { key: 'Escape', target: body, preventDefault() {}, stopPropagation() {} })
     await sleep(20)
     assert(
-      'Esc 取消录音：空框立刻清成"什么都没有"（不等动画结束）',
-      !!box && String(box.placeholder) === '' && String(box.value) === '',
+      'Esc 取消录音：那一刻空框就换成「正在关闭…」（不等动画结束）',
+      !!box && String(box.placeholder) === '正在关闭…' && String(box.value) === '',
       JSON.stringify({ placeholder: box ? String(box.placeholder) : '(无)', value: box ? String(box.value) : '' }),
     )
     await sleep(800) // 等关机动画收尾
