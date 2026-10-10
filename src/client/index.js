@@ -4533,7 +4533,11 @@ window.__ModuleLoader__.load({
         vcard.setAttribute('data-voiced', on ? '1' : '0')
         if (!vcardBox) return
         if (String(vcardBox.value || '').trim()) return
-        vcardBox.placeholder = on ? '正在听…' : '直接打字也行…'
+        // 松手之后、框还空着时显示什么：
+        //   · 「空录音时收起」开着（默认）→ **什么都不显示**：这张卡马上要被收掉，
+        //     这时候在框里写"直接打字也行…"是句假话，而且取消的过程要保持干净的空白；
+        //   · 两个收尾开关都关着（卡会留着）→ 才给"直接打字也行…"这句邀请。
+        vcardBox.placeholder = on ? '正在听…' : settingsLive.voiceCancelOnSilence !== false ? '' : '直接打字也行…'
       }
 
       function focusVCard() {
@@ -4924,6 +4928,10 @@ window.__ModuleLoader__.load({
       function closeVCard(animate) {
         if (!vcardState.open) return
         vcardState.open = false
+        // 取消的那一刻就把空框里的文字（含占位）清掉：卡正在塌缩，留着任何一句话都像在邀请你打字。
+        // 已经打出来的字**不动** —— 它就是那个塌缩动画要收掉的东西（用户要求"取消的录音不要显示任何文字"，
+        // 指的是没说出字来、只剩占位的那种）。
+        if (vcardBox && !String(vcardBox.value || '').trim()) vcardBox.placeholder = ''
         vcardState.range = null
         vcardState.anchorRect = null
         // ⚠️ 必须**显式 blur**，不能只把卡片 display:none 掉。

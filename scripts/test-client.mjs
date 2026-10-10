@@ -5681,6 +5681,13 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       hook.voiceCard().open === true,
       JSON.stringify(hook.voiceCard()),
     )
+    // 开着「空录音时收起」时，这段"等定稿"的窗口里框里**什么都不显示**：
+    // 卡片马上要被收掉，写"直接打字也行…"是句假话（用户明确要求取消时不要显示任何文字）
+    assert(
+      '（开着「空录音时收起」）空框里不显示任何文字（连占位也没有）',
+      !!box && String(box.placeholder) === '' && String(box.value) === '',
+      JSON.stringify({ placeholder: box ? String(box.placeholder) : '(无卡片)', value: box ? String(box.value) : '' }),
+    )
     await sleep(900)
     const cardSilent = find('dsh-sel-vcard')
     assert('定稿后才取消（空录音）', hook.voiceCard().open === false, JSON.stringify(hook.voiceCard()))
@@ -5760,6 +5767,38 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
       hook.voiceCard().open === false,
       JSON.stringify(hook.voiceCard()),
     )
+
+    // 关掉「空录音时收起」（卡会留着）→ 才给"直接打字也行…"那句邀请
+    settingsStub.value = { voiceCancelOnSilence: false, voiceAutoSend: false }
+    hook.reloadSettings()
+    await sleep(320)
+    hook.close()
+    await sleep(20)
+    micStub.value = recording
+    // 走真实路径把卡开出来（与上面几段同一套：选区还在 → mouseup → 浮标 → 这一拍轮询发现开麦）
+    documentStub.dispatch('mouseup', { target: body })
+    await sleep(320)
+    if (box) {
+      box.value = ''
+      box.dispatch('input', { target: box, preventDefault() {}, stopPropagation() {} })
+    }
+    await sleep(80)
+    micStub.value = stopped
+    await sleep(400)
+    assert(
+      '（关掉「空录音时收起」）卡片要留着，这时才显示"直接打字也行…"',
+      hook.voiceCard().open === true && !!box && String(box.placeholder).indexOf('直接打字') >= 0,
+      JSON.stringify({ open: hook.voiceCard().open, placeholder: box ? String(box.placeholder) : '(无)' }),
+    )
+    // Esc 取消：那一瞬间空框里就该是空的（不留占位）
+    documentStub.dispatch('keydown', { key: 'Escape', target: body, preventDefault() {}, stopPropagation() {} })
+    await sleep(20)
+    assert(
+      'Esc 取消录音：空框立刻清成"什么都没有"（不等动画结束）',
+      !!box && String(box.placeholder) === '' && String(box.value) === '',
+      JSON.stringify({ placeholder: box ? String(box.placeholder) : '(无)', value: box ? String(box.value) : '' }),
+    )
+    await sleep(800) // 等关机动画收尾
 
     // 收尾：设置清回默认，别影响后面的用例
     settingsStub.value = {}
