@@ -658,8 +658,166 @@ function looksLikeLeakedReasoning(text: string): boolean {
   return letters / head.length >= 0.5
 }
 
-/** 档位阶梯（从"最省"到"最深"）：模型声明了档位时，按它声明的顺序走。 */
-const EFFORT_LADDER = ['off', 'low', 'medium', 'high', 'max']
+/**
+ * 设置页那四个格子（**规范档位**）。
+ *
+ * 它们不是发给模型的 id，而是一份"意图词汇"：关（尽量不思考）/ 低 / 高 / 最高。
+ * 各 adapter 的档位词汇表并不统一 —— 本机 74 个模型上就数出七种：
+ *   off>low>high>max ／ low>high>max ／ high>max ／ off>minimal>low>medium>high ／
+ *   off>low>medium>high>xhigh>max ／ low>medium>high>xhigh ／ minimal>low>medium>high>xhigh ／
+ *   max（只有一档）／ 一档都不声明（不支持推理）。
+ * 落到哪个真实档位由 `mapEffortToModel` 算（纯函数，有单测）。
+ */
+const EFFORT_CANONICAL = ['off', 'low', 'high', 'max']
+
+/**
+ * 档位名 → "思考深度"刻度（认 id，也认显示名；比较前会去掉空格/下划线/连字符并转小写）。
+ *
+ * 刻度只用来**比较深浅**，绝对数值没有意义。锚点取最常见的五档：off 0 / low 2 /
+ * medium 4 / high 6 / max 8，其余名字插在它们之间（minimal 在 off 与 low 之间、
+ * xhigh 在 high 与 max 之间）。认不出的名字不在这张表里 —— 由 `rankEfforts` 按位置插值。
+ */
+const EFFORT_RANK: Record<string, number> = {
+  off: 0, none: 0, disabled: 0, no: 0, nocontext: 0,
+  minimal: 1, minimum: 1, least: 1, tiny: 1,
+  low: 2, light: 2,
+  mid: 3, moderate: 3,
+  medium: 4,
+  high: 6,
+  xhigh: 7, veryhigh: 7,
+  max: 8, maximum: 8, highest: 8,
+  ultra: 9, extreme: 9,
+}
+
+/** 归一化档位名：'X-High' / 'very high' / 'x_high' 都算一个东西。 */
+function normEffortName(value: unknown): string {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '')
+}
+
+/**
+ * 每个声明档位的刻度：认得的名字用表，不认识的按**位置**在已知邻居之间线性插值
+ * （两头都没有已知锚点时按序号平铺到 0..8）。最后钳成不递减 —— 各 adapter 的声明都是升序，
+ * 插值不该把这个顺序弄反。
+ */
+function rankEfforts(declared: Array<{ id: string; name?: string }>): number[] {
+  const known = declared.map((item) => {
+    const byId = EFFORT_RANK[normEffortName(item.id)]
+    if (byId !== undefined) return byId
+    const byName = EFFORT_RANK[normEffortName(item.name)]
+    return byName === undefined ? null : byName
+  })
+  const n = declared.length
+  const ranks: number[] = []
+  for (let i = 0; i < n; i += 1) {
+    const hit = known[i]
+    if (hit !== null && hit !== undefined) {
+      ranks.push(hit)
+      continue
+    }
+    let left = -1
+    for (let l = i - 1; l >= 0; l -= 1) {
+      if (known[l] !== null && known[l] !== undefined) {
+        left = l
+        break
+      }
+    }
+    let right = -1
+    for (let r = i + 1; r < n; r += 1) {
+      if (known[r] !== null && known[r] !== undefined) {
+        right = r
+        break
+      }
+    }
+    const leftRank = left >= 0 ? (known[left] as number) : null
+    const rightRank = right >= 0 ? (known[right] as number) : null
+    if (leftRank !== null && rightRank !== null) {
+      ranks.push(leftRank + ((rightRank - leftRank) * (i - left)) / (right - left))
+    } else if (leftRank !== null) {
+      ranks.push(leftRank + (i - left))
+    } else if (rightRank !== null) {
+      ranks.push(rightRank - (right - i))
+    } else {
+      ranks.push(n > 1 ? (8 * i) / (n - 1) : 0)
+    }
+  }
+  for (let i = 1; i < n; i += 1) {
+    if (ranks[i]! < ranks[i - 1]!) ranks[i] = ranks[i - 1]!
+  }
+  return ranks
+}
+
+/**
+ * 规范四格 → 当前模型**真实声明**的档位（返回 '' 表示这个模型没有可发的档位）。
+ *
+ * 规则一条到底（对 `off>low>high>max` 这类 4 档模型恰好是恒等映射）：
+ *   · 关   → 声明里**最弱**的那档（模型没有 off 这类档时，就是它"能关到"的最小思考）
+ *   · 最高 → 声明里**最强**的那档
+ *   · 低/高 → 在整条刻度上取 1/3、2/3 处**最近的档**；候选**排除两端**（最弱那档留给「关」、
+ *     最强那档留给「最高」，四个格子于是各有落点），并保证 关 ≤ 低 ≤ 高 ≤ 最高 单调；
+ *     同样近时「低」取更浅的、「高」取更深的 —— 低要省、高要深。
+ *
+ * ⚠️ 这里**没有**任何按模型写死的表：输入只有"这个模型自己声明的档位列表"。
+ * 名字认得出来（off/low/high/max、minimal、xhigh…）就用名字的深度刻度；认不出来
+ * （别的 adapter 可能叫 a/b/c、tier1/tier2，或者干脆是数字）就按**它在声明里的位置**插值 ——
+ * 所以任何用户换任何模型都能落位，插件作者没见过那个模型也能映射。
+ * 为什么不让「低/高」也去抢最弱那档：那两个格子表达的是"开着思考、但别太深"，
+ * 落到"关"那一档等于**把用户要的思考关掉**；只有「关」该动那一档。
+ * 只有一档可发时（如 kimi-k3 只有 max），四格都落到它 —— 模型没有别的选择。
+ *
+ * 返回 '' 表示"这个模型没有可发的档位"（声明为空），调用方据此**不带** reasoningEffort。
+ */
+function mapEffortToModel(declared: Array<{ id: string; name?: string }>, canonical: string): string {
+  const list = (declared ?? []).filter((item) => item && typeof item.id === 'string' && item.id.length > 0)
+  if (list.length === 0) return ''
+  if (list.length === 1) return list[0]!.id
+  const slot = EFFORT_CANONICAL.includes(canonical) ? canonical : 'off'
+  const ranks = rankEfforts(list)
+  // 两端：按刻度取最浅/最深；同样深时**以声明顺序为准**（声明在前的那档更弱、在后的更强）。
+  // 不能只按下标取首尾：adapter 万一声明得不严格升序，按下标就选错了；也不能只按刻度取最大，
+  // 那样 `…>max>ultra` 这种"更强但刻度相同"的档会被 max 抢走。
+  let weakest = 0
+  let strongest = 0
+  for (let i = 1; i < list.length; i += 1) {
+    if (ranks[i]! < ranks[weakest]!) weakest = i
+    if (ranks[i]! >= ranks[strongest]!) strongest = i
+  }
+  if (slot === 'max') return list[strongest]!.id
+  if (slot !== 'low' && slot !== 'high') return list[weakest]!.id
+  const pool: number[] = []
+  for (let i = 0; i < list.length; i += 1) {
+    if (i !== weakest && i !== strongest) pool.push(i)
+  }
+  // 中间两档没人可选时（只有"最弱 + 最强"两档）：都落到最强 —— 最弱那档留给「关」
+  if (pool.length === 0) return list[strongest]!.id
+  const span = ranks[strongest]! - ranks[weakest]!
+  const target = ranks[weakest]! + span * (slot === 'low' ? 1 / 3 : 2 / 3)
+  const preferDeeper = slot === 'high'
+  let best = pool[0]!
+  let bestDistance = Math.abs(ranks[best]! - target)
+  for (const index of pool) {
+    const distance = Math.abs(ranks[index]! - target)
+    const closer = distance < bestDistance
+    const tie = distance === bestDistance
+    if (closer || (tie && (preferDeeper ? ranks[index]! > ranks[best]! : ranks[index]! < ranks[best]!))) {
+      best = index
+      bestDistance = distance
+    }
+  }
+  return list[best]!.id
+}
+
+/**
+ * 一个模型的四格映射（设置页给用户看的就是它；请求时也走这份算）。
+ * 返回空串的格子表示"没有可发的档位"（模型不支持推理时四个格子都是空串）。
+ */
+function effortMapOf(declared: Array<{ id: string; name?: string }>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const slot of EFFORT_CANONICAL) out[slot] = mapEffortToModel(declared, slot)
+  return out
+}
 
 /**
  * 清单里查不到这个模型时的兜底阶梯。
@@ -719,8 +877,10 @@ function pickNextEffort(
 ): string {
   const usable = (id: string | null | undefined): id is string => !!id && id !== rejected && !tried.has(id)
   if (usable(defaultEffort)) return defaultEffort
-  const pool = declared.length > 0 ? EFFORT_LADDER.filter((id) => declared.includes(id)) : EFFORT_LADDER_FALLBACK
-  const order = pool.length > 0 ? pool : EFFORT_LADDER_FALLBACK
+  // 用**模型自己的声明顺序**（各 adapter 都是从最省到最深），"往上走一格"才落在它真实的下一档上。
+  // 老写法是"我方五档阶梯 ∩ 声明"，看不见 minimal / xhigh / none 这类 id —— 而按刻度映射之后，
+  // 被拒的那个很可能正是这类 id（indexOf 得到 -1 → 退回最弱的那档，方向正好反了）。
+  const order = declared.length > 0 ? declared : EFFORT_LADDER_FALLBACK
   const start = order.indexOf(rejected)
   // ① 先往上走：离「关」越远越安全（不吃 off 的模型通常都吃更高的档）
   for (let i = (start < 0 ? 0 : start + 1); i < order.length; i += 1) {
@@ -1514,6 +1674,18 @@ export function apply(ctx: Context, rawConfig: Config): void {
     name: string
     efforts: Array<{ id: string; name: string }>
     defaultEffort: string | null
+    /**
+     * 这个模型到底支不支持"思考强度"：
+     *   true  = 有推理档位（efforts 非空）
+     *   false = 明确不支持（dsh-llm 的 resolveModelInfo 说它没有 reasoning）
+     *   null  = 没读到（还没加载 / 这次调用失败）→ 原样发规范档位，被拒时由换档重试兜
+     */
+    hasReasoning: boolean | null
+    /**
+     * 规范四格 → 这个模型**真实**的档位 id（'' = 没有可发的档位）。
+     * 由 `effortMapOf(model.efforts)` 实时算出，随清单一起下发 —— 设置页据此显示"这四格现在落到哪"。
+     */
+    effortMap: Record<string, string>
   }
   let modelCache: { at: number; items: ModelChoice[] } = { at: 0, items: [] }
   /** 哪些 provider/model 在 "关" 档会把思考写进正文（实测过一次就记住，之后自动改用「低」）。 */
@@ -1608,6 +1780,34 @@ export function apply(ctx: Context, rawConfig: Config): void {
       tried,
     )
   }
+
+  /**
+   * 规范档位（设置页那四格）→ 这个 route **这次真要发**的档位（'' = 不带 reasoningEffort）。
+   *
+   * 每次请求都按**当前模型的声明**现算（不缓存映射结果、不落盘）：用户换模型、DSH 升级换
+   * adapter 之后立刻跟着变。清单里查不到（还没加载过 / 那次调用失败）就原样发规范值 ——
+   * 与改动前一致，被拒时由换档重试兜；同时后台预热一次清单，下一次请求就能映射上。
+   * 模型明确不支持推理（hasReasoning === false）时不发档位：发了 dsh-llm 必拒。
+   */
+  function effortForRoute(route: string, canonical: string): string {
+    const item = modelCache.items.find((entry) => `${entry.provider}/${entry.model}` === route)
+    if (!item) {
+      warmModelCache()
+      return canonical
+    }
+    if (item.hasReasoning === false) return ''
+    const mapped = item.effortMap?.[canonical]
+    return mapped === undefined || mapped === '' ? canonical : mapped
+  }
+
+  /** 清单预热：只在"真要用却还没读到"时拉一次，60 秒内不重复拉（失败也不打转）。 */
+  let modelWarmAt = 0
+  function warmModelCache(): void {
+    if (modelCache.items.length > 0) return
+    if (Date.now() - modelWarmAt < MODEL_CACHE_MS) return
+    modelWarmAt = Date.now()
+    void listModelChoices(false).catch(() => undefined)
+  }
   const MODEL_CACHE_MS = 60_000
 
   async function listModelChoices(force = false): Promise<ModelChoice[]> {
@@ -1642,6 +1842,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
         if (!model?.id) continue
         let efforts: Array<{ id: string; name: string }> = []
         let defaultEffort: string | null = null
+        // null = 没读到（调用失败 / 拿不到信息）；true/false = 明确支持 / 不支持
+        let hasReasoning: boolean | null = null
         try {
           // 两个方法签名不同，各自显式标注，避免联合类型把返回值退化成 any
           type Resolved = { reasoning?: { efforts?: Array<{ id?: string; name?: string }>; defaultEffort?: string } } | null
@@ -1651,11 +1853,15 @@ export function apply(ctx: Context, rawConfig: Config): void {
           } else if (typeof llm.resolveModel === 'function') {
             info = (await llm.resolveModel(provider.id, model.id)) as Resolved
           }
-          const list = info?.reasoning?.efforts ?? []
-          efforts = list
-            .filter((item) => typeof item?.id === 'string' && item.id.length > 0)
-            .map((item) => ({ id: String(item.id), name: String(item.name ?? item.id) }))
-          defaultEffort = typeof info?.reasoning?.defaultEffort === 'string' ? info.reasoning.defaultEffort : null
+          if (info) {
+            const list = info.reasoning?.efforts ?? []
+            efforts = list
+              .filter((item) => typeof item?.id === 'string' && item.id.length > 0)
+              .map((item) => ({ id: String(item.id), name: String(item.name ?? item.id) }))
+            defaultEffort = typeof info.reasoning?.defaultEffort === 'string' ? info.reasoning.defaultEffort : null
+            // 声明了 reasoning 但档位列表为空 → 发任何档位 dsh-llm 都会拒（它自己也不接受空表）
+            hasReasoning = efforts.length > 0
+          }
         } catch {
           efforts = []
         }
@@ -1666,6 +1872,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
           name: String(model.name ?? model.id),
           efforts,
           defaultEffort,
+          hasReasoning,
+          effortMap: effortMapOf(efforts),
         })
       }
     }
@@ -3409,6 +3617,13 @@ export function apply(ctx: Context, rawConfig: Config): void {
     // 已知这个模型不接受"关"档（之前撞过一次并记下来了）：直接换 low，不再先失败一轮。
     // 首轮默认就是 off，所以这条对"默认配置 + 不吃 off 的模型"是必经之路。
     if (requestEffort === 'off' && noOffRoutes.has(routeKey)) requestEffort = 'low'
+    // 规范四格 → 这个模型真实声明的档位（每次请求现算；'' = 这个模型不支持推理，干脆不带档位）。
+    // 注意：leaky / noOff 两条守卫仍在**规范档位**这一层判断（它们记的是"关档"的语义），
+    // 映射放在最后一步。
+    const sentEffort = effortForRoute(routeKey, requestEffort)
+    // 「关」这一格在这个模型上到底是哪个真实档位：重试判定与泄漏检查都要按**真实档位**比
+    // （模型可能没有 off，或叫 none/minimal —— 那就不能拿字符串 'off' 去比）
+    const offSlotEffort = requestEffort === 'off' ? sentEffort : effortForRoute(routeKey, 'off')
 
     sse(res, {
       type: 'start',
@@ -3417,7 +3632,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
       mode: isChat ? 'chat' : stage === 'detail' ? 'detail' : isCode ? 'code' : 'translation',
       stage: stage === 'detail' ? 'detail' : 'translation',
       backgroundMessages: background ? background.transcript.split('\n').filter((line) => /^\s*(▶\s*)?(用户|助手)：/.test(line)).length : 0,
-      effort: requestEffort,
+      effort: sentEffort,
       tools: toolSchemas.map((schema) => schema.name),
       toolScope: agentScope,
       ...(toolFallbackUsed ? { toolFallbackUsed: true } : {}),
@@ -3492,9 +3707,12 @@ export function apply(ctx: Context, rawConfig: Config): void {
       // 而省略对"必须开推理"的端点就是关掉推理 —— 实测 20 次重试 0 次成功。
       // 同时给两次机会：上游偶发失败约一半，两次能把成功率抬到 ~90%（代价是多一次往返）。
       const EFFORT_RETRY_LIMIT = 2
-      let effortRetries = requestEffort.length > 0 ? EFFORT_RETRY_LIMIT : 0
-      const triedEfforts = new Set<string>(requestEffort ? [requestEffort] : [])
-      let roundEffort = requestEffort
+      // 重试与"泄漏检查"都看**真正发出去**的那个档位（sentEffort，映射之后的值）：
+      // 规范档位是"关"、但这个模型的关档叫 none/minimal 时，检查的必须是发出去的那个。
+      let effortRetries = sentEffort.length > 0 ? EFFORT_RETRY_LIMIT : 0
+      const triedEfforts = new Set<string>(sentEffort ? [sentEffort] : [])
+      const firstSentEffort = sentEffort
+      let roundEffort = sentEffort
       for (let round = 0; round <= toolRounds; round += 1) {
         const roundStartedAt = Date.now()
         const wrapUp = round === toolRounds
@@ -3614,10 +3832,13 @@ export function apply(ctx: Context, rawConfig: Config): void {
               //   · 发的是开着的档（low/high/max）+ 上游还在说"推理不能关" → **这句不是冲我们来的**
               //     （我们没关它），是上游偶发抽风（实测同档位 5/8 成功）。这种情况不记、不诊断，
               //     只如实说"上游返回了错误，已换档重试"。
-              const tierIssue = rejected === 'off'
+              // "必须开推理"这句只有在我们发的是**「关」那一格对应的真实档位**时才算数
+              // （模型没有 off、关档落在 minimal/low 上时，字符串比较会漏判）
+              const rejectedOffSlot = rejected === offSlotEffort
+              const tierIssue = rejectedOffSlot
                 ? looksLikeReasoningRequired(errorMessage)
                 : looksLikeUnsupportedTier(errorMessage)
-              if (rejected === 'off' && tierIssue) markNoOff(routeKey)
+              if (rejectedOffSlot && tierIssue) markNoOff(routeKey)
               requestEffort = next
               roundEffort = next
               errored = false
@@ -3626,7 +3847,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
                 code: tierIssue ? 'effort-rejected' : 'upstream-retry',
                 ...(tierIssue ? { tier: rejected } : {}),
                 text: tierIssue
-                  ? rejected === 'off'
+                  ? rejectedOffSlot
                     ? `该模型不接受「关」档，已自动改用「${EFFORT_LABEL[next] ?? next}」档（以后不再尝试关档）`
                     : `「${EFFORT_LABEL[rejected] ?? rejected}」档该模型不支持，已改用「${EFFORT_LABEL[next] ?? next}」档重试`
                   : '上游这次返回了错误，已自动重试',
@@ -3641,8 +3862,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
         const blocks: ContentBlock[] = assembler.blocks()
         const calls = blocks.filter((block) => block.type === 'tool-call')
         if (calls.length === 0) {
-          // 最终答案到手：如果用的是 "关" 档，检查有没有把思考写进正文
-          if (isChat && requestEffort === 'off') {
+          // 最终答案到手：如果发出去的是「关」那一格对应的真实档位，检查有没有把思考写进正文
+          if (isChat && firstSentEffort === offSlotEffort) {
             const split = splitLeakedReasoning(answer)
             if (split.prefix) {
               markLeaky(routeKey)
@@ -3652,7 +3873,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
               sse(res, {
                 type: 'notice',
                 code: 'reasoning-leak',
-                tier: 'off',
+                // 报**真实档位**（模型可能没有 off，叫 none/minimal）：客户端据此标对那个档位按钮
+                tier: firstSentEffort,
                 text: '该模型在「关」档会把思考写进正文，已撤回泄漏段；以后这一档会自动改用「低」',
               })
             } else if (looksLikeLeakedReasoning(answer)) {
@@ -3661,7 +3883,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
               sse(res, {
                 type: 'notice',
                 code: 'reasoning-leak',
-                tier: 'off',
+                tier: firstSentEffort,
                 text: '这个模型在「关」档会把思考写进正文；这一档以后自动改用「低」',
               })
             }
@@ -3952,4 +4174,6 @@ export const __internals = {
   looksLikeUnsupportedTier,
   looksLikeReasoningRequired,
   pickNextEffort,
+  mapEffortToModel,
+  effortMapOf,
 }

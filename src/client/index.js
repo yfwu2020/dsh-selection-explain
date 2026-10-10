@@ -2783,6 +2783,16 @@ window.__ModuleLoader__.load({
       var settingsRailButtons = []
       var settingsPanes = []
       var settingsSegs = []
+      /**
+       * 四个格子的文案（关/低/高/最高）。
+       *
+       * 它是**插件的固定词汇**，与模型无关；落到模型的哪个真实档位由 host 按该模型的声明
+       * 实时算（`/models` 每个模型带一份 `effortMap`，见 host 的 mapEffortToModel）。
+       */
+      var SLOT_LABEL = { off: '关', low: '低', high: '高', max: '最高' }
+      var SLOT_ORDER = ['off', 'low', 'high', 'max']
+      /** 设置页里那几行"四格 → 当前模型真实档位"的提示节点（跟着模型实时变）。 */
+      var settingsEffortHints = []
       /** 自绘下拉的菜单节点（挂在抽屉上，重渲染时要一起清掉，否则会叠出第二份浮层）。 */
       var settingsMenus = []
       var settingsFetching = false
@@ -2929,6 +2939,7 @@ window.__ModuleLoader__.load({
           if (forceRoute) entry.filled = false
           fillModelMenu(entry, entry.catalog)
           paintModelPick(entry)
+          paintEffortMapHint()
         })
         fetchRoute(sessionId, isChat).then(applyFollowRoute)
       }
@@ -3057,6 +3068,53 @@ window.__ModuleLoader__.load({
         return (provider ? provider + ' / ' : '') + model
       }
 
+      /**
+       * 设置页那行"四格 → 当前模型的真实档位"。
+       *
+       * 映射是 **host 按模型声明实时算的**：`/models` 里每个模型带一份 `effortMap`
+       * （见 host 的 mapEffortToModel —— 它只吃"这个模型自己声明的档位列表"，
+       * 名字认不出就按位置插值，所以任何用户换任何模型都有落点）。
+       * 客户端只负责显示，插件里**没有**任何按模型写死的表；换模型 / 换会话立刻跟着变。
+       */
+      /** 模型自己给这个档位的名字（清单里没有就用 id）——「思考强度」那行映射提示专用。 */
+      function modelTierNameOf(item, id) {
+        var efforts = (item && item.efforts) || []
+        for (var i = 0; i < efforts.length; i += 1) {
+          if (efforts[i].id === id) return String(efforts[i].name || efforts[i].id)
+        }
+        return String(id)
+      }
+
+      function paintEffortMapHint() {
+        if (!settingsEffortHints.length) return
+        var choice = state.modelChoice
+        if (!choice && modelCatalog.current && modelCatalog.current.provider && modelCatalog.current.model) {
+          choice = { provider: String(modelCatalog.current.provider), model: String(modelCatalog.current.model) }
+        }
+        var item = choice ? catalogItemOf(choice.provider, choice.model) : null
+        var text = ''
+        if (!item) {
+          text = modelCatalog.error
+            ? '读不到模型清单（' + modelCatalog.error + '）：暂时按原档位发送，被拒时自动换档'
+            : '正在读取该模型的档位…'
+        } else if (item.hasReasoning === false) {
+          text = '该模型不支持思考强度：这四个格子对它不生效（不会发送档位）'
+        } else if (item.effortMap && item.effortMap[SLOT_ORDER[0]]) {
+          var parts = []
+          for (var i = 0; i < SLOT_ORDER.length; i += 1) {
+            var slot = SLOT_ORDER[i]
+            var actual = item.effortMap[slot]
+            // 右边用**模型自己的档位名**（Off/Low/Xhigh…），不要换成我们的「低/高」——
+            // 否则"关 → 低"这种看着像恒等映射，实际落到的是模型的 low 档
+            parts.push(SLOT_LABEL[slot] + ' → ' + (actual ? modelTierNameOf(item, actual) : '—'))
+          }
+          text = '当前模型：' + parts.join(' · ')
+        } else {
+          text = '暂未读到该模型声明的档位：先按原档位发送，被拒时自动换档重试'
+        }
+        for (var h = 0; h < settingsEffortHints.length; h += 1) settingsEffortHints[h].textContent = text
+      }
+
       function settingsDirtyCount() {
         var n = 0
         Object.keys(settingsLive).forEach(function (key) {
@@ -3123,6 +3181,7 @@ window.__ModuleLoader__.load({
         syncComposerModel()
         var entry = settingsByKey.modelChoice
         if (entry) { paintModelPick(entry); repaintModelMenu(entry) }
+        paintEffortMapHint()
         loadSettings(false)
         renderSettingsNote('')
         scheduleSettingsSave()
@@ -3264,7 +3323,7 @@ window.__ModuleLoader__.load({
           var entry = { spec: spec, row: row, seg: seg, pill: pill, cells: [] }
           var options = spec.options || []
           options.forEach(function (option) {
-            var cell = el('button', 'dsh-sel-segcell', { off: '关', low: '低', high: '高', max: '最高' }[option] || option)
+            var cell = el('button', 'dsh-sel-segcell', SLOT_LABEL[option] || option)
             cell.type = 'button'
             cell.setAttribute('role', 'radio')
             cell.setAttribute('data-value', option)
@@ -3344,6 +3403,7 @@ window.__ModuleLoader__.load({
         settingsRailButtons = []
         settingsPanes = []
         settingsSegs = []
+        settingsEffortHints = []
         for (var m = 0; m < settingsMenus.length; m += 1) {
           if (settingsMenus[m].parentNode) settingsMenus[m].parentNode.removeChild(settingsMenus[m])
         }
@@ -3373,6 +3433,14 @@ window.__ModuleLoader__.load({
               if (item) block.appendChild(buildSettingRow(item))
             })
             if (part.note) block.appendChild(el('p', 'dsh-sel-ssectionnote', part.note))
+            // 「思考强度」那一节多一行：这四个格子**现在**落到当前模型的哪些档位上。
+            // 映射由 host 按模型声明实时算（换模型 / DSH 升级换 adapter 都会跟着变）。
+            if (part.keys.indexOf('chatReasoningEffort') >= 0) {
+              var effortHint = el('p', 'dsh-sel-ssectionnote dsh-sel-effortmap', '')
+              effortHint.setAttribute('data-effortmap', '1')
+              block.appendChild(effortHint)
+              settingsEffortHints.push(effortHint)
+            }
             section.appendChild(block)
           })
           settingsBody.appendChild(section)
@@ -3384,6 +3452,7 @@ window.__ModuleLoader__.load({
         updateSettingDependencies()
         syncComposerModel()
         applySelectionLimit(values)
+        paintEffortMapHint()
         showSettingsTab(groups.length ? groups[0].id : '')
       }
 

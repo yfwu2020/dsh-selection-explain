@@ -2351,6 +2351,71 @@ if (process.env.SEL_SETTINGS_ONLY === '1') {
   }
 }
 
+// ── 设置页「思考强度」：四个格子不变，下面那行**跟着当前模型**说清落到哪一档 ──
+//   映射由 host 按模型声明实时算（`/models` 每个模型带 `effortMap`）；这里验客户端把它显示对了、
+//   换模型会跟着变、模型不支持推理时说清"这一组不生效"。
+{
+  const fixture = globalThis.__modelCatalogFixture
+  const weird = {
+    provider: 'p2', providerName: 'Provider Two', model: 'm-weird', name: 'Weird Model',
+    // 词汇表长得不一样：没有 off、顶档叫 xhigh（本机 grok-4.6 就是这种）
+    efforts: [
+      { id: 'low', name: 'Low' }, { id: 'medium', name: 'Medium' },
+      { id: 'high', name: 'High' }, { id: 'xhigh', name: 'Xhigh' },
+    ],
+    defaultEffort: null, hasReasoning: true,
+    effortMap: { off: 'low', low: 'medium', high: 'high', max: 'xhigh' },
+  }
+  const plain = {
+    provider: 'p2', providerName: 'Provider Two', model: 'm-plain', name: 'Plain Model',
+    efforts: [], defaultEffort: null, hasReasoning: false, effortMap: {},
+  }
+  globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p2', model: 'm-weird' }, models: [...fixture.models, weird, plain] }
+
+  // 开抽屉（每次都强制重取清单）→ 那行提示应当报出这个模型的落点
+  settingsBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  const hintNode = () => Array.from(walk(settingsSheet)).find((n) => n.getAttribute && n.getAttribute('data-effortmap') === '1')
+  for (let i = 0; i < 40 && (!hintNode() || hintNode().textContent.indexOf('xhigh') < 0); i += 1) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  // 拿小写比：右边是**模型自己的档位名**（Off/Low/Xhigh…），大小写不保证
+  const hintText = String((hintNode() || {}).textContent || '')
+  const hintLower = hintText.toLowerCase()
+  assert(
+    '四格还在（关/低/高/最高 四个格子没变），下面多一行实时映射',
+    !!hintNode() && String(hintNode().className).indexOf('dsh-sel-effortmap') >= 0,
+    hintText,
+  )
+  assert(
+    '映射说的是**当前模型**的真实档位（关→low · 低→medium · 高→high · 最高→xhigh）',
+    hintLower.indexOf('关 → low') >= 0 && hintLower.indexOf('低 → medium') >= 0 &&
+      hintLower.indexOf('高 → high') >= 0 && hintLower.indexOf('最高 → xhigh') >= 0,
+    hintText,
+  )
+  assert('四格本身一个不多一个不少（没有被模型带跑）', (hintText.match(/→/g) || []).length === 4, hintText)
+
+  // 换成"明确不支持推理"的模型 → 说清这一组不生效（而不是假装能选）
+  globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p2', model: 'm-plain' }, models: [...fixture.models, weird, plain] }
+  const backBtn2 = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sheetback')
+  backBtn2.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 20))
+  settingsBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  for (let i = 0; i < 40 && String((hintNode() || {}).textContent || '').indexOf('不支持思考强度') < 0; i += 1) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  assert(
+    '模型不支持推理时：这行如实说"不生效（不会发送档位）"',
+    String((hintNode() || {}).textContent || '').indexOf('不支持思考强度') >= 0,
+    String((hintNode() || {}).textContent || ''),
+  )
+
+  // 收尾：抽屉还原、夹具还原（别影响后面的用例）
+  const backBtn3 = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sheetback')
+  backBtn3.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+  await new Promise((r) => setTimeout(r, 20))
+  globalThis.__modelCatalogFixture = fixture
+}
+
 if (process.env.SEL_SETTINGS_ONLY === '1') {
   console.log('=== 设置与模型集成测试结束（真实 host，临时数据目录）===')
   process.exit(process.exitCode ?? 0)
