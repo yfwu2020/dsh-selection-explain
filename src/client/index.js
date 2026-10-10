@@ -3086,46 +3086,29 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 小窗里选了追问档位 → **写回设置页那一行**。
+       * 改「追问」的思考强度 —— **唯一**的写入口（设置页那一行与小窗那个控件共用）。
        *
-       * 两处读的**不是同一份数据**：设置页读 host 配置（`chatReasoningEffort`），而小窗这个控件
-       * 以前只写浏览器本地（localStorage）+ 内存里的 `state.effort`（发请求时用它覆盖配置）。
-       * 于是"在小窗里改档位"反映不到设置页 —— 这里补上写回：改配置 + 存本地 + 存盘。
-       *
-       * 小窗列的是**该模型自己的档位**（可能叫 minimal/xhigh），而设置页只有四个固定格子，
-       * 所以先把它折回格子（`effortMap` 的逆：谁的落点是它就选谁）；折不回去的档
-       *（六档模型上没被四格覆盖的 medium/xhigh）就**原样存** —— host 侧对认不出的值原样发，
-       * 而它本来就是该模型声明过的档，照样能用（设置页那一行会没有格子被选中，这是如实的）。
+       * 两处读写的是**同一个值**：host 配置 `chatReasoningEffort`（四个格子之一）。
+       * 于是不存在"两边各写各的"，也不需要任何反向映射 —— 一边改，另一边重画一次就同步了。
+       * `state.effort` 只是这个值的**内存镜像**（发请求时随 body.effort 带上，免得存盘还没回来
+       * 就发了请求；列表读到 `stages.chat` 之前也靠它兜底）。
        */
-      function applyTierToSettings(id) {
-        var item = effectiveItem()
-        var slot = ''
-        var fallback = ''
-        if (item && item.effortMap) {
-          for (var i = 0; i < SLOT_ORDER.length; i += 1) {
-            var candidate = SLOT_ORDER[i]
-            if (item.effortMap[candidate] !== id) continue
-            if (!fallback) fallback = candidate
-            // 多个格子落到同一档时（如 low>high>max：低→high、高→high），
-            // **名字对得上的那个优先** —— 用户点的是「高」，设置页就该亮「高」，
-            // 而不是先撞上的「低」（两者发出去的档位本来就一样，这里只挑显示得对的那个）
-            if (candidate === id) {
-              slot = candidate
-              break
-            }
-          }
-        }
-        var value = slot || fallback || String(id)
-        settingsLive.chatReasoningEffort = value
-        state.effort = value
-        writeStore(EFFORT_KEY, value)
+      function setChatSlot(slot) {
+        settingsLive.chatReasoningEffort = slot
+        state.effort = slot
         var entry = settingsByKey.chatReasoningEffort
         if (entry) {
-          setControlValue('chatReasoningEffort', value)
+          setControlValue('chatReasoningEffort', slot)
           paintSegPill(entry)
         }
+        if (modelMenu.getAttribute('data-open') === '1') renderModelMenu()
         renderSettingsNote('')
         scheduleSettingsSave()
+      }
+
+      /** 当前「追问」档位：内存镜像 → 配置 → /models 报的配置值（都是四个格子之一）。 */
+      function chatSlot() {
+        return state.effort || settingsLive.chatReasoningEffort || (modelCatalog.stages && modelCatalog.stages.chat) || ''
       }
 
       function paintEffortMapHint() {
@@ -3200,6 +3183,8 @@ window.__ModuleLoader__.load({
         })
         updateSettingDependencies()
         syncComposerModel()
+        // 「追问」档位的内存镜像跟着配置走（四个格子之一；列表读到 stages.chat 之前也靠它兜底）
+        state.effort = settingsLive.chatReasoningEffort || ''
         applySelectionLimit(settingsLive)
         if (!state.modelChoice) refreshModelRow(settingsByKey.modelChoice, true)
         bridgeOn = settingsLive.bridgeSidebarPreview !== false
@@ -3381,7 +3366,8 @@ window.__ModuleLoader__.load({
               seg.setAttribute('data-value', option)
               paintSegPill(entry)
               settingsLive[spec.key] = option
-              if (spec.key === 'chatReasoningEffort') { state.effort = option; writeStore(EFFORT_KEY, option); paintModelPill() }
+              // 与小窗那个控件共用同一个写入口（同一份数据：配置里的 chatReasoningEffort）
+              if (spec.key === 'chatReasoningEffort') { setChatSlot(option); paintModelPill() }
               renderSettingsNote('')
               scheduleSettingsSave()
             })
@@ -3740,7 +3726,6 @@ window.__ModuleLoader__.load({
             if (!payload || payload.ok === false) throw new Error('恢复默认失败')
             applyServerValues(payload.values, sent)
             state.effort = settingsLive.chatReasoningEffort || ''
-            writeStore(EFFORT_KEY, state.effort)
             applyPillPrefs({ enabled: settingsLive.pillEnabled, idleMs: settingsLive.pillIdleMs })
             bridgeOn = settingsLive.bridgeSidebarPreview !== false
             if (bridgeOn) scheduleBridgeScan()
@@ -8890,10 +8875,10 @@ window.__ModuleLoader__.load({
                   // 记下 code：'conclusion-retry' 是"进行中"状态，正文到了/本轮结束就该撤
                   answerTurn.noticeCode = String(message.code || '')
                   if ((message.code === 'effort-rejected' || message.code === 'reasoning-leak') && message.tier) {
+                    // 记下"这个模型的这一档被拒 / 会泄漏"，菜单里给它划一道斜线（下次不再撞）
                     rememberBadTier(message.tier, message.code === 'reasoning-leak' ? 'leak' : 'rejected')
-                    // 回退到默认档：清掉持久化的选择，胶囊随即显示配置里的默认档
-                    state.effort = null
-                    writeStore(EFFORT_KEY, '')
+                    // **不动**用户选的那一格：设置页与菜单读的就是它（唯一一份数据），
+                    // 悄悄清掉会让人以为自己没选过；这一轮该发什么由 host 的换档重试兜。
                     paintModelPill()
                   }
                   scheduleTurnsRender()                } else if (message.type === 'error') {
@@ -9579,9 +9564,8 @@ window.__ModuleLoader__.load({
       // —— 悬浮状态胶囊：点一下回到最近一次小窗 ——
       // —— 模型 + 推理等级（追问档） ——
       var MODEL_KEY = 'dsh-selection-explain:model' // 存 "provider\tmodel"
-      var EFFORT_KEY = 'dsh-selection-explain:effort'
-      var TIER_LABEL = { off: '关', low: '低', medium: '中', high: '高', max: '最大' }
-      var FALLBACK_TIERS = ['off', 'low', 'high', 'max']
+      /** 四个格子的中文名（设置页与小窗共用一套词；`medium` 只在标注模型自己的档位时出现）。 */
+      var TIER_LABEL = { off: '关', low: '低', medium: '中', high: '高', max: '最高' }
       /**
        * 模型清单缓存。
        *
@@ -9867,46 +9851,51 @@ window.__ModuleLoader__.load({
         modelMenu.appendChild(el('div', 'dsh-sel-pickersplit'))
         modelMenu.appendChild(el('div', 'dsh-sel-pickergroup', '推理等级（追问档）'))
         var tiers = el('div', 'dsh-sel-tiers')
-        var effortIds = FALLBACK_TIERS
-        // 档位按钮列的是**当前在用那个模型**声明的档位（跟随态也照它列，否则列出来的档位
-        // 和实际发出去的模型对不上）
-        var inUseItem = effectiveItem()
-        if (inUseItem && (inUseItem.efforts || []).length > 0) {
-          effortIds = []
-          for (var e = 0; e < inUseItem.efforts.length; e += 1) effortIds.push(inUseItem.efforts[e].id)
-        }
+        /**
+         * 档位按钮 = 与设置页**同一套四个格子**（关/低/高/最高）。
+         *
+         * 以前这里列的是"该模型自己声明的档位"（可能是 minimal/medium/xhigh 这种），于是
+         * 两边词汇不同、还要把模型档位反向折回格子；现在两边同词同源：这里的选中值就是
+         * 配置里的 `chatReasoningEffort`，改一边另一边跟着变，没有任何映射。
+         * 格子落到模型哪个真实档位由 host 算（见设置页那行"当前模型：关 → …"）。
+         */
+        var tierItem = effectiveItem()
+        var tierMap = (tierItem && tierItem.effortMap) || null
         var badTiers = badTiersOf()
         // host 在进程内学到的：这个模型"关"档会把思考写进正文
         var leaky = effectiveChoice()
         if (leaky && modelCatalog.leakyOff.indexOf(leaky.provider + '/' + leaky.model) >= 0) {
           badTiers = { ...badTiers, off: 'leak' }
         }
-        var active = state.effort || (modelCatalog.stages && modelCatalog.stages.chat) || ''
-        for (var t = 0; t < effortIds.length; t += 1) {
-          ;(function (id) {
-            var button = el('button', 'dsh-sel-tierbtn', tierLabel(id))
+        var activeSlot = chatSlot()
+        for (var t = 0; t < SLOT_ORDER.length; t += 1) {
+          ;(function (slot) {
+            // 这一格的落点（模型真实档位）：用来把"实测被拒/会泄漏"的标注对上来
+            var target = (tierMap && tierMap[slot]) || slot
+            var bad = badTiers[slot] || (target !== slot ? badTiers[target] : '')
+            var button = el('button', 'dsh-sel-tierbtn', SLOT_LABEL[slot])
             button.type = 'button'
-            button.setAttribute('data-on', id === active ? '1' : '0')
-            if (badTiers[id]) {
+            button.setAttribute('data-on', slot === activeSlot ? '1' : '0')
+            button.setAttribute('data-slot', slot)
+            if (bad) {
               button.setAttribute('data-bad', '1')
               button.title =
-                badTiers[id] === 'leak'
-                  ? '实测该模型在「' + tierLabel(id) + '」档会把思考写进正文：已自动改用「低」档'
-                  : '实测该模型不支持「' + tierLabel(id) + '」档：选它会自动回退到默认档'
+                bad === 'leak'
+                  ? '实测该模型在这一档会把思考写进正文：已自动改用「低」档'
+                  : '实测该模型不支持这一档：选它会自动回退到默认档'
             }
+            if (target !== slot) button.title = (button.title ? button.title + ' · ' : '') + '该模型发 ' + target
             listen(button, 'click', function (event) {
               event.preventDefault()
               event.stopPropagation()
-              state.effort = id
-              writeStore(EFFORT_KEY, id)
-              // 反向同步：设置页那行读的是 host 配置，只写本地的话它不会变（用户报的）
-              applyTierToSettings(id)
+              // 唯一写入口：写的就是设置页那一行读的那个值
+              setChatSlot(slot)
               paintModelPill()
               renderModelMenu()
-              setStatus('追问档位：' + tierLabel(id))
+              setStatus('追问档位：' + SLOT_LABEL[slot] + (target !== slot ? '（该模型发 ' + target + '）' : ''))
             })
             tiers.appendChild(button)
-          })(effortIds[t])
+          })(SLOT_ORDER[t])
         }
         modelMenu.appendChild(tiers)
         modelMenu.appendChild(
@@ -9983,8 +9972,8 @@ window.__ModuleLoader__.load({
       // 模型/档位：从 localStorage 恢复；没存过就跟随"当前路由 + 配置档位"（ping 里就有）
       // 从 host 的统一设置恢复模型，不读取旧浏览器模型覆盖。
       loadSettings(false)
-      var storedEffort = readStore(EFFORT_KEY, '')
-      if (storedEffort) state.effort = storedEffort
+      // 「追问」档位不再有浏览器本地覆盖：设置页那一行、小窗那四个格子、发出去的请求
+      // 读的都是同一份配置（chatReasoningEffort，加载完由 applyServerValues 同步进 state.effort）
       paintModelPill()
       fetch(PING + (currentSessionId() ? '?sessionId=' + encodeURIComponent(currentSessionId()) : ''), {
         headers: { accept: 'application/json' },

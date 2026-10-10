@@ -2270,8 +2270,8 @@ assert(
   assert('跟随态那一行带「跟随」小标（这个勾来自主会话，不是自己选的）',
     !!on[0] && !!Array.from(walk(on[0])).find((n) => String(n.className) === 'dsh-sel-pickerfollow' && textOf(n) === '跟随'),
     on[0] ? Array.from(walk(on[0])).map((n) => String(n.className) + ':' + textOf(n)).join(', ') : '未找到')
-  assert('跟随态：档位按钮列的是**在用模型**声明的档位（m-fast 四档）',
-    tiersIn().map((b) => textOf(b)).join('/') === '关/低/高/最大', tiersIn().map((b) => textOf(b)).join('/'))
+  assert('档位按钮 = 与设置页同一套四个格子（关/低/高/最高，与模型无关）',
+    tiersIn().map((b) => textOf(b)).join('/') === '关/低/高/最高', tiersIn().map((b) => textOf(b)).join('/'))
 
   // 选一个具体模型：勾挪到那一行、「跟随」小标消失、档位收缩成它声明的那几档
   const strong = rowsIn().find((r) => textOf(r).indexOf('Strong Model') >= 0)
@@ -2283,8 +2283,8 @@ assert(
     on2.map((r) => textOf(r)).join(' | '))
   assert('选过之后：「跟随」小标消失（这个勾是你自己选的）',
     !Array.from(walk(menu)).some((n) => String(n.className) === 'dsh-sel-pickerfollow'), '')
-  assert('选过之后：档位收缩成该模型声明的 2 档',
-    tiersIn().map((b) => textOf(b)).join('/') === '关/高', tiersIn().map((b) => textOf(b)).join('/'))
+  assert('选过之后：档位仍是那四个格子（换模型不改词汇，只改它落到哪个档）',
+    tiersIn().map((b) => textOf(b)).join('/') === '关/低/高/最高', tiersIn().map((b) => textOf(b)).join('/'))
 
   // 还原：走抽屉里那颗「恢复默认」（客户端自己的路径，state 与 host 都回到跟随态）
   await new Promise((r) => setTimeout(r, 700))
@@ -2433,33 +2433,53 @@ if (process.env.SEL_SETTINGS_ONLY === '1') {
     String((hintNode() || {}).textContent || ''),
   )
 
-  // 反向同步：在**小窗的档位控件**里改，设置页那一行要跟着变（两处读的原本不是同一份数据）
+  // 两边**同词同源**：小窗那个档位控件与设置页「思考强度 · 追问」都是同一套四个格子，
+  //   读写同一个配置值（chatReasoningEffort），于是不需要任何反向映射
   {
     hook.openModel()
     await new Promise((r) => setTimeout(r, 30))
-    const tierBtns = Array.from(walk(hook.modelNodes().menu)).filter((n) => String(n.className) === 'dsh-sel-tierbtn')
-    const pick = tierBtns.find((b) => textOf(b) === '高') || tierBtns.find((b) => textOf(b) === '最大') || tierBtns[0]
-    assert('（前提）小窗菜单里有档位按钮', !!pick, String(tierBtns.length))
-    pick.dispatch('click', { preventDefault() {}, stopPropagation() {} })
-    await new Promise((r) => setTimeout(r, 30))
-    const chosen = hook.modelState().effort
-    assert('（前提）小窗记下了这个档位', typeof chosen === 'string' && chosen.length > 0, String(chosen))
+    const tierBtns = () => Array.from(walk(hook.modelNodes().menu)).filter((n) => String(n.className) === 'dsh-sel-tierbtn')
+    assert(
+      '小窗的档位按钮 = 设置页那四个格子（关/低/高/最高）',
+      tierBtns().map((b) => textOf(b)).join('/') === '关/低/高/最高',
+      tierBtns().map((b) => textOf(b)).join('/'),
+    )
+    assert('每个格子带自己的 slot 记号（不是模型档位 id）',
+      tierBtns().map((b) => b.getAttribute('data-slot')).join('/') === 'off/low/high/max',
+      tierBtns().map((b) => b.getAttribute('data-slot')).join('/'))
 
-    // 设置页那一行读的是 host 配置：开抽屉看它的 data-value
+    // 小窗里点「高」→ 设置页那一行同一格 + 内存里就是同一个值
+    const highBtn = tierBtns().find((b) => textOf(b) === '高')
+    highBtn.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+    await new Promise((r) => setTimeout(r, 30))
+    assert('（前提）小窗记下了这一格', hook.modelState().effort === 'high', String(hook.modelState().effort))
     settingsBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
     await new Promise((r) => setTimeout(r, 60))
-    const seg = Array.from(walk(settingsSheet)).find(
+    const segOf = () => Array.from(walk(settingsSheet)).find(
       (n) => String(n.className) === 'dsh-sel-seg' && n.attrs && n.attrs['aria-label'] === '追问',
     )
-    assert('（前提）找得到设置页的「追问」档位行', !!seg, String(!!seg))
     assert(
-      '在小窗里选档位 → 设置页那一行立刻跟着选中同一个档（不再是各写各的）',
-      !!seg && seg.getAttribute('data-value') === chosen,
-      `小窗=${chosen} 设置页=${seg ? seg.getAttribute('data-value') : '(未找到)'}`,
+      '小窗点「高」→ 设置页那一行也是「高」（同一份数据，不需要映射）',
+      !!segOf() && segOf().getAttribute('data-value') === 'high',
+      segOf() ? String(segOf().getAttribute('data-value')) : '(未找到)',
     )
 
-    // 第二段：模型的档位**折回四个格子** —— weird（low>medium>high>xhigh）上点它的 Medium，
-    // 设置页应当存成「低」（因为它就是"低"那一格映射到的档位），这样两处才是同一件事。
+    // 反向：设置页点「低」→ 小窗那四个格子（菜单开着时）也跟着换
+    const segCells = Array.from(walk(segOf())).filter((n) => String(n.className) === 'dsh-sel-segcell')
+    const lowCell = segCells.find((c) => c.getAttribute('data-value') === 'low')
+    lowCell.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+    await new Promise((r) => setTimeout(r, 30))
+    assert('设置页点「低」→ 小窗也是同一格', hook.modelState().effort === 'low', String(hook.modelState().effort))
+    assert(
+      '小窗菜单里的选中态跟着换（不必重开菜单）',
+      Array.from(walk(hook.modelNodes().menu))
+        .filter((n) => String(n.className) === 'dsh-sel-tierbtn' && n.getAttribute('data-on') === '1')
+        .map((b) => textOf(b))
+        .join('/') === '低',
+      Array.from(walk(hook.modelNodes().menu)).filter((n) => n.getAttribute && n.getAttribute('data-on') === '1').map((b) => textOf(b)).join('/'),
+    )
+
+    // 词汇很怪的模型也一样只列四个格子 —— 这正是"不需要反向映射"的证明
     globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p2', model: 'm-weird' }, models: [...fixture.models, weird, plain] }
     const backToPanel = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sheetback')
     backToPanel.dispatch('click', { stopPropagation() {}, preventDefault() {} })
@@ -2468,58 +2488,14 @@ if (process.env.SEL_SETTINGS_ONLY === '1') {
     await new Promise((r) => setTimeout(r, 80))
     hook.openModel()
     await new Promise((r) => setTimeout(r, 30))
-    const weirdBtns = Array.from(walk(hook.modelNodes().menu)).filter((n) => String(n.className) === 'dsh-sel-tierbtn')
-    // 按钮文案走 tierLabel：认识的 id 显示中文（low→低、medium→中、high→高），
-    // 不认识（xhigh）就显示模型自己的名字
-    const mediumBtn = weirdBtns.find((b) => textOf(b) === '中')
-    assert('（前提）小窗里列的是这个模型自己的档位（low/medium/high/xhigh → 低/中/高/Xhigh）', !!mediumBtn, weirdBtns.map((b) => textOf(b)).join('/'))
-    if (mediumBtn) {
-      mediumBtn.dispatch('click', { preventDefault() {}, stopPropagation() {} })
-      await new Promise((r) => setTimeout(r, 30))
-      const seg2 = Array.from(walk(settingsSheet)).find(
-        (n) => String(n.className) === 'dsh-sel-seg' && n.attrs && n.attrs['aria-label'] === '追问',
-      )
-      const saved = hook.modelState().effort
-      assert(
-        '模型档位折回四格：小窗点它自己的「中」（medium）→ 设置页那一行落在「低」，小窗也记成「低」（发请求时再映射回 Medium）',
-        saved === 'low' && !!seg2 && seg2.getAttribute('data-value') === 'low',
-        `小窗=${String(saved)} 设置页=${seg2 ? seg2.getAttribute('data-value') : '(未找到)'}`,
-      )
-    }
+    assert(
+      '模型声明 minimal/xhigh 这种怪档位时，小窗仍然只列四个格子（不再出现 Xhigh/Medium）',
+      tierBtns().map((b) => textOf(b)).join('/') === '关/低/高/最高' &&
+        !tierBtns().some((b) => String(b.title).indexOf('Xhigh') >= 0 && !String(b.title).indexOf('该模型发')),
+      tierBtns().map((b) => textOf(b) + (b.title ? '(' + String(b.title) + ')' : '')).join(' / '),
+    )
 
-    // 第三段：**多个格子落到同一档**时，折回"名字对得上"的那一格
-    // （low>high>max 这种：低→high、高→high，用户点「高」就该存 high，而不是先撞上的 low）
-    const two = {
-      provider: 'p2', providerName: 'Provider Two', model: 'm-two', name: 'Two Tier Model',
-      efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }, { id: 'max', name: 'Max' }],
-      defaultEffort: null, hasReasoning: true,
-      effortMap: { off: 'low', low: 'high', high: 'high', max: 'max' },
-    }
-    globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p2', model: 'm-two' }, models: [...fixture.models, weird, plain, two] }
-    const backToPanel2 = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sheetback')
-    backToPanel2.dispatch('click', { stopPropagation() {}, preventDefault() {} })
-    await new Promise((r) => setTimeout(r, 20))
-    settingsBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
-    await new Promise((r) => setTimeout(r, 80))
-    hook.openModel()
-    await new Promise((r) => setTimeout(r, 30))
-    const twoBtns = Array.from(walk(hook.modelNodes().menu)).filter((n) => String(n.className) === 'dsh-sel-tierbtn')
-    const highBtn = twoBtns.find((b) => textOf(b) === '高')
-    assert('（前提）这个模型的小窗档位是 低/高/Max', !!highBtn && twoBtns.length === 3, twoBtns.map((b) => textOf(b)).join('/'))
-    if (highBtn) {
-      highBtn.dispatch('click', { preventDefault() {}, stopPropagation() {} })
-      await new Promise((r) => setTimeout(r, 30))
-      const seg3 = Array.from(walk(settingsSheet)).find(
-        (n) => String(n.className) === 'dsh-sel-seg' && n.attrs && n.attrs['aria-label'] === '追问',
-      )
-      assert(
-        '多个格子落到同一档时：点小窗的「高」→ 设置页亮「高」（不是先撞上的「低」）',
-        hook.modelState().effort === 'high' && !!seg3 && seg3.getAttribute('data-value') === 'high',
-        `小窗=${String(hook.modelState().effort)} 设置页=${seg3 ? seg3.getAttribute('data-value') : '(未找到)'}`,
-      )
-    }
-
-
+    // 收尾：恢复默认（写回跟随态）、收起抽屉与面板
     const resetBtn2 = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sbtn' && textOf(n).indexOf('恢复默认') >= 0)
     resetBtn2.dispatch('click', { stopPropagation() {}, preventDefault() {} })
     await new Promise((r) => setTimeout(r, 900))
@@ -3697,7 +3673,7 @@ assert('点回来看到"已停止"的状态与可重试入口', hook.state().pha
   assert('拉到模型清单（3 个）', loaded.count === 3, JSON.stringify(loaded))
   assert('没选过模型时胶囊也有文案（跟随当前路由）', nodes.pill.textContent.trim().length > 0, nodes.pill.textContent)
   assert('菜单列出全部模型 + provider 名', rowsIn().length === 3, String(rowsIn().length))
-  assert('档位按钮来自该模型声明的等级（4 档）', tiersIn().map((b) => textOf(b)).join('/') === '关/低/高/最大', tiersIn().map((b) => textOf(b)).join('/'))
+  assert('档位按钮 = 与设置页同一套四个格子', tiersIn().map((b) => textOf(b)).join('/') === '关/低/高/最高', tiersIn().map((b) => textOf(b)).join('/'))
 
   // 点"Strong Model"
   const strong = rowsIn().find((r) => textOf(r).indexOf('Strong Model') >= 0)
@@ -3707,13 +3683,18 @@ assert('点回来看到"已停止"的状态与可重试入口', hook.state().pha
   const selectedSettings = await (await fetch(ORIGIN + '/selection-explain/api/settings')).json()
   assert('模型选择保存到统一设置', selectedSettings.values.provider === 'p1' && selectedSettings.values.model === 'm-strong', JSON.stringify(selectedSettings.values))
   assert('菜单里的勾选跟着换', rowsIn().filter((r) => r.getAttribute('data-on') === '1').length === 1, '')
-  assert('档位按钮收缩成该模型支持的 2 档', tiersIn().map((b) => textOf(b)).join('/') === '关/高', tiersIn().map((b) => textOf(b)).join('/'))
+  assert('换模型后档位仍是那四个格子（词汇与设置页一致，不跟模型走）', tiersIn().map((b) => textOf(b)).join('/') === '关/低/高/最高', tiersIn().map((b) => textOf(b)).join('/'))
 
-  // 点档位"低"→ 该模型没声明低档，仍然允许（host 会按 id 透传）；这里点"关"
+  // 点"关"那一格 → 记进配置（host 再按当前模型把它映射成真实档位）
   const offBtn = tiersIn().find((b) => textOf(b) === '关')
   offBtn.dispatch('click', { preventDefault() {}, stopPropagation() {} })
   assert('点档位 → 胶囊上的档位跟着变', nodes.pill.textContent.indexOf('关') >= 0, nodes.pill.textContent)
-  assert('档位落盘', String(windowStub.localStorage.getItem('dsh-selection-explain:effort')) === 'off', String(windowStub.localStorage.getItem('dsh-selection-explain:effort')))
+  // 档位只有**一份**数据：设置里的 chatReasoningEffort（不再有 localStorage 覆盖）
+  await new Promise(r => setTimeout(r, 700))
+  const effortSaved = await (await fetch(ORIGIN + '/selection-explain/api/settings')).json()
+  assert('档位写进统一设置（chatReasoningEffort），不再是浏览器本地覆盖',
+    effortSaved.values.chatReasoningEffort === 'off' && windowStub.localStorage.getItem('dsh-selection-explain:effort') === null,
+    JSON.stringify({ saved: effortSaved.values.chatReasoningEffort, local: windowStub.localStorage.getItem('dsh-selection-explain:effort') }))
 
   // 请求要带上 provider/model/effort（紧跟点档位之后断言，免得被后面的用例改状态影响）
   {
@@ -3770,7 +3751,7 @@ assert('点回来看到"已停止"的状态与可重试入口', hook.state().pha
     hook.openModel() // 菜单要先渲染出来，否则下面找不到按钮（前面的 strip 用例重渲染过）
     await sleep(20)
     const tierBtns = Array.from(walk(hook.modelNodes().menu)).filter((n) => String(n.className) === 'dsh-sel-tierbtn')
-    const pickBtn = tierBtns.find((b) => textOf(b) === '最大') || tierBtns[0]
+    const pickBtn = tierBtns.find((b) => textOf(b) === '最高') || tierBtns[0]
     if (pickBtn) pickBtn.dispatch('click', { preventDefault() {}, stopPropagation() {} })
     const chosen = hook.modelState().effort
     assert('用例前置：先选上一个档位', typeof chosen === 'string' && chosen.length > 0, String(chosen))
@@ -3828,9 +3809,9 @@ assert('点回来看到"已停止"的状态与可重试入口', hook.state().pha
   const rows = () => Array.from(walk(hook.modelNodes().menu)).filter((n) => String(n.className) === 'dsh-sel-pickerrow')
   rows()[0].dispatch('click', { preventDefault() {}, stopPropagation() {} })
   const tiers = () => Array.from(walk(hook.modelNodes().menu)).filter((n) => String(n.className) === 'dsh-sel-tierbtn')
-  const maxBtn = tiers().find((b) => textOf(b) === '最大')
+  const maxBtn = tiers().find((b) => textOf(b) === '最高')
   maxBtn.dispatch('click', { preventDefault() {}, stopPropagation() {} })
-  assert('选到「最大」档后胶囊显示它', hook.modelState().effort === 'max', String(hook.modelState().effort))
+  assert('选到「最高」那一格后胶囊显示它', hook.modelState().effort === 'max', String(hook.modelState().effort))
 
   // 让这一轮流式里含一条 effort-rejected notice（模拟 host 的回退）
   hook.close()
@@ -3843,12 +3824,17 @@ assert('点回来看到"已停止"的状态与可重试入口', hook.state().pha
   const last = turns[turns.length - 1]
   assert('轮次上记下了提示文案', String(last.notice || '').indexOf('已按默认档位重试') >= 0, String(last.notice))
   assert('提示行渲染进了气泡（不是只记在状态里）', Array.from(walk(chatLog)).some((n) => String(n.className).indexOf('dsh-sel-notice') >= 0 && textOf(n).indexOf('已按默认档位重试') >= 0), textOf(chatLog).slice(-60))
-  assert('被拒后自动回退：档位选择清空（不再拿同一个组合撞墙）', hook.modelState().effort === null, String(hook.modelState().effort))
-  assert('回退同时清掉持久化', String(windowStub.localStorage.getItem('dsh-selection-explain:effort')) === '', String(windowStub.localStorage.getItem('dsh-selection-explain:effort')))
+  // 档位只有**一份**数据（配置里的 chatReasoningEffort）：被拒时不再偷偷清掉用户的选择
+  //（清掉会让人以为自己没选过），这一轮该发什么由 host 的换档重试兜；标记留给菜单划斜线。
+  assert('被拒后**保留**用户选的那一格（唯一一份数据，不偷偷清）', hook.modelState().effort === 'max', String(hook.modelState().effort))
+  assert('档位不再写浏览器本地覆盖（已并入配置这一个源）',
+    windowStub.localStorage.getItem('dsh-selection-explen:effort') === null &&
+      windowStub.localStorage.getItem('dsh-selection-explain:effort') === null,
+    String(windowStub.localStorage.getItem('dsh-selection-explain:effort')))
   // 菜单里该档位被标成"实测不支持"
   hook.openModel()
   const bad = Array.from(walk(hook.modelNodes().menu)).filter((n) => n.getAttribute && n.getAttribute('data-bad') === '1')
-  assert('菜单里把被拒的档位标出来（划斜线 + tooltip）', bad.length === 1 && textOf(bad[0]) === '最大', bad.map((b) => textOf(b)).join(','))
+  assert('菜单里把被拒的那一格标出来（划斜线 + tooltip）', bad.length === 1 && textOf(bad[0]) === '最高', bad.map((b) => textOf(b)).join(','))
 
   // ② 上游**偶发**错误（host 已换档重试）：提示要出现，但绝不能当成"这一档不支持" ——
   //    2026-10-09 实测：同一档位时好时坏（low/high 各 5/8 成功），所以它不能清档位、不能标 bad。
@@ -3882,7 +3868,7 @@ assert('点回来看到"已停止"的状态与可重试入口', hook.state().pha
     const badAfter = Array.from(walk(hook.modelNodes().menu)).filter((n) => n.getAttribute && n.getAttribute('data-bad') === '1')
     assert(
       '偶发错误不写进"实测该模型不支持"（菜单里仍然只有「最大」被标）',
-      badAfter.length === 1 && textOf(badAfter[0]) === '最大',
+      badAfter.length === 1 && textOf(badAfter[0]) === '最高',
       badAfter.map((b) => textOf(b)).join(','),
     )
   }
