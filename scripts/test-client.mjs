@@ -2394,6 +2394,30 @@ if (process.env.SEL_SETTINGS_ONLY === '1') {
   )
   assert('四格本身一个不多一个不少（没有被模型带跑）', (hintText.match(/→/g) || []).length === 4, hintText)
 
+  // **从抽屉自己的模型下拉里换模型**（用户报的那条路径：原来只有胶囊跟着变，这行不动）
+  {
+    const pick = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-spick')
+    pick.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 30))
+    const plainRow = Array.from(walk(settingsSheet))
+      .filter((n) => n.className === 'dsh-sel-spickrow')
+      .find((r) => textOf(r).indexOf('Plain Model') >= 0)
+    assert('（前提）下拉里能找到另一个模型', !!plainRow, textOf(pick))
+    plainRow.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    for (let i = 0; i < 60 && String((hintNode() || {}).textContent || '').indexOf('不支持思考强度') < 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    assert(
+      '从设置页的模型下拉换模型：那行映射立刻跟着换（不再只有胶囊变）',
+      String((hintNode() || {}).textContent || '').indexOf('不支持思考强度') >= 0,
+      String((hintNode() || {}).textContent || ''),
+    )
+    // 走客户端自己的「恢复默认」把模型写回跟随态（别把真实配置留在具体模型上）
+    const resetBtn = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sbtn' && textOf(n).indexOf('恢复默认') >= 0)
+    resetBtn.dispatch('click', { stopPropagation() {}, preventDefault() {} })
+    await new Promise((r) => setTimeout(r, 900))
+  }
+
   // 换成"明确不支持推理"的模型 → 说清这一组不生效（而不是假装能选）
   globalThis.__modelCatalogFixture = { ...fixture, current: { provider: 'p2', model: 'm-plain' }, models: [...fixture.models, weird, plain] }
   const backBtn2 = Array.from(walk(settingsSheet)).find((n) => n.className === 'dsh-sel-sheetback')

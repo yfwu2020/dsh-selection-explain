@@ -9692,6 +9692,11 @@ window.__ModuleLoader__.load({
         modelPillTier.textContent = tier ? '· ' + tierLabel(tier) : ''
         modelPill.title = (provider ? provider + ' · ' : '') + name + (tier ? ' · 推理等级 ' + tierLabel(tier) : '') +
           '（模型与追问思考强度）'
+        // 胶囊是"当前模型"的**唯一**统一落点：换模型的所有路径最后都会走到这里
+        //（设置抽屉的模型下拉、小窗的模型菜单、跟随主会话时主界面换模型…），
+        // 设置页那行"四格 → 真实档位"也在这里跟着重画 —— 早先只在 chooseSharedModel 里画，
+        // 于是"从抽屉的下拉里换模型"那行纹丝不动（用户报的正是这个）。
+        paintEffortMapHint()
       }
 
       /**
