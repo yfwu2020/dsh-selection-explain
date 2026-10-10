@@ -134,6 +134,16 @@ window.__ModuleLoader__.load({
      * 单行卡因此是 24 + 18 = 42px —— 而不是漏掉 box-sizing 时渲染出来的 70px。
      */
     var VCARD_PAD_Y = 18
+    /**
+     * "这一帧刚被动过"算多久以内有效（毫秒）。
+     *
+     * 只给侧边栏网页那条路用：焦点落在**不透明源子框架**里时，父文档的 `document.hasFocus()`
+     * 是否返回 true 由浏览器实现决定（跨引擎没有统一答案，headless 里也验不出来），
+     * 所以对帧内选区改用"这一帧刚刚报过动作（划词 / 按下）"当焦点证据 ——
+     * 桥报上来的那一刻，用户确实正在那个网页里操作。窗口取 5 秒：麦克风探针 125ms +
+     * 页面轮询 200ms，开麦检测最慢也就几百毫秒后才用到它。
+     */
+    var FRAME_FOCUS_EVIDENCE_MS = 5000
     /** 兜底限制（host 的 limits 优先；拿不到目录时按这套走）。 */
     var VOICE_FALLBACK_SECONDS = 60
     var VOICE_MAX_BYTES = 4 * 1024 * 1024
@@ -4082,6 +4092,13 @@ window.__ModuleLoader__.load({
         open: false,
         /** 打开时的选区快照（滚动 / 改窗口大小时按它重算位置）。 */
         range: null,
+        /**
+         * 打开时的锚点矩形（视口坐标）。
+         *
+         * 侧边栏网页那条路**没有 Range**（不透明源帧里的选区拿不出来），定位只能靠桥换算好的
+         * 矩形 —— 新的 selection 消息会刷新它，于是帧内滚动 / 重报时卡片跟着走。
+         */
+        anchorRect: null,
         timer: null,
         /** 上一次 /mic 还没回来（不叠请求）。 */
         busy: false,
@@ -4251,15 +4268,20 @@ window.__ModuleLoader__.load({
        */
       function vcardGeometry() {
         var range = vcardState.range
-        if (!range) return null
         var rect = null
-        try {
-          rect = range.getBoundingClientRect()
-        } catch (error) {
-          return null
+        if (range) {
+          try {
+            rect = range.getBoundingClientRect()
+          } catch (error) {
+            rect = null
+          }
         }
+        // 侧边栏网页那条路没有 Range：锚点用桥换算好的视口矩形（两者都是视口坐标，可直接混用）。
+        if ((!rect || (!rect.width && !rect.height)) && vcardState.anchorRect) rect = vcardState.anchorRect
         if (!rect || (!rect.width && !rect.height)) return null
-        var blockRect = selectionBlockRect(range) || rect
+        // 帧内选区只知道自己那一段（"块"是帧内的事，父页面看不见）：整块就用它自己，
+        // 于是"落在整段文字下方"这条规则在网页里退化成"落在这段选区下方"。
+        var blockRect = (range && selectionBlockRect(range)) || rect
         var right = Math.min(rect.right, Math.max(8, window.innerWidth - 8))
         var width = VCARD_W
         var left = Math.max(8, right - width)
@@ -4328,14 +4350,20 @@ window.__ModuleLoader__.load({
        */
       function openVCard() {
         if (vcardState.open || panelOpen) return
-        if (!state.selection || !state.selection.range) return
+        if (!state.selection) return
+        // ⚠️ 两条来源的定位依据不一样，不能只认 Range：
+        //   · 本文档里的选区 → 有 Range（几何 / 选中提示都按它算）；
+        //   · 侧边栏网页（不透明源 iframe）→ 父页面**拿不到那个 Range**，只有桥换算好的
+        //     视口矩形（state.selection.rect）和桥采好的上下文 —— 见 vcardGeometry / sendVCard。
+        if (!state.selection.range && state.selection.source !== 'iframe') return
         // 页面没焦点 / 用户正在别处打字：不抢 —— 抢了就是把人家别处的听写拽过来
-        if (typeof document.hasFocus === 'function' && !document.hasFocus()) return
+        if (!hasFocusEvidence(state.selection)) return
         if (isTypingTarget(document.activeElement)) return
         ensureVCard()
         // 上一轮的关机动画可能还没收尾（用户马上又划了新文字、又开麦）：先收干净再开
         if (vcardState.closing || vcardState.crtTimer) finishCrtOff()
-        vcardState.range = state.selection.range
+        vcardState.range = state.selection.range || null
+        vcardState.anchorRect = state.selection.rect || null
         var geo = vcardGeometry()
         if (!geo) return
         var pillRect = button.getBoundingClientRect()
@@ -4459,9 +4487,19 @@ window.__ModuleLoader__.load({
         if (!selMark) return
         clearSelectionMarkers()
         var range = vcardState.range
-        if (!range || !vcard || !vcardState.open) return
-        var rects = range.getClientRects ? range.getClientRects() : null
-        if (!rects || !rects.length) return
+        if (!vcard || !vcardState.open) return
+        if (!range && !vcardState.anchorRect) return
+        /**
+         * 侧边栏网页那条路（没有 Range）：**只画牵引线，不画下划线**。
+         *
+         * 两个理由：① 逐行矩形在帧内，父页面拿不到（桥只报了一个锚点矩形）；
+         * ② 帧内原生底纹是否还在由浏览器说了算 —— 万一还在，我们按估算位置再画一条
+         * 下划线就是"划两层"（本文档那条路当初踩过同一个坑）。
+         * 牵引线是独立的一条线，不存在这个冲突，所以留着：卡片和那段文字之间得有可见的联系。
+         */
+        var fromFrame = !range && !!vcardState.anchorRect
+        var rects = fromFrame ? null : range.getClientRects ? range.getClientRects() : null
+        if (!fromFrame && (!rects || !rects.length)) return
         var accent = 'var(--sel-a1)'
         // ⚠️ 必须先**按行归并**再画：
         // 一行里如果有行内元素（<code>、粗体、链接），getClientRects() 会给出**多个矩形**，
@@ -4472,45 +4510,49 @@ window.__ModuleLoader__.load({
         // （实测：一段两行会额外给出 h=53 的块盒，一个代码块给出 h=80 的块盒）。
         // 它会把段内所有行吞进一组，结果整段只画一条下划线、很多行没线（用户实测）。
         // 判据用高度中位数：行片段的高度都接近行高，块盒是它的数倍。
-        var heights = []
-        for (var h = 0; h < rects.length; h += 1) {
-          var probe = rects[h]
-          if (probe && probe.width) heights.push(probe.bottom - probe.top)
-        }
-        heights.sort(function (a, b) {
-          return a - b
-        })
-        var median = heights.length ? heights[Math.floor(heights.length / 2)] : 0
-        var maxLineHeight = median > 0 ? median * 1.8 : Infinity
+        // ⚠️ 这一整段只在有 `rects` 时跑：帧内那条根本没有逐行矩形（rects = null），
+        // 它只画下面的牵引线。
         var lines = []
-        for (var i = 0; i < rects.length; i += 1) {
-          var rect = rects[i]
-          if (!rect || !rect.width) continue
-          if (rect.bottom - rect.top > maxLineHeight) continue
-          var height = rect.bottom - rect.top
-          var center = rect.top + height / 2
-          var line = null
-          for (var j = 0; j < lines.length; j += 1) {
-            var group = lines[j]
-            var groupHeight = group.bottom - group.top
-            var groupCenter = group.top + groupHeight / 2
-            // ⚠️ 判"同一行"必须看**垂直中心**，不能看重叠面积：
-            // 行内 code 的盒子可能比整行还高（行高 1.8 时尤其明显），
-            // 按重叠判会把**下一行**也吞进同一组 → 那几行就没有下划线了（用户实测）。
-            // 中心距的容差取"较矮者的一半"：同一行的元素中心几乎重合，
-            // 相邻行的中心差至少一个行高，两者区分得很干净。
-            if (height > 0 && groupHeight > 0 && Math.abs(groupCenter - center) <= Math.min(groupHeight, height) * 0.5) {
-              line = group
-              break
-            }
+        if (!fromFrame) {
+          var heights = []
+          for (var h = 0; h < rects.length; h += 1) {
+            var probe = rects[h]
+            if (probe && probe.width) heights.push(probe.bottom - probe.top)
           }
-          if (line) {
-            line.left = Math.min(line.left, rect.left)
-            line.right = Math.max(line.right, rect.right)
-            line.top = Math.min(line.top, rect.top)
-            line.bottom = Math.max(line.bottom, rect.bottom)
-          } else {
-            lines.push({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom })
+          heights.sort(function (a, b) {
+            return a - b
+          })
+          var median = heights.length ? heights[Math.floor(heights.length / 2)] : 0
+          var maxLineHeight = median > 0 ? median * 1.8 : Infinity
+          for (var i = 0; i < rects.length; i += 1) {
+            var rect = rects[i]
+            if (!rect || !rect.width) continue
+            if (rect.bottom - rect.top > maxLineHeight) continue
+            var height = rect.bottom - rect.top
+            var center = rect.top + height / 2
+            var line = null
+            for (var j = 0; j < lines.length; j += 1) {
+              var group = lines[j]
+              var groupHeight = group.bottom - group.top
+              var groupCenter = group.top + groupHeight / 2
+              // ⚠️ 判"同一行"必须看**垂直中心**，不能看重叠面积：
+              // 行内 code 的盒子可能比整行还高（行高 1.8 时尤其明显），
+              // 按重叠判会把**下一行**也吞进同一组 → 那几行就没有下划线了（用户实测）。
+              // 中心距的容差取"较矮者的一半"：同一行的元素中心几乎重合，
+              // 相邻行的中心差至少一个行高，两者区分得很干净。
+              if (height > 0 && groupHeight > 0 && Math.abs(groupCenter - center) <= Math.min(groupHeight, height) * 0.5) {
+                line = group
+                break
+              }
+            }
+            if (line) {
+              line.left = Math.min(line.left, rect.left)
+              line.right = Math.max(line.right, rect.right)
+              line.top = Math.min(line.top, rect.top)
+              line.bottom = Math.max(line.bottom, rect.bottom)
+            } else {
+              lines.push({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom })
+            }
           }
         }
         for (var k = 0; k < lines.length; k += 1) {
@@ -4524,8 +4566,8 @@ window.__ModuleLoader__.load({
             'linear-gradient(90deg,transparent,' + accent + ' 12%,' + accent + ' 88%,transparent)'
           selMark.appendChild(mark)
         }
-        var first = lines[0]
-        var last = lines[lines.length - 1]
+        var first = fromFrame ? vcardState.anchorRect : lines[0]
+        var last = fromFrame ? vcardState.anchorRect : lines[lines.length - 1]
         var geo = vcardGeometry()
         if (!first || !last || !geo) return
         // 终点用**算出来的最终位置**（geo.top），不是卡片此刻的 rect ——
@@ -4780,6 +4822,7 @@ window.__ModuleLoader__.load({
         if (!vcardState.open) return
         vcardState.open = false
         vcardState.range = null
+        vcardState.anchorRect = null
         // ⚠️ 必须**显式 blur**，不能只把卡片 display:none 掉。
         //
         // 输入法（豆包）的输入上下文是绑在"当前那个文本输入框"上的：卡片打开时我们把焦点
@@ -4815,11 +4858,20 @@ window.__ModuleLoader__.load({
           return
         }
         var selection = state.selection
-        if (!selection || !selection.range) {
+        if (!selection) {
           closeVCard()
           return
         }
-        var contextInfo = collectContext(rangeSelection(selection.range))
+        // 侧边栏网页那条路没有 Range（不透明源帧的选区拿不出来），上下文 / 标签直接用
+        // 帧内桥采好带过来的那份 —— 与 openForSelection 的 iframe 分支同一条规则。
+        var contextInfo =
+          selection.source === 'iframe' || !selection.range
+            ? {
+                context: String(selection.context || ''),
+                keyContext: String(selection.keyContext || ''),
+                label: selection.label,
+              }
+            : collectContext(rangeSelection(selection.range))
         // 交接起点：卡片**现在**的矩形。必须在 closeVCard 之前量 —— 之后它 display:none，量出来是 0。
         // 小窗会从这一格"长出来"（见 growPanelFromCard）。
         vcardHandoff = vcardRect()
@@ -4835,6 +4887,22 @@ window.__ModuleLoader__.load({
         clearDocSelection()
         // 选区连同它的记录一起作废（与 openForSelection 一致）
         state.selection = null
+        state.bridgeActive = false
+      }
+
+      /**
+       * "现在这一下该不该抢焦点"。
+       *
+       * 本文档里的选区：`document.hasFocus()` 就是答案（与改动前完全一致）。
+       * 侧边栏网页里的选区：焦点其实落在**不透明源子框架**里，父文档的 `hasFocus()`
+       * 有没有为真由浏览器实现说了算（跨引擎没有统一答案），所以对它改用
+       * "这一帧刚报过动作"当证据 —— 桥报上来的那一刻，用户确实正在那个网页里划词 / 点按。
+       */
+      function hasFocusEvidence(selection) {
+        if (typeof document.hasFocus !== 'function') return true
+        if (document.hasFocus()) return true
+        if (!selection || selection.source !== 'iframe' || !selection.frame) return false
+        return Date.now() - (frameTouchedAt.get(selection.frame) || 0) < FRAME_FOCUS_EVIDENCE_MS
       }
 
       /** 卡片当前的视口矩形（拿不到就返回 null —— 那就不做交接动画，老实瞬开）。 */
@@ -4974,6 +5042,7 @@ window.__ModuleLoader__.load({
        * 守卫与 openVCard 完全一致（页面没焦点 / 用户正在别处打字 → 不抢，否则就是把
        * 人家在别处的听写拽进小窗），另外多加一条：插件自己的 🎤 正在录音时不抢 ——
        * 那套走 host 识别、与输入法语音是两回事，焦点该留给它。
+       * （"没焦点"同样按 hasFocusEvidence 判：侧边栏网页里那条选区也得能走这条路。）
        *
        * 用户取消语音（Esc）或一个字没说：**引用留着**（可一键 ✕ 删）。撤销会让"引用到底
        * 加没加"变得难预期，而且点浮标那条路也是加了就加了。
@@ -4981,7 +5050,7 @@ window.__ModuleLoader__.load({
       function autoQuoteFromVoice() {
         var selection = state.quoteSelection
         if (!panelOpen || !selection) return
-        if (typeof document.hasFocus === 'function' && !document.hasFocus()) return
+        if (!hasFocusEvidence(selection)) return
         if (isTypingTarget(document.activeElement)) return
         if (voice && voice.phase !== 'idle') return
         // 与点浮标同一条路：上下文在这一刻才采（"引用当时在哪一段对话里"最有用的就是它）
@@ -5292,6 +5361,14 @@ window.__ModuleLoader__.load({
        * 用 Map 而不是数组：既要按帧查自己的 url，也要遍历找回消息来源对应的帧。
        */
       var bridged = new Map()
+      /**
+       * 帧 → 最后一次收到它的消息的时间戳。
+       *
+       * 只为一件事：判断"用户此刻是不是就在那个侧边栏网页里"（见 hasFocusEvidence）。
+       * 焦点落在不透明源子框架里时，父文档的 `document.hasFocus()` 未必为真，
+       * 而桥报上来的每条消息本身就是"用户刚在那儿动过"的证据。
+       */
+      var frameTouchedAt = new Map()
       /** 总开关：host 的 bridgeSidebarPreview 说关就关（见下面 ping 分支）。 */
       var bridgeOn = true
       /** 扫描节流用的定时器 id。 */
@@ -5471,11 +5548,14 @@ window.__ModuleLoader__.load({
           }
           // 帧没了就不会再有 clear 消息了：把它占着的那条选区一起清掉，
           // 否则 `bridgeActive` 会一直挂着（表现为顶层选区塌掉也不收浮标）。
+          // 卡片开着时也不清：帧没了但它占着的选区仍是"这一轮的解读对象"（发送要用），
+          // 与下面 clear 分支同一条规则。
           if (state.selection && state.selection.frame === dead[i]) {
-            state.selection = null
             state.bridgeActive = false
+            if (!vcardState.open) state.selection = null
             hideButton()
           }
+          frameTouchedAt.delete(dead[i])
           bridged.delete(dead[i])
         }
       }
@@ -5512,6 +5592,8 @@ window.__ModuleLoader__.load({
         if (!bridgeOn || !data || data.__dshSel !== 1) return
         var frame = frameBySource(event.source)
         if (!frame) return
+        // 这条消息本身就是"用户此刻正在那个网页里"的证据（见 hasFocusEvidence）
+        frameTouchedAt.set(frame, Date.now())
         if (data.kind === 'press') {
           // 帧内按下：与主会话一致——先收浮标。父页面收不到帧内的 mousedown，
           // 少了这一条，在网页里点一下（取消选区、点别处、点另一个网页）浮标就赖着不走。
@@ -5522,12 +5604,23 @@ window.__ModuleLoader__.load({
           }
           hideButton()
           hideQuoteButton()
+          // 卡片开着时同理要收卡片（与主会话"点别处就收卡"同一条规则：那边靠 document 上的
+          // mousedown，帧内的点击父页面收不到）。suppress 也要置上，否则下一拍轮询发现
+          // "还在录"会把卡片又弹回来 —— Esc 那条路同样是这么处理的。
+          if (vcardState.open && state.selection && state.selection.frame === frame) {
+            vcardState.suppress = true
+            closeVCard(true)
+          }
           return
         }
         if (data.kind === 'clear') {
           if (state.selection && state.selection.frame === frame) {
-            state.selection = null
             state.bridgeActive = false
+            // ⚠️ 卡片开着时**不清选区**：抢焦点必然让帧内选区塌掉（输入法上屏要的正是焦点），
+            // 桥于是报 clear —— 但用户选的那段文字仍然是这一轮的解读对象（发送时要用它，
+            // 麦克风轮询也要靠 state.selection 判断"说完了没有"）。
+            // 本文档那条路是一致的：顶层选区被抢焦点搞塌时也只收浮标，不清 state.selection。
+            if (!vcardState.open) state.selection = null
             hideButton()
             hideQuoteButton()
           }
@@ -5558,6 +5651,17 @@ window.__ModuleLoader__.load({
           label: labelForFrame(frame, data.sel.label),
         }
         state.bridgeActive = true
+        // 卡片开着时，帧内的重报（滚动 / 改尺寸 / 挪选区）只是"那段文字动了"：
+        // 跟着挪卡片与锚点，**不要**再浮出浮标（浮标与卡片是互斥的两态）。
+        if (vcardState.open) {
+          if (state.selection.frame === frame) {
+            vcardState.anchorRect = rect
+            repositionVCard()
+            return
+          }
+          // 另一帧报了新选区：这张卡已经不是用户在看的东西了，收掉再按新选区走
+          closeVCard(true)
+        }
         if (panelOpen) {
           // 小窗开着：帧内这条选区也只是"一段可以引用的文字"（上下文由帧内的桥给）
           state.quoteSelection = {

@@ -5745,6 +5745,134 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
     await sleep(40)
   }
 
+  // ── ⑩ 侧边栏网页里的选区也能弹卡（不透明源 iframe：父页面**没有**那段 Range）──
+  //   撤掉修复就会红的地方：
+  //     ① `openVCard` 原来第一句就是 `!state.selection.range → return`，帧内选区永远弹不出卡；
+  //     ② 几何原来只认 Range，桥给的锚点矩形用不上；
+  //     ③ 卡片一抢焦点，帧内选区就塌（输入法上屏要的正是焦点）→ 桥报 clear；
+  //        若照旧清掉 state.selection，"发送"和"说完了没有"两条都会断（轮询也会停）；
+  //     ④ 发送时不能读顶层 DOM（读不到那个帧），要用桥采好的上下文；
+  //     ⑤ 帧内按下（父页面收不到那个 mousedown）也要收卡。
+  {
+    const priorQuerySelectorAll = documentStub.querySelectorAll
+    const frame = new FakeEl('iframe')
+    frame.setAttribute('data-html-preview', 'true')
+    frame.setAttribute('sandbox', 'allow-scripts')
+    frame.setAttribute('srcdoc', '<!doctype html><html><body><p>网页里的正文</p></body></html>')
+    frame.isConnected = true
+    const frameWindow = { name: 'voice-card-sidebar-frame' }
+    frame.contentWindow = frameWindow
+    documentStub.querySelectorAll = (selector) => (selector === 'iframe' ? [frame] : [])
+    hook.bridgeScan()
+    assert('（前提）这一帧被桥上（不然下面那条消息不会被认）', frame.getAttribute('data-dsh-sel-bridged') === '1', String(frame.getAttribute('data-dsh-sel-bridged')))
+
+    const IME3 = [{ pid: 513, bundleId: 'com.bytedance.inputmethod.doubaoime', name: 'DoubaoIme' }]
+    const recording3 = { ok: true, available: true, capturing: true, processes: IME3, reason: '' }
+    const stopped3 = { ok: true, available: true, capturing: false, processes: [], reason: '' }
+    hook.close()
+    await sleep(20)
+    documentStub.activeElement = body
+    micStub.value = recording3
+    windowStub.dispatch('message', {
+      source: frameWindow,
+      data: {
+        __dshSel: 1,
+        kind: 'selection',
+        sel: {
+          text: '网页里选中的这段',
+          context: '前文【网页里选中的这段】后文',
+          keyContext: '前文',
+          label: '',
+          // 帧内坐标（帧自己的 getBoundingClientRect 是桩的 40/100）→ 视口 50/120..160/138
+          rect: { x: 10, y: 20, right: 120, bottom: 38, w: 110, h: 18 },
+        },
+      },
+    })
+    assert('（前提）浮标出现在网页选区处', button.style.display === 'inline-flex', String(button.style.display))
+    await sleep(300)
+    const frameCard = hook.voiceCard()
+    assert('侧边栏网页里的选区也能弹卡（不再被 range 守卫挡掉）', frameCard.open === true, JSON.stringify(frameCard))
+    assert(
+      '卡片按桥给的锚点矩形定位（帧偏移 40/100 + 帧内坐标 → 左 8 / 上 160）',
+      !!frameCard.geometry && frameCard.geometry.left === '8px' && frameCard.geometry.top === '160px',
+      JSON.stringify(frameCard.geometry),
+    )
+    // 帧内那条：逐行矩形拿不到（父页面碰不到那个 Range），所以**只画牵引线、不画下划线** ——
+    // 画下划线会与帧内可能还在的原生底纹"划两层"。
+    const frameThread = find('dsh-sel-thread')
+    const framePath = find('dsh-sel-threadpath')
+    assert('帧内选区不画下划线（那需要逐行矩形，而且有"划两层"的风险）', !find('dsh-sel-uline'), String(!!find('dsh-sel-uline')))
+    assert(
+      '但牵引线留着：从锚点矩形竖直指向卡片（M105 140 = 选区末行中点）',
+      !!frameThread && frameThread.style.display === 'block' && !!framePath && String(framePath.getAttribute('d')).indexOf('M105 140') === 0,
+      framePath ? String(framePath.getAttribute('d')).slice(0, 40) : 'no path',
+    )
+
+    // 抢焦点 → 帧内选区塌掉 → 桥报 clear：**卡片开着时不能清选区**
+    windowStub.dispatch('message', { source: frameWindow, data: { __dshSel: 1, kind: 'clear' } })
+    assert(
+      '卡片开着时帧内报 clear：卡片不关、选区不清（发送与轮询都还要用）',
+      hook.voiceCard().open === true && hook.selection() !== null,
+      JSON.stringify({ card: hook.voiceCard().open, sel: hook.selection() }),
+    )
+    assert('麦克风轮询还在（靠它判断"说完了没有"）', hook.voiceCard().watching === true, JSON.stringify(hook.voiceCard()))
+
+    // 帧内重报（滚动 / 挪选区）：跟着挪卡片，不要又冒出浮标
+    windowStub.dispatch('message', {
+      source: frameWindow,
+      data: { __dshSel: 1, kind: 'selection', sel: { text: '网页里选中的这段', context: '前文【网页里选中的这段】后文', keyContext: '前文', label: '', rect: { x: 10, y: 60, right: 120, bottom: 78, w: 110, h: 18 } } },
+    })
+    const moved = hook.voiceCard()
+    assert(
+      '帧内重报：卡片跟着挪（锚点 120→160 → top 160→200），浮标不冒出来',
+      moved.open === true && !!moved.geometry && moved.geometry.top === '200px' && button.style.display === 'none',
+      JSON.stringify({ top: moved.geometry && moved.geometry.top, pill: button.style.display }),
+    )
+
+    // 说话 → 发送：上下文用桥采好的那份
+    if (box) {
+      box.value = '这段在说什么？'
+      box.dispatch('input', { target: box, preventDefault() {}, stopPropagation() {} })
+    }
+    hook.voiceCardSend()
+    await sleep(60)
+    const framePayload = hook.payload()
+    assert(
+      '发送后用桥采好的上下文（顶层 DOM 里根本没有这段文字）',
+      !!framePayload && framePayload.context === '前文【网页里选中的这段】后文',
+      framePayload && framePayload.context,
+    )
+    assert(
+      '发送后卡片收起、面板开着',
+      hook.voiceCard().open === false && panel.style.display !== 'none',
+      JSON.stringify({ card: hook.voiceCard().open, panel: panel.style.display }),
+    )
+
+    // 帧内按一下 = 收卡（父页面收不到那个 mousedown，只能靠桥的 press）
+    hook.close()
+    await sleep(20)
+    windowStub.dispatch('message', {
+      source: frameWindow,
+      data: { __dshSel: 1, kind: 'selection', sel: { text: '第二段网页文字', context: '【第二段网页文字】', keyContext: '', label: '', rect: { x: 10, y: 20, right: 120, bottom: 38, w: 110, h: 18 } } },
+    })
+    await sleep(300)
+    assert('（前提）卡片又弹出来了', hook.voiceCard().open === true, JSON.stringify(hook.voiceCard()))
+    windowStub.dispatch('message', { source: frameWindow, data: { __dshSel: 1, kind: 'press' } })
+    const afterPress = hook.voiceCard()
+    assert('帧内按下：卡片收掉（并播关机动画）', afterPress.open === false && afterPress.closing === true, JSON.stringify(afterPress))
+    await sleep(800) // 桩里没有 animationend，走 640ms 兜底
+
+    // 收尾：选区清掉、帧从扫描里摘掉、麦克风复位
+    windowStub.dispatch('message', { source: frameWindow, data: { __dshSel: 1, kind: 'clear' } })
+    assert('卡片收起后帧内的 clear 照旧生效（选区状态收干净）', hook.selection() === null, JSON.stringify(hook.selection()))
+    frame.isConnected = false
+    micStub.value = stopped3
+    documentStub.activeElement = body
+    documentStub.querySelectorAll = priorQuerySelectorAll
+    hook.close()
+    await sleep(40)
+  }
+
   micStub.value = { ok: true, available: false, capturing: false, processes: [], reason: 'stub-default' }
   hook.close()
   await sleep(20)
