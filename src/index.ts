@@ -12,9 +12,9 @@
  */
 import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
@@ -133,9 +133,83 @@ const MIC_IDLE_CHECK_MS = Number(process.env.DSH_SEL_MIC_CHECK_MS || 5000)
  */
 const MIC_WATCH_MS = Number(process.env.DSH_SEL_MIC_WATCH_MS || 125)
 
-/** 探针路径：lib/native/mic-probe（与编译产物 lib/index.js 同级；测试可注入假的）。 */
-const MIC_PROBE =
-  process.env.DSH_SEL_MIC_PROBE || fileURLToPath(new URL('native/mic-probe', import.meta.url))
+/** 探针二进制：随包构建出来的那个（与编译产物 lib/index.js 同级；测试可注入假的）。 */
+const MIC_PROBE = fileURLToPath(new URL('native/mic-probe', import.meta.url))
+/** 探针源码：发布包里**一定有它**（`files` 含 native/），二进制则不一定（见下）。 */
+const MIC_PROBE_SRC = fileURLToPath(new URL('../native/mic-probe.c', import.meta.url))
+
+/** 解析结果缓存：'' = 解析过了但没有可用探针（reason 说明为什么）。 */
+let micProbeResolved: string | null = null
+let micProbeReason = ''
+
+/** 插件自己的数据目录（历史 / 记忆 / 就地编译出来的探针都放这儿）。 */
+function pluginDataDir(): string {
+  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain')
+}
+
+/**
+ * 找到探针二进制 —— 找不到就**现场编一份**。
+ *
+ * 为什么必须运行时编译：CI 跑在 ubuntu 上，`build.sh` 里的原生探针那一步会被跳过
+ * （日志原话："跳过原生探针（非 macOS 或没有 clang）"），于是 npm / Release 装下来的包里
+ * **只有 `native/mic-probe.c` 源码、没有 `lib/native/mic-probe`** —— macOS 用户装上就是
+ * `probe-missing`，豆包开麦永远不弹卡（2026-10-11 用户在另一台 Mac 上实测到的就是这个）。
+ *
+ * 顺序：环境变量覆盖（测试用）→ 随包构建的 → 数据目录里按**源码 hash** 缓存的那份
+ * （没有就 clang 编一次；源码改了就自然重建）→ 都没有则如实报原因。
+ * 编译失败不算致命：其余功能一律不受影响（和"没装识别服务"一个待遇）。
+ */
+function resolveMicProbe(): string {
+  if (micProbeResolved !== null) return micProbeResolved
+  const override = process.env.DSH_SEL_MIC_PROBE
+  if (override) {
+    micProbeResolved = existsSync(override) ? override : ''
+    if (!micProbeResolved) micProbeReason = 'probe-missing'
+    return micProbeResolved
+  }
+  if (existsSync(MIC_PROBE)) {
+    micProbeResolved = MIC_PROBE
+    return micProbeResolved
+  }
+  if (!existsSync(MIC_PROBE_SRC)) {
+    micProbeResolved = ''
+    micProbeReason = 'probe-missing'
+    return micProbeResolved
+  }
+  let tag = 'v1'
+  try {
+    tag = createHash('sha1').update(readFileSync(MIC_PROBE_SRC)).digest('hex').slice(0, 8)
+  } catch {
+    /* 读不了源码就按固定名缓存 */
+  }
+  const built = join(pluginDataDir(), `mic-probe-${tag}`)
+  if (existsSync(built)) {
+    micProbeResolved = built
+    return micProbeResolved
+  }
+  try {
+    mkdirSync(pluginDataDir(), { recursive: true })
+    const result = spawnSync(
+      'clang',
+      ['-O2', '-framework', 'CoreAudio', '-framework', 'CoreFoundation', MIC_PROBE_SRC, '-o', built],
+      { timeout: 60_000 },
+    )
+    if (result.status === 0 && existsSync(built)) {
+      try {
+        chmodSync(built, 0o755)
+      } catch {
+        /* 权限位设不上也还能试跑 */
+      }
+      micProbeResolved = built
+      return micProbeResolved
+    }
+  } catch {
+    /* 下面统一给失败原因 */
+  }
+  micProbeResolved = ''
+  micProbeReason = 'probe-build-failed'
+  return micProbeResolved
+}
 
 /**
  * 懒启动探针（第一次有人来问才 spawn）。
@@ -151,12 +225,13 @@ function ensureMicProbe(): void {
     micState.reason = 'not-macos'
     return
   }
-  if (!existsSync(MIC_PROBE)) {
-    micState.reason = 'probe-missing'
+  const probe = resolveMicProbe()
+  if (!probe) {
+    micState.reason = micProbeReason || 'probe-missing'
     return
   }
   try {
-    const child = spawn(MIC_PROBE, ['--watch', String(MIC_WATCH_MS)], {
+    const child = spawn(probe, ['--watch', String(MIC_WATCH_MS)], {
       stdio: ['ignore', 'pipe', 'ignore'],
     })
     micChild = child
