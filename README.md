@@ -1,154 +1,183 @@
-# dsh-selection-explain · 划词解读
+<div align="center">
 
-> 在 DSH 里**选中任意文字**，就地得到**专业翻译** + **它在当前上下文里到底是什么意思**；还能接着追问、把别处的文字带进来问、或者一键升格成正式会话。
+# 划词解读
 
-[![release](https://img.shields.io/github/v/release/yfwu2020/dsh-selection-explain?label=release)](https://github.com/yfwu2020/dsh-selection-explain/releases)
-[![npm](https://img.shields.io/npm/v/@yfwu2020/dsh-selection-explain?label=npm)](https://www.npmjs.com/package/@yfwu2020/dsh-selection-explain)
-[![license](https://img.shields.io/badge/license-MIT-green)](./package.json)
-[![DSH plugin](https://img.shields.io/badge/DSH-plugin-8b5cf6)](https://github.com/yfwu2020/dsh-selection-explain)
+**划一下，说一句。把不懂的地方，就地问明白。**
+
+DSH 中的翻译、上下文解读与语音追问。
+
+[快速安装](#install) · [语音输入](#voice) · [功能一览](#read) · [使用与设置](#settings)
+
+`DSH 插件` · `v0.10.1` · `MIT`
+
+</div>
 
 ---
 
-## 语音：划完直接说，不用打字
+<a id="voice"></a>
 
-追问往往只有一两句（"这词在这里是不是贬义？"），可打字这件事本身就要把手从鼠标挪到键盘——和"划词"是矛盾的。所以划完可以直接说：
+## 01 / 划完，直接说
 
-| 你现在的状态 | 按语音键说话 → 结果 |
+选中一句话，直接用语音问“它在这里是什么意思？”——问题留在选区旁，回答接着出现在小窗里。
+
+### 从划词到提问，一口气完成
+
+**小窗还没打开**：划选文字后启动输入法语音，选区旁会出现临时卡片，承接你说的话。结束语音、文字定稿后，默认自动发送，直接进入追问。
+
+![选中文本与语音卡片之间的真实连线，问题可直接写入选区旁的输入框](assets/voice-card-light.png)
+
+*选区通过青色下划线和虚线连接到临时输入卡片。*
+
+**小窗已经打开**：划选新的文字，再启动输入法语音。这段文字会作为引用加入小窗，你说的话写入追问框。
+
+### 在小窗里，也能直接开口
+
+点击输入框旁的麦克风开始录音，查看实时波形与转写；点击停止完成输入，或按 `Esc` 取消本次录音。实时转写不可用时，会在停止后识别。
+
+![DSH 中实际运行的语音输入：小窗底部显示录音控制与波形](assets/voice.png)
+
+*英文例句的解读小窗中，直接启动语音追问。*
+
+语音卡片默认开启**说完直接发送**和**空录音时收起**。在 **设置 → 界面 → 语音输入** 中可以分别关闭。
+
+![语音相关设置的真实截图：空录音时收起与说完直接发送](assets/voice-settings.png)
+
+> 输入法联动需要 **macOS 14.4+** 与支持的语音输入法（已适配豆包）。小窗麦克风需要 DSH 启用语音识别服务。未配置语音时，文字解读与键盘追问仍可使用。
+
+<details>
+<summary>小窗麦克风提示不可用？</summary>
+
+请检查 DSH 宿主是否启用了 `@deepseek-ai/dsh-experimental-speech-to-text`，以及识别模型是否已就绪。首次使用时，如果小窗显示 **准备模型**，点击后按提示准备；下载与识别在宿主运行。
+
+这与输入法语音是两个独立入口：输入法联动使用输入法本身的识别能力。
+
+</details>
+
+<a id="read"></a>
+
+## 02 / 先读懂，再深入
+
+在 DSH 中选中文字，点击 **解读**。英文先给译文，中文按内容给解读，代码则生成注释；需要更多背景时，再点 **展开详解**。
+
+![选中英文例句后，真实小窗给出翻译并显示展开详解入口](assets/translation.png)
+
+*选中 “The migration ran long, so we will ship on Wednesday”，先得到译文。*
+
+展开后，模型结合前后文与可用的会话背景解释术语、语气和承接关系。你可以直接在底部继续追问。
+
+![真实解读小窗中的上下文详解与后续追问](assets/detail.png)
+
+*接着问“ran long 是说迁移失败了吗？”，把问题留在同一段讨论里。*
+
+<a id="quotes"></a>
+
+## 03 / 把相关内容，一起带进来
+
+小窗打开时，在主界面、小窗正文或支持的侧边栏网页预览中划选文字，点 **引用**，就能带着新材料继续问。一次最多加入 **4 段引用**，每段都可以单独移除。
+
+![真实小窗中，所选内容作为引用卡片出现在追问输入框上方](assets/quotes.png)
+
+不必每次从头来：
+
+| 想做什么 | 入口 |
 | --- | --- |
-| **小窗没开**，刚划了一段文字 | 选中的地方**就地弹出一张临时卡片**，说的话直接落进卡片；松手定稿后**自动进小窗**追问（跳过翻译与详解） |
-| **小窗开着**，刚划了一段文字 | 等于**替你点了一下 `❝ 引用`**：那段文字挂进小窗、光标进输入框，接着说的话直接落在小窗里，和下一条提问一起发出去 |
-| 想直接对输入框说话 | 点输入框右边的 🎤 —— 和主会话**同一套**语音输入：实时波形、边说边出字、`■` 结束、`Esc` 取消（一次最长 60 秒） |
+| 回到刚才的解读 | 右下角悬浮胶囊，或小窗里的 **最近** |
+| 把讨论继续做下去 | **升格**，将解读与追问带入正式会话 |
+| 阅读代码 | 选中代码，查看注释与原代码交替呈现的解释 |
+| 用图表理解复杂问题 | 将**输出偏好**切为网页，模型可生成 HTML 页面 |
 
-<img src="assets/voice.png" alt="录音中的小窗：工具行是「✕ 取消 · 实时波形 · ■ 停止」，输入框里已经跟着长出了两行文字" width="540">
+<a id="install"></a>
 
-**侧边栏的网页里也能这么用**（新）。侧边栏预览的 HTML 页面跑在沙箱 iframe 里，父页面读不到它的选区；插件往被预览的文档里注入一小段"桥"脚本，由**帧内**读取选中的文字、把它前后的上下文（各 1500 字）和坐标报出来，再用主界面同一张卡片 / 同一个浮标呈现。**安全边界没有退让**：帧始终是不透明源，不给 `allow-same-origin`——网页读不到 GUI 的 DOM / Cookie / localStorage，桥也只往外报"选中了什么 + 周围那点文本"。
+## 快速安装
 
-- **收尾两个开关默认都开**（设置页「界面 · 语音输入」可关）：说完**自动发送**；一个字都没说**自动收起**。
-- **不读输入法的转写结果**：开麦时插件只是把自己的输入框抢到焦点上，字是输入法自己"上屏"进来的——所以不需要任何输入法权限，也不经第三方。
-- **音频不落盘、不进会话**：只在这一次识别里用一下，转写完即丢。
-- 需要：macOS 14.4+（用来检测"输入法正在用麦克风"，插件自带一个小探针）+ 一个输入法（实测豆包）。识别在 host 上做，本机模型 / 云端服务都能用。
-
----
-
-## 划词解读：翻译 + "在这里"的意思
-
-读文档、看代码注释、翻聊天记录时，卡住的往往不是"这个词什么意思"，而是**"它在这里什么意思"**。插件把**选中文字 + 它周围的内容 + 当前会话的对话背景**一起交给模型，所以答案能落到"这里"。
-
-- **两段式，先快后深**：点开面板**先只出翻译**（上下文收窄，首字最快）；翻译出来后才出现 `↓ 展开详解`，点了才用完整会话背景做深度解读。想快就停在第一段。
-- **翻译按内容自适应**：中文句子只译其中夹着的英文；中文词列义项；英文句给译文；英文单词带音标逐义项；其他语言译成中文。最后固定一条**结论条**：`> 在本句中：<它在这里的确切含义>`。
-- **详解讲透"在这里"**：先判断这段文字是真实内容还是示例 / 引用，再讲专业名词的两层含义（通用定义 + 此处的具体所指）与承接关系；拿不准的会**先联网查证**再解释，事实融进解释里。
-- **选中代码 → 出注释**：整篇回答是一个代码块，**注释与原代码交替**，每条语句前面一行该语言的注释符号，原代码逐字不变。
-
-<img src="assets/stage2.png" alt="展开详解后：翻译与详解两节卡片，下方可继续追问" width="540">
-
-### 追问、引用、历史、升格
-
-| 想做的事 | 怎么操作 |
-| --- | --- |
-| **追问** | 面板底部输入框直接问（`Enter` 发送 / `Shift+Enter` 换行）；答案流式出现，多轮上下文保留 |
-| **引用别处的文字一起问** | 小窗里、主界面上、**侧边栏网页里**划选 → 点 `❝ 引用`；鼠标悬停某条回答末尾的 `❝ 引用整条` 可引用整条（最多 4 段，卡片在输入框上方，可单条删） |
-| **回到刚才那次解读** | 点右下角悬浮胶囊，或 `🕘 最近` 里挑一条——原样回来，不重新请求 |
-| **把这次解读变成正式会话** | 点 `↗ 升格`（带上下文、引用与两节结论） |
-| **打断生成** | 生成中点 `停止`；关窗不会丢，胶囊点回来还是原样 |
-
----
-
-## 安装
-
-**从 npm**（已发布）：
+这是 DSH 环境中的插件。请先安装 DSH、配置一个可用模型，再运行：
 
 ```bash
 dsh plugin --profile web add @yfwu2020/dsh-selection-explain
 ```
 
-**从 Release**（附构建好的 `.tgz`，装完即用）：
+安装后刷新 DSH 页面，选中一段文字，点击 **解读** 即可。
+
+也可在 [GitHub Releases](https://github.com/yfwu2020/dsh-selection-explain/releases) 下载构建包，按下方说明安装。
+
+<details>
+<summary>安装 Release 构建包</summary>
+
+将下载的 `.tgz` 放到当前目录，以 v0.10.1 为例：
 
 ```bash
-VER=$(curl -sI https://github.com/yfwu2020/dsh-selection-explain/releases/latest | grep -i '^location:' | sed 's|.*/tag/v||' | tr -d '\r\n')
-curl -LO "https://github.com/yfwu2020/dsh-selection-explain/releases/download/v$VER/yfwu2020-dsh-selection-explain-$VER.tgz"
 mkdir -p ~/.dsh/plugins/dsh-selection-explain
-tar -xzf "yfwu2020-dsh-selection-explain-$VER.tgz" -C ~/.dsh/plugins/dsh-selection-explain --strip-components=1
+tar -xzf yfwu2020-dsh-selection-explain-0.10.1.tgz -C ~/.dsh/plugins/dsh-selection-explain --strip-components=1
 dsh plugin --profile web add ~/.dsh/plugins/dsh-selection-explain
 ```
 
-**从源码**：
+安装完成后刷新 DSH 页面。其他版本请替换文件名中的版本号。
+
+</details>
+
+<details>
+<summary>从源码安装 / 卸载</summary>
 
 ```bash
-git clone git@github.com:yfwu2020/dsh-selection-explain.git && cd dsh-selection-explain
-npm install && bash scripts/build.sh && dsh plugin --profile web add .
+git clone https://github.com/yfwu2020/dsh-selection-explain.git
+cd dsh-selection-explain
+npm install
+npm run build
+dsh plugin --profile web add .
 ```
 
-装好后**刷新页面**，选中文字试试（控制台会打印 `[dsh-selection-explain] 划词解读已就绪`）。卸载：`dsh plugin --profile web remove @yfwu2020/dsh-selection-explain`。
+源码构建需要 package.json 中列出的 DSH 开发依赖可用。
 
----
+卸载 npm 安装的插件：
 
-## 用法
+```bash
+dsh plugin --profile web remove @yfwu2020/dsh-selection-explain
+```
 
-| 动作 | 结果 |
+</details>
+
+<a id="settings"></a>
+
+## 使用与设置
+
+`Enter` 发送 · `Shift+Enter` 换行 · `Esc` 收起小窗。录音期间，第一次 `Esc` 只取消录音，再按一次才关闭小窗。
+
+点击小窗顶部的 **设置**，修改会自动保存：
+
+| 设置 | 可以调整什么 |
 | --- | --- |
-| 鼠标划选 / `Shift`+方向键 | 选区末端浮出 `✦ 解读`（输入框内的选择不触发；侧边栏的 HTML 预览里同样生效） |
-| 点 `✦ 解读` | 弹出面板：顶部是选中文字，正文是「翻译」卡片 |
-| `↓ 展开详解` | 用完整会话背景追加「详解」卡片 |
-| 小窗开着时划词 | 浮出的是 `❝ 引用`（要解读新的一段，先 `Esc` 收起小窗） |
-| 输入框右边 🎤 / 划完直接开麦 | 见上面「语音」一节 |
-| `✕` / `Esc` | 关面板。**语音进行中按 `Esc` 只取消这次语音**（已说出来的字留着），面板留着；再按一次才关窗 |
-| 右下角悬浮胶囊 | 点一下：回到最近一次小窗 / 收起 |
+| 模型 | 跟随主会话，或为解读单独指定模型 |
+| 思考强度 | 首轮、次轮与追问分别选择 **关 / 低 / 高 / 最高**；按模型实际能力映射 |
+| 背景 | 是否附带会话消息，以及引用的上下文范围 |
+| 联网 | 是否允许模型调用工具，以及允许的工具范围 |
+| 界面 | 语音卡片收尾、侧边栏网页划词与悬浮胶囊 |
+| 数据 | 保留多少条最近解读 |
 
-几个不别扭的细节：**点面板外不会关闭面板**（答案留在原地，只有 `✕`/`Esc`/胶囊能收）；输入框**跟着内容长高**（最多约 7 行，再长内部滚动并自动停在最新一行）；开窗**自动聚焦**输入框（只有你正在别处打字时才不抢）。与「完整视图」插件同装时，`Esc` 会按"最后操作的那个窗"逐层退出，一次只退一层。
+## 数据与使用范围
 
----
+选中文字、必要的前后文，以及开启的会话背景会交给你配置的模型。可在设置中关闭会话背景或工具调用。
 
-## 设置
+插件不将录音保存为音频文件，也不把音频附到会话；小窗录音由 DSH 配置的识别服务处理，是否经过云端取决于该服务。输入法语音由输入法本身处理，插件接收输入框中写入的文字。
 
-在面板里点 ⚙（或在设置页）改，改完**自动保存**；也能写 `cordis.patch.yml`（键名与默认值见 `src/settings.ts`）。常改的就几项：
+解读历史默认保留最近 **20 条**，以明文存储在 `~/.dsh/selection-explain/history.json`。可在 **设置 → 数据** 中调整，设为 `0` 停止保存新历史；已有历史不会因此清空。
 
-- **模型**：默认「跟随主会话」，也可单独指定（首轮 / 次轮 / 追问共用这一个模型）。
-- **思考强度**：三个阶段各自一格 —— `关 / 低 / 高 / 最高`。
-  各家的档位名字并不统一（`off>low>high>max`、`low>high>max`、`off>minimal>…>high`、只有 `max`…），所以插件**每次都按当前模型自己声明的档位现算**，把你这四格落到它真实拥有的档上（悬停格子能看到"该模型发 xxx"，设置页那行也会实时写出四格的落点）。**小窗里的「推理等级（追问档）」是同一套四格、同一份数据**，两边改哪边都一样。模型不吃某一档时会自动换档重试并记住结论，下次不再撞。
-- **背景 / 工具 / 上限**：是否附带会话消息、引用是否带上文、能不能联网（`advanced_search`、`platform_search`）、超时与频率上限——都有默认值，不改也能用。
-- **界面 · 语音输入**：上面说的两个收尾开关、右下角胶囊、侧边栏网页划词桥（`bridgeSidebarPreview`，默认开）。
+支持 DSH 界面与可注入的侧边栏 HTML 预览。输入框、源码视图、外部站点浏览器标签页，以及部分第三方预览不触发划词（直接通过独立 URL 加载、无法注入划词桥的页面）。模型回答与联网查证仍可能出错。
 
----
+<details>
+<summary>开发与兼容性</summary>
 
-## 隐私
-
-- **语音**：音频不落盘、不进会话；插件不读输入法的转写结果；不做边录边出的流式上传（说完一次给全，识别在 host 上）。
-- **会话背景**：可以关（`sessionContext: false`）；开启时只带你选中文字所在的消息及其之前若干条，工具调用 / 思考 / 系统注入都会被滤掉。
-- **联网**：只在你启用的工具范围内查证；工具日志不进小窗，只给结论。
-- **本地数据**：解读历史 `~/.dsh/selection-explain/history.json`；"哪些模型不吃关档 / 关档会泄漏"的记忆 `leaky-off.json`。都是明文，随时可删。
-
----
-
-## 常见问题
-
-**选中了没反应？** 输入框里的选择不触发（避免干扰打字）；另外面板**不跟随页面滚动**（滚动即收起），符合"划完即看"。侧边栏的**源码视图**里没有 iframe，切回「预览」即可。
-
-**结论可靠吗？** 来自你配置的模型。专业领域术语请以人工判断为准；拿不准时它会联网查证，但也会出错。
-
-**为什么首轮只有翻译？** 故意的：先用最窄的上下文抢首字速度，想要深度再点 `↓ 展开详解`。
-
-**一定要装语音相关的服务吗？** 不用。没装时只是 🎤 与语音卡明说不可用，划词解读一切照常。
-
----
-
-## 已知限制
-
-- 只覆盖 **DSH 界面内**（含侧边栏 HTML 预览）的选中文字；**内置浏览器标签页里的外部站点**（远端 URL 的 iframe，没有任何注入手段）与**源码视图**不触发。
-- 用**路由 URL**（而非 `srcdoc`/`blob`）的第三方预览器不接管（不动别人的资源改写与生命周期）；小窗里自己生成的网页预览（iframe 内部）也不划词——想引用它就用末尾的 `❝ 引用整条`。
-- 语音卡依赖 `macOS 14.4+` 的麦克风探针；🎤 语音输入需要宿主装有语音识别服务（如本机 SenseVoice）。
-- 依赖 DSH 的 `webServer` 与 `llm` 服务；宿主过旧可能不兼容（见 `package.json` 的 peerDependencies）。
-
----
-
-## 开发者
+依赖 DSH 的 `webServer`、`llm` 等宿主服务；具体版本范围见 [package.json](https://github.com/yfwu2020/dsh-selection-explain/blob/main/package.json)。
 
 ```bash
-npm test                 # 单测 + 真浏览器冒烟（本机 Chrome；找不到自动跳过）
-bash scripts/build.sh    # host 走 tsc，client 是手写 bundle 直接拷贝到 lib/
+npm test
+npm run typecheck
+npm run build
 ```
 
-浏览器控制台自带自检钩子：`__dshSelectionExplain.state()` 看状态、`voiceCard()` / `voice()` 看语音、`bridge()` 看侧边栏划词桥、`selection()` 看当前选区。HTTP 接口（`/selection-explain/api/*`）、实现细节与踩坑记录见 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) 与源码注释 —— 那份文档随本机开发走，刻意不进发布包。
+配置项见 [src/settings.ts](https://github.com/yfwu2020/dsh-selection-explain/blob/main/src/settings.ts)，默认值见 [src/index.ts](https://github.com/yfwu2020/dsh-selection-explain/blob/main/src/index.ts)。
 
-## License
+</details>
 
-MIT
+---
+
+[MIT License](https://github.com/yfwu2020/dsh-selection-explain/blob/main/LICENSE) · [反馈问题](https://github.com/yfwu2020/dsh-selection-explain/issues)
