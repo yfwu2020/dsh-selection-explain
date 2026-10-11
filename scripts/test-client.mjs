@@ -103,6 +103,9 @@ class FakeEl {
   removeAttribute(key) {
     delete this.attrs[key]
   }
+  hasAttribute(key) {
+    return this.getAttribute(key) !== null
+  }
   getAttribute(key) {
     return this.attrs[key] ?? null
   }
@@ -1242,7 +1245,10 @@ const mount = new FakeEl('div')
 const element = registration.component()
 assert('浮层组件返回 React 元素', !!element && element.type === 'div')
 element.props.ref(mount)
-assert('layer 容器已挂进浮层', mount.children.length === 1 && mount.children[0].className === 'dsh-sel-layer')
+const floatingLayer = body.children.find((c) => c.className === 'dsh-sel-layer')
+assert('界面挂在 body 自有根，不提升公共槽', !!floatingLayer && floatingLayer.parentNode === body && mount.children.length === 0)
+assert('自有根声明公开的小窗归属', floatingLayer && floatingLayer.getAttribute('data-dsh-floating-owner') === 'explanation')
+assert('重渲染使用稳定挂载 ref', registration.component().props.ref === element.props.ref)
 
 // ───────────────────────── 划词 → 浮标 ─────────────────────────
 const container = new FakeEl('div')
@@ -1264,7 +1270,7 @@ const selection = {
 windowStub.getSelection = () => selection
 documentStub.dispatch('mouseup', { target: body })
 await new Promise((r) => setTimeout(r, 20))
-const button = mount.children[0].children.find((c) => c.className === 'dsh-sel-btn')
+const button = floatingLayer.children.find((c) => c.className === 'dsh-sel-btn')
 assert('选中文字后浮标出现', !!button && button.style.display === 'inline-flex', button && `left=${button.style.left} top=${button.style.top}`)
 // 浮现动效：只在"隐藏 → 显示"那一次挂动效类；已可见时只平移；animationend 后自动摘掉
 {
@@ -1335,7 +1341,7 @@ assert('选中文字后浮标出现', !!button && button.style.display === 'inli
 // 引用（❝）的**离线**契约：浮标进了浮层、CSS 规则齐全（真实交互在宿主可达时另有一段）
 {
   const css = readFileSync(BUNDLE, 'utf8')
-  const quoteBtn = Array.from(walk(mount)).find((n) => String(n.className).indexOf('dsh-sel-quotebtn') >= 0)
+  const quoteBtn = Array.from(walk(floatingLayer)).find((n) => String(n.className).indexOf('dsh-sel-quotebtn') >= 0)
   assert('浮层里有「❝ 引用」浮标，且默认藏着', !!quoteBtn && quoteBtn.style.display === 'none' && textOf(quoteBtn).indexOf('引用') >= 0, quoteBtn ? textOf(quoteBtn) : '未找到')
   assert('CSS 契约：引用区默认收起、data-show 控制显隐', /\.dsh-sel-quotes\{display:none;flex-direction:column/.test(css) && /\.dsh-sel-quotes\[data-show="1"\]\{display:flex\}/.test(css), '')
   assert('CSS 契约：引用卡片三段（来源 / 摘要 / 删除）', /\.dsh-sel-quotechip-src\{/.test(css) && /\.dsh-sel-quotechip-text\{/.test(css) && /\.dsh-sel-quotechip-x\{/.test(css), '')
@@ -1361,12 +1367,12 @@ try {
 }
 
 button.dispatch('click', { preventDefault() {}, stopPropagation() {} })
-const panel = mount.children[0].children.find((c) => c.className === 'dsh-sel-panel')
+const panel = floatingLayer.children.find((c) => c.className === 'dsh-sel-panel')
 // 面板内的固定引用点（后续断言共用）
 const sections = Array.from(walk(panel)).filter((node) => node.className.indexOf('dsh-sel-sec') >= 0)
 const panelHead = Array.from(walk(panel)).find((node) => node.className === 'dsh-sel-head')
 const histBtn = Array.from(walk(panelHead)).find((n) => n.className.indexOf('dsh-sel-action') >= 0 && textOf(n).indexOf('最近') >= 0)
-const histList = mount.children[0].children.find((n) => n.className === 'dsh-sel-history')
+const histList = floatingLayer.children.find((n) => n.className === 'dsh-sel-history')
 assert('「最近聊过的」是独立浮层，不在消息滚动区里（B 方案）', !!histList && histList.parentNode.className === 'dsh-sel-layer' && !panel.contains(histList), histList ? histList.parentNode.className : '未找到')
 const detailCard = sections.find((node) => node.getAttribute('data-sec') === 'detail')
 const expandBtn = Array.from(walk(panel)).find((node) => node.className === 'dsh-sel-expand')
@@ -1378,7 +1384,7 @@ assert('弹窗显示选中文字', !!panel && textOf(panel).indexOf('the migrati
 // 指的是刚才解读的那段文字（解读要的文字与上下文在 mouseup 那刻就抓好了，见 openForSelection）
 assert('点「解读」后本文档选区被收掉', clearedSelections.count >= 1, `removeAllRanges 调用 ${clearedSelections.count} 次`)
 {
-  const quoteBtnNode = Array.from(walk(mount)).find((n) => String(n.className).indexOf('dsh-sel-quotebtn') >= 0)
+  const quoteBtnNode = Array.from(walk(floatingLayer)).find((n) => String(n.className).indexOf('dsh-sel-quotebtn') >= 0)
   assert(
     '点「解读」后引用浮标不出现（旧选区不该复活它）',
     !quoteBtnNode || quoteBtnNode.style.display === 'none',
@@ -5316,7 +5322,7 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
 {
   // 也认 setAttribute('class') —— SVG 元素的 className 是只读对象，插件只能用 setAttribute
   const find = (cls) =>
-    Array.from(walk(mount)).find(
+    Array.from(walk(floatingLayer)).find(
       (n) => n.className === cls || (n.getAttribute && n.getAttribute('class') === cls),
     )
 
@@ -5434,7 +5440,7 @@ assert('Esc/关闭后隐藏', panel.style.display === 'none')
     threadDot ? 'cx=' + String(threadDot.getAttribute('cx')) + ' cy=' + String(threadDot.getAttribute('cy')) : 'none',
   )
 
-  const merged = Array.from(walk(mount)).filter((n) => n.className === 'dsh-sel-uline')
+  const merged = Array.from(walk(floatingLayer)).filter((n) => n.className === 'dsh-sel-uline')
   assert(
     '块级盒子被丢掉，两行各有一条下划线（不再整段只剩一条）',
     merged.length === 2,
@@ -6154,7 +6160,7 @@ for (const dispose of disposers.reverse()) {
   }
 }
 
-assert('清理后 DOM 归零', mount.children.length === 0 && body.children.indexOf(container) >= 0)
+assert('清理后自有根摘除，保留宿主 DOM', floatingLayer.parentNode === null && mount.children.length === 0 && body.children.indexOf(container) >= 0)
 assert('清理后划词桥自己建的预览 blob 被回收', bridgeOwnedBlob !== '' && !blobStore.has(bridgeOwnedBlob), bridgeOwnedBlob)
 assert('清理后钩子移除', windowStub.__dshSelectionExplain === undefined)
 console.log('\n=== 客户端集成测试结束 ===')

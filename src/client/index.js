@@ -4,9 +4,9 @@
  * 交互：在页面任意位置选中文字 → 选区末端浮出「解读」按钮 → 点击弹出面板，
  * 面板流式显示两节：① 专业中英翻译 ② 这段文字在当前上下文中的含义详解。
  *
- * 挂载点走官方 shell.overlay 槽（帧级浮层：三栏之外、滚动容器之外、默认
- * click-through，条目自己 opt-in pointer-events）——因此 UI 不会挡住 App。
- * 浮标与面板用 position:fixed 定位到选区坐标，DOM 归 shell.overlay 条目所有。
+ * 官方 shell.overlay 槽管理挂载生命周期；界面由插件自己挂到 body 的独立根。
+ * 根层固定为 70，越过全屏工作面板，不改写宿主公共浮层。空白区域鼠标穿透。
+ * 浮标与面板继续用 position:fixed 定位到选区坐标。
  *
  * 本文件是 DSH 客户端 bundle 的源文件（ModuleLoader 懒加载 CJS 表格式）：
  * 顶层只注册工厂，真正的副作用（React 组件、DOM/CSS、监听）都在 factory 被
@@ -435,9 +435,10 @@ window.__ModuleLoader__.load({
       //   --sel-fill(-fg)  实心块：浮标按钮 / 发送键 / 结论条标签——块上文字另算一套，
       //                    否则青底配白字只有 3.6（不达标），浅色下换成深青 5.4、深色下反白 7.4
       // 变量挂在浮层容器上 → 浮标与面板共用；深浅由**面板实际底色**决定（data-theme）。
-      '.dsh-sel-layer{--sel-a1:#0d9488;--sel-a1-text:#0f766e;--sel-a2:#0d9488;--sel-a2-text:#0f766e;',
+      '.dsh-sel-layer{position:fixed;inset:0;z-index:70;pointer-events:none;--sel-a1:#0d9488;--sel-a1-text:#0f766e;--sel-a2:#0d9488;--sel-a2-text:#0f766e;',
       '--sel-fill:#0f766e;--sel-fill-fg:#ffffff;',
       '--sel-a2-soft:color-mix(in srgb,var(--sel-a2) 12%,transparent);--sel-a1-soft:color-mix(in srgb,var(--sel-a1) 10%,transparent)}',
+      '.dsh-sel-layer[data-full-view] .dsh-sel-pill{display:none!important}',
       '.dsh-sel-layer[data-theme=dark]{--sel-a1:#4ecdc4;--sel-a1-text:#6fe3d8;--sel-a2:#4ecdc4;--sel-a2-text:#6fe3d8;',
       '--sel-fill:#4ecdc4;--sel-fill-fg:#052b26;',
       '--sel-a2-soft:color-mix(in srgb,var(--sel-a2) 16%,transparent);--sel-a1-soft:color-mix(in srgb,var(--sel-a1) 16%,transparent)}',
@@ -2492,9 +2493,10 @@ window.__ModuleLoader__.load({
       styleEl.textContent = CSS
       document.head.appendChild(styleEl)
 
-      /** 浮层容器：挂在 shell.overlay 条目里，自身 click-through。 */
+      /** 自有浮层根：位于 body，公共父层的堆叠上下文不影响它。 */
       var layer = el('div', 'dsh-sel-layer')
       layer.style.pointerEvents = 'none'
+      layer.setAttribute('data-dsh-floating-owner', 'explanation')
 
       var button = el('button', 'dsh-sel-btn')
       button.type = 'button'
@@ -3758,10 +3760,27 @@ window.__ModuleLoader__.load({
       layer.appendChild(historyList)
 
       /**
-       * 注册进官方 shell.overlay 槽（帧级浮层）。
-       * React 组件只负责把 layer 容器挂进浮层；浮标/面板由上面的命令式代码管理，
-       * React 不接管它们的子树（容器本身无 children，不会被 diff 清空）。
+       * 官方槽仅保留不可见的生命周期锚点；界面根由本插件挂到 body。
+       * 稳定 ref 避免 React 重渲染时摘挂根节点、丢失输入焦点。
        */
+      function syncFullViewLayer() {
+        var fullView = !!document.querySelector('[data-dsh-full-view]')
+        if (fullView !== layer.hasAttribute('data-full-view')) {
+          if (fullView) layer.setAttribute('data-full-view', '')
+          else layer.removeAttribute('data-full-view')
+        }
+      }
+      function mountFloatingLayer(node) {
+        if (node) {
+          if (layer.parentNode !== document.body) document.body.appendChild(layer)
+          syncFullViewLayer()
+        } else if (layer.parentNode) layer.parentNode.removeChild(layer)
+      }
+      var fullViewObserver = null
+      if (typeof MutationObserver === 'function') {
+        fullViewObserver = new MutationObserver(syncFullViewLayer)
+        fullViewObserver.observe(document.body, {subtree:true, childList:true, attributes:true, attributeFilter:['data-dsh-full-view']})
+      }
       /** 开窗后"还没聚焦过输入框"（见 focusComposerOnce）。 */
       var askFocusPending = false
       /** 调试：最后一次"没聚焦"卡在哪一步（-1 表示聚焦成功）。 */
@@ -3780,16 +3799,14 @@ window.__ModuleLoader__.load({
               },
             }, function SelectionExplainLayer() {
               return React.createElement('div', {
-                className: 'dsh-sel-mount',
-                style: { pointerEvents: 'none' },
-                ref: function (node) {
-                  if (node && layer.parentNode !== node) node.appendChild(layer)
-                },
+                className: 'dsh-sel-anchor',
+                style: { display: 'none', pointerEvents: 'none' },
+                ref: mountFloatingLayer,
               })
             })
           })
         } catch (error) {
-          // 槽注册失败不应把整页插件装载一起拖垮：降级为仅报错（面板挂在浮层外不可见）
+          // 槽注册失败仅报错，自有界面根保持未挂载，不影响其他插件。
           console.error('[dsh-selection-explain] shell.overlay 槽注册失败：', error)
         }
       } else {
@@ -12127,6 +12144,7 @@ window.__ModuleLoader__.load({
             }
             pillObserver = null
           }
+          if (fullViewObserver) fullViewObserver.disconnect()
           if (typeof offSlot === 'function') offSlot()
           // 划词桥：摘观察者与消息监听，并把我们自己建的预览 blob 全部回收
           if (bridgeScanId) clearTimeout(bridgeScanId)
