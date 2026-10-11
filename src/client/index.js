@@ -2648,7 +2648,7 @@ window.__ModuleLoader__.load({
       modelPill.appendChild(modelPillTier)
       modelPill.appendChild(el('span', 'dsh-sel-picker-caret', '▼'))
       var modelMenu = el('div', 'dsh-sel-pickermenu')
-      modelMenu.setAttribute('role', 'menu')
+      // role 随开合同步：DSH 按 [role="menu"] 判定弹层，不检查 CSS 可见性。
 
       // ── 录音行（与主会话 ui-voice-input 同一套结构）──
       //   [✕ 取消] [实时波形 / 状态文案] [■ 停止 或 行内动作] …… [↑ 发送（原位不动）]
@@ -9484,6 +9484,7 @@ window.__ModuleLoader__.load({
        */
       var offVoiceEscape = listen(document, 'keydown', function (event) {
         if (event.key !== 'Escape' || !vcardState.open || event.defaultPrevented) return
+        if (document.querySelector('[role="dialog"][aria-modal="true"]')) return
         event.preventDefault()
         event.stopPropagation()
         vcardState.suppress = true
@@ -9936,11 +9937,13 @@ window.__ModuleLoader__.load({
 
       function closeModelMenu() {
         modelMenu.setAttribute('data-open', '0')
+        modelMenu.removeAttribute('role')
         modelPill.setAttribute('aria-expanded', 'false')
       }
 
       function openModelMenu() {
         modelMenu.setAttribute('data-open', '1')
+        modelMenu.setAttribute('role', 'menu')
         modelPill.setAttribute('aria-expanded', 'true')
         renderModelMenu()
         loadModelCatalog(false).then(function () {
@@ -9962,7 +9965,7 @@ window.__ModuleLoader__.load({
         event.stopPropagation() // 菜单内部点击不要触发"点到外面"
       })
       var offModelKeys = listen(modelMenu, 'keydown', function (event) {
-        if (event.key === 'Escape') closeModelMenu()
+        if (event.key === 'Escape' && !document.querySelector('[role="dialog"][aria-modal="true"]')) closeModelMenu()
       })
 
       // —— 网页模式开关 ——
@@ -10140,6 +10143,9 @@ window.__ModuleLoader__.load({
 
       var offKeyDown = listen(document, 'keydown', function (event) {
         if (event.key !== 'Escape' || !panelOpen || event.defaultPrevented || event.isComposing || event.keyCode === 229) return
+        // 官方模态浮层的 Esc 在冒泡阶段处理；capture 不消费，先让官方设置等浮层退出。
+        // 插件面板和设置抽屉是非模态 dialog，不带 aria-modal，不会命中这里。
+        if (document.querySelector('[role="dialog"][aria-modal="true"]')) return
         // 完整视图记录最后点击/操作的小窗；不能只看可能停在另一窗的键盘焦点。
         var fullViewFrame = document.querySelector('[data-dsh-full-view]')
         if (fullViewFrame) {

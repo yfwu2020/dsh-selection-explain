@@ -1504,8 +1504,57 @@ async function main() {
     hook.open('模型菜单勾选', '', '菜单冒烟')
     await waitFor(function () { return hook.state().phase === 'done' }, 8000)
     await hook.loadModels(true)
+    var modelNodes = hook.modelNodes()
+    // DSH 按属性判定弹层，不检查 CSS 可见性（Issue #1）。
+    var modalSelector = '[role="dialog"][aria-modal="true"], [role="menu"]'
+    function modelMenuOwnsShortcuts() {
+      return Array.from(document.querySelectorAll(modalSelector)).includes(modelNodes.menu)
+    }
+    function checkModelMenuClosed(reason) {
+      check(reason + '：模型菜单不再占用 DSH 快捷键',
+        !modelMenuOwnsShortcuts() && modelNodes.menu.getAttribute('data-open') !== '1' &&
+          modelNodes.pill.getAttribute('aria-expanded') === 'false')
+    }
+    checkModelMenuClosed('初始收起')
+    // 官方 useModalLayer 在 document 冒泡阶段处理 Esc；插件 capture 必须让行。
+    function checkHostEscapeFirst(target, label) {
+      var hostSettings = document.createElement('div')
+      hostSettings.setAttribute('role', 'dialog')
+      hostSettings.setAttribute('aria-modal', 'true')
+      hostSettings.setAttribute('data-shortcut-modal', 'settings')
+      var hostInput = document.createElement('input')
+      hostSettings.appendChild(hostInput)
+      document.body.appendChild(hostSettings)
+      function dismissHost(event) {
+        if (event.key !== 'Escape' || event.defaultPrevented) return
+        event.preventDefault()
+        hostSettings.remove()
+      }
+      document.addEventListener('keydown', dismissHost)
+      try {
+        var event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+        ;(target || hostInput).dispatchEvent(event)
+        check(label + '：Esc 到达官方浮层并只关闭官方设置',
+          event.defaultPrevented && !hostSettings.isConnected && panel.style.display === 'flex')
+      } finally {
+        document.removeEventListener('keydown', dismissHost)
+        hostSettings.remove()
+      }
+    }
+    var escapeModeFrame = document.createElement('div')
+    escapeModeFrame.setAttribute('data-dsh-full-view', '')
+    escapeModeFrame.setAttribute('data-dsh-active-floating-window', 'explanation')
+    for (var fullViewMode of [false, true]) {
+      if (fullViewMode) document.body.appendChild(escapeModeFrame)
+      var modeLabel = fullViewMode ? '完整视图' : '普通分栏'
+      checkHostEscapeFirst(null, modeLabel + '／焦点在官方设置')
+      checkHostEscapeFirst(document.querySelector('.dsh-sel-askbox'), modeLabel + '／焦点仍在解读输入框')
+    }
+    escapeModeFrame.remove()
     hook.openModel()
     await sleep(120)
+    check('模型菜单展开时占用 DSH 快捷键',
+      modelMenuOwnsShortcuts() && modelNodes.pill.getAttribute('aria-expanded') === 'true')
     var menu = hook.modelNodes().menu
     var rows = Array.prototype.slice.call(menu.querySelectorAll('.dsh-sel-pickerrow'))
     check('模型菜单列出 3 个模型（含同名 id 的另一 provider）', rows.length === 3, String(rows.length))
@@ -1529,7 +1578,24 @@ async function main() {
     var rowBox = onRows[0] ? onRows[0].getBoundingClientRect() : null
     check('打勾那一行仍是单行（高度不超过 30px，没折成两行）',
       !!rowBox && rowBox.height <= 30, rowBox ? Math.round(rowBox.height) + 'px' : '没找到那一行')
+
+    checkHostEscapeFirst(modelNodes.menu, '模型菜单仍展开')
+    check('官方设置关闭时保留插件模型菜单', modelNodes.menu.getAttribute('data-open') === '1')
+
+    clickOn(modelNodes.pill)
+    checkModelMenuClosed('再次点击胶囊')
+    hook.openModel()
+    modelNodes.menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    checkModelMenuClosed('按 Esc')
+    hook.openModel()
+    document.getElementById('docp').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    checkModelMenuClosed('点击菜单外部')
+    hook.openModel()
+    clickOn(modelNodes.menu.querySelector('.dsh-sel-pickerrow'))
+    checkModelMenuClosed('选择模型')
+    hook.openModel()
     hook.close() // 关窗会顺手收起模型菜单
+    checkModelMenuClosed('关闭解读面板')
     await sleep(30)
   }
 

@@ -8,7 +8,7 @@ DSH 中的翻译、上下文解读与语音追问。
 
 [快速安装](#install) · [语音输入](#voice) · [功能一览](#read) · [使用与设置](#settings)
 
-`DSH 插件` · `v0.10.2` · `MIT`
+`DSH 插件` · `v0.10.3` · `MIT`
 
 </div>
 
@@ -103,11 +103,11 @@ dsh plugin --profile web add @yfwu2020/dsh-selection-explain
 <details>
 <summary>安装 Release 构建包</summary>
 
-将下载的 `.tgz` 放到当前目录，以 v0.10.2 为例：
+将下载的 `.tgz` 放到当前目录，以 v0.10.3 为例：
 
 ```bash
 mkdir -p ~/.dsh/plugins/dsh-selection-explain
-tar -xzf yfwu2020-dsh-selection-explain-0.10.2.tgz -C ~/.dsh/plugins/dsh-selection-explain --strip-components=1
+tar -xzf yfwu2020-dsh-selection-explain-0.10.3.tgz -C ~/.dsh/plugins/dsh-selection-explain --strip-components=1
 dsh plugin --profile web add ~/.dsh/plugins/dsh-selection-explain
 ```
 
@@ -158,6 +158,10 @@ dsh plugin --profile web remove @yfwu2020/dsh-selection-explain
 解读小窗使用自己的浮层，显示在最近会话列表和完整视图工作面板上方，空白区域仍可点击原界面。在完整视图里，解读插件自行隐藏悬浮胶囊；返回分栏后恢复。
 
 聊天与解读可以同时打开。与 `dsh-full-view` **0.1.6**、`dsh-recent-sessions` **0.2.3** 配合时，`Esc` 先退出最后操作的小窗；点击两窗之外后先退解读，再按一次收起聊天。此次调整需一起更新两个插件，未改变 Harness 的公共浮层或设置。
+
+### 快捷键与 Esc 层级（0.10.3）
+
+模型菜单收起后不再被 DSH 识别为弹层，避免设置等快捷键失效。官方设置等模态浮层打开时，`Esc` 优先交给官方浮层处理，保留解读小窗、插件设置抽屉、模型菜单和语音卡；官方浮层关闭后，再按 `Esc` 继续退出插件层级。
 
 ## 数据与使用范围
 
