@@ -3,9 +3,13 @@
     "target": "ES2023",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2023"],
+    "lib": [
+      "ES2023"
+    ],
     "strict": true,
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "declaration": true,
     "declarationDir": "lib/types",
     "outDir": "lib",
@@ -15,5 +19,10 @@
     "forceConsistentCasingInFileNames": true,
     "sourceMap": true
   },
-  "include": ["src/index.ts"]
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/client"
+  ]
 }

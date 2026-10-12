@@ -3,8 +3,7 @@
 #   ① 探测 DSH 运行时（含 @deepseek-ai/* 包的那层 node_modules）
 #   ② 建立 node_modules 链接（类型解析 + 运行时 import 都依赖它）
 #   ③ tsc 编译 host 半：src/index.ts → lib/index.js(+ .d.ts)
-#   ④ 校验并拷贝 client 半：src/client/index.js → lib/client.js
-#        （客户端是手写的 ModuleLoader bundle，无需打包器）
+#   ④ 打包 client 模块，生成 DSH ModuleLoader bundle：lib/client.js
 # 用法：bash scripts/build.sh
 set -euo pipefail
 
@@ -118,13 +117,13 @@ if [ -z "$TSC" ]; then
   exit 1
 fi
 echo "=== tsc $("$TSC" -v) ==="
+rm -rf "$ROOT/lib"
 "$TSC" -p tsconfig.json
 
 # ── ④ client 半 ──
-echo "=== client bundle：src/client/index.js → lib/client.js ==="
-node --check src/client/index.js
-mkdir -p lib
-cp src/client/index.js lib/client.js
+echo "=== client modules → lib/client.js ==="
+node scripts/build-client.mjs
+node --check lib/client.js
 
 # ── ⑤ 原生探针（macOS 专用）──
 # 「检测输入法正在语音输入」靠读 CoreAudio 的进程对象列表（macOS 14.4+），

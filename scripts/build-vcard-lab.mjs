@@ -1,3 +1,4 @@
+import { CSS as CLIENT_CSS } from '../src/client/styles.js'
 /**
  * 生成「临时输入框（语音卡）→ 解读小窗」交接动效的**方案实验室**页。
  *
@@ -6,14 +7,14 @@
  *
  * 为什么用生成器而不是手写页面：
  *   · 卡片/小窗的样式必须**和线上一模一样**，否则"哪个方案好看"这个判断本身就不成立 ——
- *     所以 CSS 直接从 lib/client.js 的模块级 `CSS` 常量抽出来注入（与 build-demo-pages.mjs 同一手法，不手抄）。
+ *     所以 CSS 直接从 src/client/styles.js 导入 `CSS` 常量注入（与 build-demo-pages.mjs 同一手法，不手抄）。
  *   · 几何也照真实规则算：卡片 360 宽、**右缘**贴选区右缘、选区底边 +22；小窗 540 宽、
  *     **左缘**贴选区左缘、选区底边 +10（见 src/client/index.js 的 vcardGeometry / showPanel）。
  *
  * 页面上跑的是**六个方案**：0 现状（对照）／1 面板淡入／2 缩放长出／3 几何补间／4 CRT 交接／5 文字搬家。
  * 每个方案都能单独重播、0.25× 慢放、开几何参考线、开并排对比；还能切"减少动效"看各自的降级形态。
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { writeFileSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -21,16 +22,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..')
 
 /** 从客户端 bundle 里取出模块级 CSS 常量（不手抄，保证与线上一致）。 */
-function extractCss() {
-  const src = readFileSync(resolve(ROOT, 'lib', 'client.js'), 'utf8')
-  const m = src.match(/var CSS = \[([\s\S]*?)\]\s*\.join\(''\)/) || src.match(/var CSS = \[([\s\S]*?)\]\.join\('\\n'\)/)
-  if (!m) throw new Error('未能在 lib/client.js 里找到 CSS 常量')
-  const parts = []
-  const re = /'((?:[^'\\]|\\.)*)'/g
-  let e
-  while ((e = re.exec(m[1])) !== null) parts.push(e[1].replace(/\\'/g, "'").replace(/\\n/g, '\n'))
-  return parts.join('\n')
-}
+
 
 /** DSH 主题变量：浅色一套（与真实宿主一致），深色一套由页面上的开关切。 */
 const THEME_VARS = `:root{
@@ -763,7 +755,7 @@ const BODY = `<h1>临时输入框 → 解读小窗 · 交接动效实验室</h1>
   场景：输入法开麦时弹出<b>临时输入框</b>（语音卡），说完发送 → <b>解读小窗</b>。现在这两步是<b>瞬切</b>
   （卡片 <code>display:none</code>、小窗 <code>display:flex</code>，中间零过渡），而且几何本身也换了：
   卡片 360 宽、<b>右缘</b>贴选区右缘；小窗 540 宽、<b>左缘</b>贴选区左缘 —— 所以看起来是"跳"。
-  下面六个方案都按<b>真实样式</b>（CSS 直接从 lib/client.js 抽）与<b>真实几何</b>跑，可以逐个对比。
+  下面六个方案都按<b>真实样式</b>（CSS 直接从 src/client/styles.js 导入）与<b>真实几何</b>跑，可以逐个对比。
 </p>
 <div class="wrap">
   <div>
@@ -816,8 +808,8 @@ const html = `<!doctype html>
 ${THEME_VARS}
 ${THEME_VARS_DARK}
 ${SHELL_CSS}
-/* ── 以下为真实插件 CSS（从 lib/client.js 抽出，未手抄） ── */
-${extractCss()}
+/* ── 以下为真实插件 CSS（从 src/client/styles.js 导入，未手抄） ── */
+${CLIENT_CSS}
 </style>
 </head>
 <body>
@@ -831,4 +823,4 @@ mkdirSync(resolve(ROOT, 'docs'), { recursive: true })
 const outPath = resolve(ROOT, 'docs', 'vcard-to-panel-lab.html')
 writeFileSync(outPath, html, 'utf8')
 console.log(`✓ docs/vcard-to-panel-lab.html  ${(html.length / 1024).toFixed(1)} kB`)
-console.log(`  CSS 来源：lib/client.js（未手抄）；方案数：6`)
+console.log(`  CSS 来源：src/client/styles.js（未手抄）；方案数：6`)

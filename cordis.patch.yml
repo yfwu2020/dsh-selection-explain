@@ -16,7 +16,7 @@
 #   maxSelectionChars     选中文字长度上限（默认 4000）
 #   maxContextChars       上下文长度上限（默认 12000）
 #   maxRequestsPerMinute  本地限流（默认 40）
-#   toolNames             工具白名单（默认 web_search,web_fetch,read,grep,glob）
+#   toolNames             工具白名单（默认 advanced_search,platform_search,read,grep,glob）
 #   toolReadRoot          文件类工具（read/grep/glob）的读取边界：'' = 会话工作目录（默认），
 #                         '*' = 不限制，其他 = 写死的某个目录。越界在**执行前**被拒
 #   tools                 总开关（false = 完全不给工具）

@@ -1,19 +1,17 @@
 {
   "name": "@yfwu2020/dsh-selection-explain",
-  "version": "0.10.4",
+  "version": "0.10.5",
   "description": "DSH 划词解读：选中文字浮出按钮，点击弹窗流式显示专业中英翻译 + 该文字在当前上下文中的含义详解",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/types/index.d.ts",
   "files": [
     "lib",
-    "native",
-    "src",
-    "scripts",
+    "native/mic-probe.c",
     "cordis.patch.yml",
     "skills",
-    "assets",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "license": "MIT",
   "repository": {
@@ -37,24 +35,33 @@
     "@deepseek-ai/dsh-host-webserver": "0.1.5-rc.3",
     "@deepseek-ai/dsh-llm": "0.1.5-rc.3",
     "@deepseek-ai/schemastery": "3.18.2",
-    "@types/node": "^22.14.0",
-    "typescript": "^5.9.3"
+    "@types/node": "22.14.0",
+    "typescript": "5.9.3",
+    "esbuild": "0.28.2"
   },
   "scripts": {
     "build": "bash scripts/build.sh",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node scripts/test-filters.mjs && node scripts/test-prompt.mjs && node scripts/test-model-follow.mjs && node scripts/test-bridge.mjs && node scripts/smoke-bridge.mjs && node scripts/smoke-panel.mjs && node scripts/test-escape-focus.mjs && node scripts/test-effort-retry.mjs && node scripts/test-effort-map.mjs && node scripts/test-client.mjs && node scripts/test-settings-host.mjs && node scripts/test-settings-behavior.mjs && node scripts/test-route-cache.mjs && node scripts/test-transcript.mjs && node scripts/test-guard.mjs && node scripts/test-settings.mjs && node scripts/test-format.mjs && node scripts/test-speech.mjs && node scripts/test-mic-idle.mjs && node scripts/test-mic-build.mjs && node scripts/smoke-voice.mjs",
-    "test:effort": "node scripts/test-effort-retry.mjs",
-    "test:effort-map": "node scripts/test-effort-map.mjs",
-    "test:transcript": "node scripts/test-transcript.mjs",
-    "test:guard": "node scripts/test-guard.mjs",
-    "test:format": "node scripts/test-format.mjs",
-    "test:bridge": "node scripts/test-bridge.mjs",
-    "test:smoke": "node scripts/smoke-bridge.mjs",
-    "test:panel": "node scripts/smoke-panel.mjs",
-    "test:prompt": "node scripts/test-prompt.mjs",
-    "test:speech": "node scripts/test-speech.mjs",
-    "test:voice": "node scripts/smoke-voice.mjs"
+    "prepack": "npm run build",
+    "typecheck": "npm run typecheck:host && npm run typecheck:client",
+    "typecheck:host": "tsc -p tsconfig.json --noEmit",
+    "typecheck:client": "tsc -p tsconfig.client.json",
+    "pretest": "npm run build",
+    "test": "node scripts/run-tests.mjs all",
+    "test:unit": "npm run build && node scripts/run-tests.mjs unit",
+    "test:integration": "npm run build && node scripts/run-tests.mjs integration",
+    "test:browser": "npm run build && node scripts/run-tests.mjs browser",
+    "test:online": "npm run build && node scripts/run-tests.mjs online",
+    "test:effort": "npm run build && node tests/unit/effort-retry.test.mjs",
+    "test:effort-map": "npm run build && node tests/unit/effort-map.test.mjs",
+    "test:transcript": "npm run build && node tests/unit/transcript.test.mjs",
+    "test:guard": "npm run build && node tests/unit/guard.test.mjs",
+    "test:format": "npm run build && node tests/unit/format.test.mjs",
+    "test:bridge": "npm run build && node tests/unit/bridge.test.mjs",
+    "test:smoke": "npm run build && node tests/browser/bridge.test.mjs",
+    "test:panel": "npm run build && node tests/browser/panel.test.mjs",
+    "test:prompt": "npm run build && node tests/unit/prompt.test.mjs",
+    "test:speech": "npm run build && node tests/unit/speech.test.mjs",
+    "test:voice": "npm run build && node tests/browser/voice.test.mjs"
   },
   "exports": {
     ".": {
@@ -74,5 +81,8 @@
       "inject": [],
       "platform": "web"
     }
+  },
+  "engines": {
+    "node": ">=22.14.0"
   }
 }

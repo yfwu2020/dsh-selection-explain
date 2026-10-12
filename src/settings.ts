@@ -1,3 +1,5 @@
+import { CONFIG_LIMITS } from './config-values.js'
+
 /**
  * 划词解读 · 设置面板的**单一事实来源**。
  *
@@ -5,7 +7,7 @@
  *   · 小窗设置页要渲染 20+ 个字段，字段的标题 / 说明 / 单位 / 边界**必须**与 host 的
  *     校验规则是同一份数据 —— 分两处写迟早会漂（UI 说 1~600，host 却按 1~200 截断）。
  *     所以 GET /settings 直接把这份 spec 发给客户端，客户端只负责画，不做业务判断。
- *   · 纯数据 + 纯函数，不 import cordis / node，单测可以直接跑（见 scripts/test-settings.mjs）。
+ *   · 纯数据 + 纯函数，仅依赖共享配置，不 import cordis / node，单测可以直接跑（见 tests/unit/settings.test.mjs）。
  *
  * 分组是**导航结构**，不是装饰：20+ 项平铺会淹没用户，按"用户想去哪类事"分 6 组。
  */
@@ -84,10 +86,10 @@ export const SETTINGS_GROUPS: SettingGroup[] = [
       {"label": "频率与时限", "keys": ["maxRequestsPerMinute", "timeoutMs"]},
     ],
     items: [
-      {"key": "maxSelectionChars", "kind": "number", "label": "选中文字上限", "hint": "超出此长度时，不进行解读。", "unit": "字符", "min": 20, "max": 20000, "step": 1},
-      {"key": "maxContextChars", "kind": "number", "label": "局部前后文上限", "hint": "不含会话背景，超出部分截断。", "unit": "字符", "min": 200, "max": 60000, "step": 1},
-      {"key": "maxRequestsPerMinute", "kind": "number", "label": "每分钟请求上限", "hint": "所有阶段合计，超限需稍后重试。", "unit": "次", "min": 1, "max": 600, "step": 1},
-      {"key": "timeoutMs", "kind": "number", "label": "生成时限", "hint": "含检索耗时，超时后停止生成。", "unit": "秒", "min": 5000, "max": 600000, "step": 1000, "scale": 1000},
+      {"key": "maxSelectionChars", "kind": "number", "label": "选中文字上限", "hint": "超出此长度时，不进行解读。", "unit": "字符", "min": CONFIG_LIMITS.maxSelectionChars.min, "max": CONFIG_LIMITS.maxSelectionChars.max, "step": 1},
+      {"key": "maxContextChars", "kind": "number", "label": "局部前后文上限", "hint": "不含会话背景，超出部分截断。", "unit": "字符", "min": CONFIG_LIMITS.maxContextChars.min, "max": CONFIG_LIMITS.maxContextChars.max, "step": 1},
+      {"key": "maxRequestsPerMinute", "kind": "number", "label": "每分钟请求上限", "hint": "所有阶段合计，超限需稍后重试。", "unit": "次", "min": CONFIG_LIMITS.maxRequestsPerMinute.min, "max": CONFIG_LIMITS.maxRequestsPerMinute.max, "step": 1},
+      {"key": "timeoutMs", "kind": "number", "label": "生成时限", "hint": "含检索耗时，超时后停止生成。", "unit": "秒", "min": CONFIG_LIMITS.timeoutMs.min, "max": CONFIG_LIMITS.timeoutMs.max, "step": 1000, "scale": 1000},
     ],
   },
   {
@@ -98,12 +100,12 @@ export const SETTINGS_GROUPS: SettingGroup[] = [
     ],
     items: [
       {"key": "sessionContext", "kind": "switch", "label": "附带会话消息", "hint": "将选中文字所在消息及之前的消息一并发给模型。"},
-      {"key": "sessionContextFastMessages", "kind": "number", "label": "首轮上下文消息数", "hint": "每条提问或回答计一条。", "unit": "条", "min": 1, "max": 200, "step": 1, "enabledBy": "sessionContext"},
-      {"key": "sessionContextMaxMessages", "kind": "number", "label": "次轮与追问上下文消息数", "hint": "", "unit": "条", "min": 1, "max": 200, "step": 1, "enabledBy": "sessionContext"},
-      {"key": "sessionContextMaxChars", "kind": "number", "label": "上下文总字符上限", "hint": "0 为不限；超出时优先保留近期消息。", "unit": "字符", "min": 0, "max": 2000000, "step": 1000, "enabledBy": "sessionContext"},
-      {"key": "quoteContextRounds", "kind": "number", "label": "上下文轮数", "hint": "引用前后各取指定轮数；0 仅取所在轮。", "unit": "轮", "min": 0, "max": 10, "step": 1},
-      {"key": "quoteContextMaxCharsPerTurn", "kind": "number", "label": "单条消息字符上限", "hint": "长消息优先保留引用附近内容。", "unit": "字符", "min": 200, "max": 20000, "step": 100},
-      {"key": "quoteContextMaxChars", "kind": "number", "label": "上下文总字符上限", "hint": "超出时减少上下文，保留引用所在消息。", "unit": "字符", "min": 400, "max": 100000, "step": 100},
+      {"key": "sessionContextFastMessages", "kind": "number", "label": "首轮上下文消息数", "hint": "每条提问或回答计一条。", "unit": "条", "min": CONFIG_LIMITS.sessionContextFastMessages.min, "max": CONFIG_LIMITS.sessionContextFastMessages.max, "step": 1, "enabledBy": "sessionContext"},
+      {"key": "sessionContextMaxMessages", "kind": "number", "label": "次轮与追问上下文消息数", "hint": "", "unit": "条", "min": CONFIG_LIMITS.sessionContextMaxMessages.min, "max": CONFIG_LIMITS.sessionContextMaxMessages.max, "step": 1, "enabledBy": "sessionContext"},
+      {"key": "sessionContextMaxChars", "kind": "number", "label": "上下文总字符上限", "hint": "0 为不限；超出时优先保留近期消息。", "unit": "字符", "min": CONFIG_LIMITS.sessionContextMaxChars.min, "max": CONFIG_LIMITS.sessionContextMaxChars.max, "step": 1000, "enabledBy": "sessionContext"},
+      {"key": "quoteContextRounds", "kind": "number", "label": "上下文轮数", "hint": "引用前后各取指定轮数；0 仅取所在轮。", "unit": "轮", "min": CONFIG_LIMITS.quoteContextRounds.min, "max": CONFIG_LIMITS.quoteContextRounds.max, "step": 1},
+      {"key": "quoteContextMaxCharsPerTurn", "kind": "number", "label": "单条消息字符上限", "hint": "长消息优先保留引用附近内容。", "unit": "字符", "min": CONFIG_LIMITS.quoteContextMaxCharsPerTurn.min, "max": CONFIG_LIMITS.quoteContextMaxCharsPerTurn.max, "step": 100},
+      {"key": "quoteContextMaxChars", "kind": "number", "label": "上下文总字符上限", "hint": "超出时减少上下文，保留引用所在消息。", "unit": "字符", "min": CONFIG_LIMITS.quoteContextMaxChars.min, "max": CONFIG_LIMITS.quoteContextMaxChars.max, "step": 100},
     ],
   },
   {
@@ -114,8 +116,8 @@ export const SETTINGS_GROUPS: SettingGroup[] = [
     ],
     items: [
       {"key": "tools", "kind": "switch", "label": "允许调用工具", "hint": "模型可按需调用下方指定的工具。"},
-      {"key": "maxToolRounds", "kind": "number", "label": "调用轮数", "hint": "0 为不调用工具；同一轮可调用多个工具。", "unit": "轮", "min": 0, "max": 8, "step": 1, "enabledBy": "tools"},
-      {"key": "toolResultMaxChars", "kind": "number", "label": "单次结果字符上限", "hint": "工具返回的文本超出时截断。", "unit": "字符", "min": 200, "max": 20000, "step": 100, "enabledBy": "tools"},
+      {"key": "maxToolRounds", "kind": "number", "label": "调用轮数", "hint": "0 为不调用工具；同一轮可调用多个工具。", "unit": "轮", "min": CONFIG_LIMITS.maxToolRounds.min, "max": CONFIG_LIMITS.maxToolRounds.max, "step": 1, "enabledBy": "tools"},
+      {"key": "toolResultMaxChars", "kind": "number", "label": "单次结果字符上限", "hint": "工具返回的文本超出时截断。", "unit": "字符", "min": CONFIG_LIMITS.toolResultMaxChars.min, "max": CONFIG_LIMITS.toolResultMaxChars.max, "step": 100, "enabledBy": "tools"},
       {"key": "toolNames", "kind": "text", "label": "允许的工具", "hint": "工具名以逗号分隔。", "placeholder": "advanced_search,platform_search,read,grep,glob", "enabledBy": "tools"},
       {"key": "fallbackToolNames", "kind": "text", "label": "备用搜索工具", "hint": "找不到允许列表中的搜索工具时补充。", "placeholder": "web_search", "enabledBy": "tools"},
       {"key": "toolReadRoot", "kind": "text", "label": "文件读取目录", "hint": "留空取会话工作目录；* 为不限。", "placeholder": "会话工作目录", "enabledBy": "tools"},
@@ -131,7 +133,7 @@ export const SETTINGS_GROUPS: SettingGroup[] = [
     items: [
       {"key": "bridgeSidebarPreview", "kind": "switch", "label": "侧边栏网页划词", "hint": "选中文字后显示「解读」按钮。"},
       {"key": "pillEnabled", "kind": "switch", "label": "显示状态胶囊", "hint": "显示最近一次解读状态，点击打开或收起小窗。"},
-      {"key": "pillIdleMs", "kind": "number", "label": "自动收起时间", "hint": "空闲达到此时长后缩成小球。", "unit": "秒", "min": 2000, "max": 600000, "step": 1000, "scale": 1000, "enabledBy": "pillEnabled"},
+      {"key": "pillIdleMs", "kind": "number", "label": "自动收起时间", "hint": "空闲达到此时长后缩成小球。", "unit": "秒", "min": CONFIG_LIMITS.pillIdleMs.min, "max": CONFIG_LIMITS.pillIdleMs.max, "step": 1000, "scale": 1000, "enabledBy": "pillEnabled"},
       {"key": "voiceCancelOnSilence", "kind": "switch", "label": "空录音时收起", "hint": "结束语音输入后，输入框里没字就收起卡片（等于按 Esc）。"},
       {"key": "voiceAutoSend", "kind": "switch", "label": "说完直接发送", "hint": "结束语音输入后，输入框里有字就直接发送（等于按发送键）。"},
     ],
@@ -142,7 +144,7 @@ export const SETTINGS_GROUPS: SettingGroup[] = [
       {"label": "历史记录", "keys": ["historyMaxEntries"], "note": "0 为不保存，已有对话保留。超出时移除最久未更新的对话，已升格的保留。"},
     ],
     items: [
-      {"key": "historyMaxEntries", "kind": "number", "label": "保留最近对话数量", "hint": "每条包含所选文字、模型回答及后续追问。", "unit": "条", "min": 0, "max": 500, "step": 1},
+      {"key": "historyMaxEntries", "kind": "number", "label": "保留最近对话数量", "hint": "每条包含所选文字、模型回答及后续追问。", "unit": "条", "min": CONFIG_LIMITS.historyMaxEntries.min, "max": CONFIG_LIMITS.historyMaxEntries.max, "step": 1},
     ],
   },
 ]
@@ -301,11 +303,11 @@ export function normalizeStoredSettings(input: unknown): Record<string, unknown>
   const values = normalizeSettingsPatch(input).values
   if (!input || typeof input !== 'object' || Array.isArray(input)) return values
   const raw = input as Record<string, unknown>
-  const bounds: Record<string, [number, number]> = { maxTokens: [0, 32000], temperature: [-1, 2], resultCacheTtlMs: [0, 86400000] }
+  const bounds: Record<string, { min: number; max: number }> = CONFIG_LIMITS
   for (const key of PERSISTED_SETTING_KEYS) {
     const value = raw[key]
     if (typeof value !== 'number' || !Number.isFinite(value)) continue
-    const [min, max] = bounds[key]!
+    const { min, max } = bounds[key]!
     values[key] = Math.min(max, Math.max(min, value))
   }
   // chatProvider/chatModel 已退役，不迁入统一的 provider/model。

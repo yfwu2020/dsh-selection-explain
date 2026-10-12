@@ -1,14 +1,15 @@
+import { CSS as CLIENT_CSS } from '../src/client/styles.js'
 /**
  * 生成 README 用的小窗演示页（docs/demo/*.html）。
  *
  * 目的：README 里的功能截图必须**和真实面板长得一样**，所以样式不能手抄 ——
- * 这里直接从 lib/client.js 里把模块级 `CSS` 常量抽出来注入演示页，
+ * 这里直接从 src/client/styles.js 导入 `CSS` 常量注入演示页，
  * 类名 / 结构 / 文案也照 src/client/index.js 的渲染器与真实输出写。
  *
  * 用法：node scripts/build-demo-pages.mjs
  * 产物：docs/demo/stage1.html / stage2.html / code.html（再交给 Chrome 截图）
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { writeFileSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -16,17 +17,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..')
 
 /** 从客户端 bundle 里取出模块级 CSS 常量（不手抄，保证与线上一致）。 */
-function extractCss() {
-  const src = readFileSync(resolve(ROOT, 'lib', 'client.js'), 'utf8')
-  const m = src.match(/var CSS = \[([\s\S]*?)\]\s*\.join\(''\)/) || src.match(/var CSS = \[([\s\S]*?)\]\.join\('\\n'\)/)
-  if (!m) throw new Error('未能在 lib/client.js 里找到 CSS 常量')
-  // 元素是 '...' 单引号字符串字面量
-  const parts = []
-  const re = /'((?:[^'\\]|\\.)*)'/g
-  let e
-  while ((e = re.exec(m[1])) !== null) parts.push(e[1].replace(/\\'/g, "'").replace(/\\n/g, '\n'))
-  return parts.join('\n')
-}
+
 
 /** DSH 主题变量：用浅色主题的实际取值，让截图看起来像真的嵌在 DSH 里。 */
 const THEME_VARS = `:root{
@@ -334,7 +325,7 @@ const quotesDemo = panel(
   ].join('\n'),
 )
 
-const css = extractCss()
+const css = CLIENT_CSS
 mkdirSync(resolve(ROOT, 'docs', 'demo'), { recursive: true })
 const out = {
   'stage1.html': PAGE('划词解读 · 首轮翻译', css, stage1),
@@ -347,4 +338,4 @@ for (const [name, html] of Object.entries(out)) {
   writeFileSync(resolve(ROOT, 'docs', 'demo', name), html, 'utf8')
   console.log(`✓ docs/demo/${name}  ${(html.length / 1024).toFixed(1)} kB`)
 }
-console.log(`\nCSS 来源：lib/client.js（${css.length} 字符，未手抄）`)
+console.log(`\nCSS 来源：src/client/styles.js（${css.length} 字符，未手抄）`)

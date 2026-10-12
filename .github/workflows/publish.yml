@@ -58,12 +58,9 @@ jobs:
           fi
 
       - name: 安装 DSH 运行时依赖（构建需要 @deepseek-ai/* 类型）
-        run: npm install --no-save --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
-      - name: 构建（tsc 编译 host + 拷贝 client bundle）
-        run: bash scripts/build.sh
-
-      - name: 测试（filters / prompt / bridge / client / transcript / guard；真浏览器冒烟无 Chrome 自动 SKIP）
+      - name: 测试（filters / prompt / bridge / client / transcript / guard；先构建，再跑离线与浏览器测试）
         run: npm test
 
       - name: 类型检查
@@ -80,7 +77,7 @@ jobs:
       - name: 打包（Release 附件）
         if: startsWith(github.ref, 'refs/tags/')
         id: pack
-        run: echo "tgz=$(npm pack --silent)" >> "$GITHUB_OUTPUT"
+        run: echo "tgz=$(npm pack --silent --ignore-scripts)" >> "$GITHUB_OUTPUT"
 
       # 建 GitHub Release（tag 已存在 → 用 --verify-tag；重复运行用 --clobber 覆盖附件）
       # 说明取自 tag 的 %(contents)：annotated tag 用你写的注解，轻量 tag 会回落到该 commit

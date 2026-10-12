@@ -8,7 +8,7 @@ DSH 中的翻译、上下文解读与语音追问。
 
 [快速安装](#install) · [语音输入](#voice) · [功能一览](#read) · [使用与设置](#settings)
 
-`DSH 插件` · `v0.10.3` · `MIT`
+`DSH 插件` · `v0.10.5` · `MIT`
 
 </div>
 
@@ -24,7 +24,7 @@ DSH 中的翻译、上下文解读与语音追问。
 
 **小窗还没打开**：划选文字后启动输入法语音，选区旁会出现临时卡片，承接你说的话。结束语音、文字定稿后，默认自动发送，直接进入追问。
 
-![选中文本与语音卡片之间的真实连线，问题可直接写入选区旁的输入框](assets/voice-card-light.png)
+![选中文本与语音卡片之间的真实连线，问题可直接写入选区旁的输入框](https://raw.githubusercontent.com/yfwu2020/dsh-selection-explain/v0.10.4/assets/voice-card-light.png)
 
 *选区通过青色下划线和虚线连接到临时输入卡片。*
 
@@ -34,13 +34,13 @@ DSH 中的翻译、上下文解读与语音追问。
 
 点击输入框旁的麦克风开始录音，查看实时波形与转写；点击停止完成输入，或按 `Esc` 取消本次录音。实时转写不可用时，会在停止后识别。
 
-![DSH 中实际运行的语音输入：小窗底部显示录音控制与波形](assets/voice.png)
+![DSH 中实际运行的语音输入：小窗底部显示录音控制与波形](https://raw.githubusercontent.com/yfwu2020/dsh-selection-explain/v0.10.4/assets/voice.png)
 
 *英文例句的解读小窗中，直接启动语音追问。*
 
 语音卡片默认开启**说完直接发送**和**空录音时收起**。在 **设置 → 界面 → 语音输入** 中可以分别关闭。
 
-![语音相关设置的真实截图：空录音时收起与说完直接发送](assets/voice-settings.png)
+![语音相关设置的真实截图：空录音时收起与说完直接发送](https://raw.githubusercontent.com/yfwu2020/dsh-selection-explain/v0.10.4/assets/voice-settings.png)
 
 > 输入法联动需要 **macOS 14.4+** 与支持的语音输入法（已适配豆包）。小窗麦克风需要 DSH 启用语音识别服务。未配置语音时，文字解读与键盘追问仍可使用。
 
@@ -59,13 +59,13 @@ DSH 中的翻译、上下文解读与语音追问。
 
 在 DSH 中选中文字，点击 **解读**。英文先给译文，中文按内容给解读，代码则生成注释；需要更多背景时，再点 **展开详解**。
 
-![选中英文例句后，真实小窗给出翻译并显示展开详解入口](assets/translation.png)
+![选中英文例句后，真实小窗给出翻译并显示展开详解入口](https://raw.githubusercontent.com/yfwu2020/dsh-selection-explain/v0.10.4/assets/translation.png)
 
 *选中 “The migration ran long, so we will ship on Wednesday”，先得到译文。*
 
 展开后，模型结合前后文与可用的会话背景解释术语、语气和承接关系。你可以直接在底部继续追问。
 
-![真实解读小窗中的上下文详解与后续追问](assets/detail.png)
+![真实解读小窗中的上下文详解与后续追问](https://raw.githubusercontent.com/yfwu2020/dsh-selection-explain/v0.10.4/assets/detail.png)
 
 *接着问“ran long 是说迁移失败了吗？”，把问题留在同一段讨论里。*
 
@@ -75,7 +75,7 @@ DSH 中的翻译、上下文解读与语音追问。
 
 小窗打开时，在主界面、小窗正文或支持的侧边栏网页预览中划选文字，点 **引用**，就能带着新材料继续问。一次最多加入 **4 段引用**，每段都可以单独移除。
 
-![真实小窗中，所选内容作为引用卡片出现在追问输入框上方](assets/quotes.png)
+![真实小窗中，所选内容作为引用卡片出现在追问输入框上方](https://raw.githubusercontent.com/yfwu2020/dsh-selection-explain/v0.10.4/assets/quotes.png)
 
 不必每次从头来：
 
@@ -103,11 +103,11 @@ dsh plugin --profile web add @yfwu2020/dsh-selection-explain
 <details>
 <summary>安装 Release 构建包</summary>
 
-将下载的 `.tgz` 放到当前目录，以 v0.10.3 为例：
+将下载的 `.tgz` 放到当前目录，以 v0.10.5 为例：
 
 ```bash
 mkdir -p ~/.dsh/plugins/dsh-selection-explain
-tar -xzf yfwu2020-dsh-selection-explain-0.10.3.tgz -C ~/.dsh/plugins/dsh-selection-explain --strip-components=1
+tar -xzf yfwu2020-dsh-selection-explain-0.10.5.tgz -C ~/.dsh/plugins/dsh-selection-explain --strip-components=1
 dsh plugin --profile web add ~/.dsh/plugins/dsh-selection-explain
 ```
 
@@ -121,7 +121,7 @@ dsh plugin --profile web add ~/.dsh/plugins/dsh-selection-explain
 ```bash
 git clone https://github.com/yfwu2020/dsh-selection-explain.git
 cd dsh-selection-explain
-npm install
+npm ci
 npm run build
 dsh plugin --profile web add .
 ```
@@ -184,7 +184,9 @@ npm run typecheck
 npm run build
 ```
 
-配置项见 [src/settings.ts](https://github.com/yfwu2020/dsh-selection-explain/blob/main/src/settings.ts)，默认值见 [src/index.ts](https://github.com/yfwu2020/dsh-selection-explain/blob/main/src/index.ts)。
+项目结构见 [架构说明](https://github.com/yfwu2020/dsh-selection-explain/blob/main/docs/ARCHITECTURE.md)，验证方式见 [开发说明](https://github.com/yfwu2020/dsh-selection-explain/blob/main/docs/CONTRIBUTING.md)。
+
+配置项见 [src/settings.ts](https://github.com/yfwu2020/dsh-selection-explain/blob/main/src/settings.ts)，默认值见 [src/config-values.ts](https://github.com/yfwu2020/dsh-selection-explain/blob/main/src/config-values.ts)。
 
 </details>
 

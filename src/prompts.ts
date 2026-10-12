@@ -9,7 +9,7 @@
  *
  * 改动提示词的注意事项：
  *   · 结构契约由客户端解析（按 `## 翻译` / `## 详解` 标题切分），改标题会同时影响渲染；
- *   · scripts/test-prompt.mjs 里有"提示词契约测试"——删掉关键约束会直接 FAIL；
+ *   · tests/unit/prompt.test.mjs 里有"提示词契约测试"——删掉关键约束会直接 FAIL；
  *   · 想知道模型**实际收到**什么（含 harness 注入与会话背景拼接结果），跑
  *     `node scripts/dump-prompt.mjs --all`（需要 DSH 正在运行）。
  */
