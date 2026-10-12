@@ -1659,6 +1659,7 @@ async function main() {
       //    虚拟时钟会往前跳，rAF 回来时过渡可能已经跑完了（实测读到 matrix=none）。
       //    改成**记录 style 属性的每一次写入**（MutationObserver 的 attributeOldValue 给的是
       //    写之前的值）—— 于是"起点把面板压到卡片那一格"这件事与时钟无关，直接可读可验。
+      var reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
       var styleWrites = []
       var mo = new MutationObserver(function (records) {
         for (var i = 0; i < records.length; i += 1) styleWrites.push(records[i].oldValue || '')
@@ -1690,18 +1691,23 @@ async function main() {
       var sy = cardRect.height / expH
       var dx = cardRect.left - expLeft
       var dy = cardRect.top - expTop
-      check('交接起点：面板被压到卡片那一格（缩放 + 位移，量的是真矩形）',
-        !!m && Math.abs(Number(m[3]) - sx) < 0.01 && Math.abs(Number(m[4]) - sy) < 0.01 &&
-          Math.abs(Number(m[1]) - dx) < 1 && Math.abs(Number(m[2]) - dy) < 1,
-        m ? '起点=' + m[0] + ' 期望≈translate(' + dx.toFixed(1) + 'px,' + dy.toFixed(1) + 'px) scale(' + sx.toFixed(4) + ',' + sy.toFixed(4) + ')'
-          : '没观察到起点写入；style 写入次数=' + styleWrites.length)
-      check('交接期间 transform-origin 在左上角（否则缩放会把面板甩出去）',
-        !!startStyle && startStyle.indexOf('transform-origin: 0px 0px') >= 0,
-        startStyle ? startStyle.slice(0, 120) : '（没抓到）')
-      var sawTransition = styleWrites.some(function (v) { return v.indexOf('transition: transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1)') >= 0 })
-      check('交接只动 transform、260ms 同一族曲线（不动 width/left/top）',
-        sawTransition || String(panelEl4.style.transition).indexOf('transform 260ms') === 0,
-        '写入=' + JSON.stringify(styleWrites.map(function (v) { return (v.match(/transition:[^;]*/) || [''])[0] }).filter(Boolean).slice(0, 2)))
+      check('交接动画遵守系统减少动效偏好',
+        reducedMotion ? !startStyle && !panelEl4.style.transition : !!startStyle,
+        'reducedMotion=' + reducedMotion + '; style 写入次数=' + styleWrites.length)
+      if (!reducedMotion) {
+        check('交接起点：面板被压到卡片那一格（缩放 + 位移，量的是真矩形）',
+          !!m && Math.abs(Number(m[3]) - sx) < 0.01 && Math.abs(Number(m[4]) - sy) < 0.01 &&
+            Math.abs(Number(m[1]) - dx) < 1 && Math.abs(Number(m[2]) - dy) < 1,
+          m ? '起点=' + m[0] + ' 期望≈translate(' + dx.toFixed(1) + 'px,' + dy.toFixed(1) + 'px) scale(' + sx.toFixed(4) + ',' + sy.toFixed(4) + ')'
+            : '没观察到起点写入；style 写入次数=' + styleWrites.length)
+        check('交接期间 transform-origin 在左上角（否则缩放会把面板甩出去）',
+          !!startStyle && startStyle.indexOf('transform-origin: 0px 0px') >= 0,
+          startStyle ? startStyle.slice(0, 120) : '（没抓到）')
+        var sawTransition = styleWrites.some(function (v) { return v.indexOf('transition: transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1)') >= 0 })
+        check('交接只动 transform、260ms 同一族曲线（不动 width/left/top）',
+          sawTransition || String(panelEl4.style.transition).indexOf('transform 260ms') === 0,
+          '写入=' + JSON.stringify(styleWrites.map(function (v) { return (v.match(/transition:[^;]*/) || [''])[0] }).filter(Boolean).slice(0, 2)))
+      }
       await sleep(520)
       var settledMatrix = getComputedStyle(panelEl4).transform
       check('交接结束：回到恒等（无 transform）',
