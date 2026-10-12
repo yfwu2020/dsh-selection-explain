@@ -12,22 +12,21 @@
  * 两份文档都用 lib/client.js 里**同一份** bridgeIntoHtml 注入（不是抄一份代码），
  * 再由文档内的脚本**同步**造一段选区 → 断言父页面收到了 __dshSel 消息。
  *
- * 同步是必须的：headless 的 --virtual-time-budget 不推进子框架里的定时器
- * （实测：主文档的定时器会跑、iframe 里的不跑），而桥的即时路径正是
- * `selectionchange`（document 监听、同步触发），所以不依赖轮询也能验证。
+ * 同步触发 selectionchange，验证桥的即时路径；通过 DevTools 等待三个帧实际
+ * 返回消息，避免虚拟时间预算在跨进程帧加载前耗尽。
  *
  * 用法：node tests/browser/bridge.test.mjs          （找不到 Chrome 就 SKIP，退出码 0）
  *      CHROME=/path/to/chrome node tests/browser/bridge.test.mjs
  *      node tests/browser/bridge.test.mjs --dump > /tmp/x.html   （只产出页面，不跑浏览器）
  */
-import { execFile } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { dirname, resolve } from 'node:path'
+import { dirname, resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { promisify } from 'node:util'
+import { tmpdir } from 'node:os'
 
-const execFileAsync = promisify(execFile)
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const BUNDLE = resolve(HERE, '..', '..', 'lib', 'client.js')
@@ -305,26 +304,76 @@ function complete(payload) {
 
 let payload = null
 let dump = ''
+const profile = mkdtempSync(join(tmpdir(), 'dsh-bridge-smoke-'))
+// 真实时钟 + 独立 profile：虚拟时间预算可能在 OOPIF 加载前耗尽。
+// 让 Chrome 分配空闲端口，避免撞上用户正在运行的浏览器。
+const child = spawn(chrome, [
+  '--headless=new', '--disable-gpu', '--no-sandbox',
+  '--no-first-run', '--no-default-browser-check',
+  '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank',
+], { stdio: ['ignore', 'ignore', 'pipe'] })
+let chromeLog = ''
+child.stderr.on('data', chunk => { chromeLog += String(chunk) })
+child.on('error', error => { chromeLog += String(error) })
+let ws
+let sequence = 0
+const pending = new Map()
+async function send(method, params = {}) {
+  const id = ++sequence
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pending.delete(id)
+      reject(new Error(`CDP timeout: ${method}`))
+    }, 10000)
+    pending.set(id, { resolve, reject, timer })
+    ws.send(JSON.stringify({ id, method, params }))
+  })
+}
 try {
-  // 最多试 3 趟：--virtual-time-budget 下"帧的加载 vs 预算耗尽"有竞态（实测偶发某帧还没报就 dump 了），
-  // 重试是这里最省事又可靠的兜底。
-  for (let attempt = 1; attempt <= 3 && !complete(payload); attempt += 1) {
-    // 必须用**异步**的 execFile：同步版会堵住本进程的事件循环，
-    // 上面那个临时 http 服务就没法应答 Chrome 的请求 → 浏览器一直等（实测挂死）。
-    // 也不要给 --user-data-dir：本机 Chrome 在跑时，全新 profile 的 headless 会卡住不退出。
-    const result = await execFileAsync(
-      chrome,
-      ['--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--virtual-time-budget=20000', '--dump-dom', `http://127.0.0.1:${port}/smoke.html`],
-      { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 60000 },
-    )
-    dump = result.stdout
-    payload = parseDump(dump)
+  const activePortFile = join(profile, 'DevToolsActivePort')
+  const started = Date.now()
+  while (!existsSync(activePortFile) && Date.now() - started < 20000) {
+    if (child.exitCode !== null) throw new Error('Chrome exited: ' + chromeLog.slice(-1000))
+    await sleep(100)
   }
+  if (!existsSync(activePortFile)) throw new Error('DevTools not ready: ' + chromeLog.slice(-1000))
+  const debugPort = Number(readFileSync(activePortFile, 'utf8').split('\n')[0])
+  const targets = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()
+  ws = new WebSocket(targets.find(target => target.type === 'page').webSocketDebuggerUrl)
+  await new Promise((resolve, reject) => {
+    ws.addEventListener('open', resolve, { once: true })
+    ws.addEventListener('error', () => reject(new Error('CDP connection failed')), { once: true })
+  })
+  ws.addEventListener('message', event => {
+    const message = JSON.parse(String(event.data))
+    const entry = pending.get(message.id)
+    if (!entry) return
+    pending.delete(message.id)
+    clearTimeout(entry.timer)
+    if (message.error) entry.reject(new Error(message.error.message))
+    else entry.resolve(message.result)
+  })
+  await send('Page.navigate', { url: `http://127.0.0.1:${port}/smoke.html` })
+  const deadline = Date.now() + 20000
+  do {
+    const result = await send('Runtime.evaluate', {
+      expression: 'document.documentElement.outerHTML', returnByValue: true,
+    })
+    dump = result.result.value || ''
+    payload = parseDump(dump)
+    if (complete(payload)) break
+    await sleep(100)
+  } while (Date.now() < deadline)
+  if (!complete(payload)) console.log('Chrome diagnostics: ' + chromeLog.slice(-1500))
 } catch (error) {
-  console.log('（Chrome 调用失败：' + String((error && error.message) || error).slice(0, 200) + '）')
+  console.log('（Chrome 调用失败：' + String(error.message || error).slice(0, 1000) + '）')
 } finally {
+  ws?.close()
+  for (const entry of pending.values()) clearTimeout(entry.timer)
+  child.kill('SIGKILL')
   if (typeof server.closeAllConnections === 'function') server.closeAllConnections()
   server.close()
+  rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 }
 
 assert('浏览器里拿到了验证结果（<pre id="out">）', !!payload, dump.slice(0, 120))
