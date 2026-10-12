@@ -181,12 +181,14 @@ frameA.setAttribute('data-html-preview', 'true')
 frameA.setAttribute('sandbox', '')
 frameA.setAttribute('srcdoc', basicHtml)
 frameA.style.cssText = 'width:420px;height:140px;border:1px solid #999'
+// 宿主页面先完成原始预览加载，再由插件改写，避免两个初始导航互相覆盖。
+frameA.addEventListener('load', function () {
+  var nextA = bridgeIntoHtml(basicHtml)
+  frameA.setAttribute('sandbox', 'allow-scripts')
+  frameA.setAttribute('srcdoc', nextA)
+  diag('A injected marker=' + (nextA.indexOf('data-dsh-sel-bridge') > 0) + ' cspRelaxed=' + (nextA.indexOf("script-src 'unsafe-inline'") > 0))
+}, { once: true })
 document.getElementById('frames').appendChild(frameA)
-
-var nextA = bridgeIntoHtml(basicHtml)
-frameA.setAttribute('sandbox', 'allow-scripts')
-frameA.setAttribute('srcdoc', nextA)
-diag('A injected marker=' + (nextA.indexOf('data-dsh-sel-bridge') > 0) + ' cspRelaxed=' + (nextA.indexOf("script-src 'unsafe-inline'") > 0))
 
 // ── B：交互式预览。外层是 blob bootstrap（document.write），同样注入后换成我们那份 blob。
 //    bootstrap 里写进去的文档必须把闭合的 script 标签转义（宿主的真 bootstrap 用 base64
@@ -346,6 +348,7 @@ try {
   })
   ws.addEventListener('message', event => {
     const message = JSON.parse(String(event.data))
+    if (message.method === 'Log.entryAdded') chromeLog += '\n' + JSON.stringify(message.params.entry)
     const entry = pending.get(message.id)
     if (!entry) return
     pending.delete(message.id)
@@ -353,6 +356,7 @@ try {
     if (message.error) entry.reject(new Error(message.error.message))
     else entry.resolve(message.result)
   })
+  await send('Log.enable')
   await send('Page.navigate', { url: `http://127.0.0.1:${port}/smoke.html` })
   const deadline = Date.now() + 20000
   do {
