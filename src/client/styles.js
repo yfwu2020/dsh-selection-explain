@@ -33,6 +33,10 @@ export var CSS = [
   '.dsh-sel-layer{position:fixed;inset:0;z-index:70;pointer-events:none;--sel-a1:#0d9488;--sel-a1-text:#0f766e;--sel-a2:#0d9488;--sel-a2-text:#0f766e;',
   '--sel-fill:#0f766e;--sel-fill-fg:#ffffff;',
   '--sel-a2-soft:color-mix(in srgb,var(--sel-a2) 12%,transparent);--sel-a1-soft:color-mix(in srgb,var(--sel-a1) 10%,transparent)}',
+  // DSH 桌面将 body>:not(#root) 设为 no-drag；全屏透明根会因此屏蔽整个窗口拖拽。
+  // important 只用于根的拖拽属性，覆盖宿主带 #root 的选择器；空白与装饰保持中性。
+  '.dsh-sel-layer{-webkit-app-region:initial!important}',
+  '.dsh-sel-layer>:is(.dsh-sel-btn,.dsh-sel-panel,.dsh-sel-pill,.dsh-sel-history,.dsh-sel-vcard){-webkit-app-region:no-drag}',
   '.dsh-sel-layer[data-full-view] .dsh-sel-pill{display:none!important}',
   '.dsh-sel-layer[data-theme=dark]{--sel-a1:#4ecdc4;--sel-a1-text:#6fe3d8;--sel-a2:#4ecdc4;--sel-a2-text:#6fe3d8;',
   '--sel-fill:#4ecdc4;--sel-fill-fg:#052b26;',

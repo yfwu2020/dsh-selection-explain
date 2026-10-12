@@ -8,7 +8,7 @@ DSH 中的翻译、上下文解读与语音追问。
 
 [快速安装](#install) · [语音输入](#voice) · [功能一览](#read) · [使用与设置](#settings)
 
-`DSH 插件` · `v0.10.5` · `MIT`
+`DSH 插件` · `v0.10.6` · `MIT`
 
 </div>
 
@@ -103,11 +103,11 @@ dsh plugin --profile web add @yfwu2020/dsh-selection-explain
 <details>
 <summary>安装 Release 构建包</summary>
 
-将下载的 `.tgz` 放到当前目录，以 v0.10.5 为例：
+将下载的 `.tgz` 放到当前目录，以 v0.10.6 为例：
 
 ```bash
 mkdir -p ~/.dsh/plugins/dsh-selection-explain
-tar -xzf yfwu2020-dsh-selection-explain-0.10.5.tgz -C ~/.dsh/plugins/dsh-selection-explain --strip-components=1
+tar -xzf yfwu2020-dsh-selection-explain-0.10.6.tgz -C ~/.dsh/plugins/dsh-selection-explain --strip-components=1
 dsh plugin --profile web add ~/.dsh/plugins/dsh-selection-explain
 ```
 

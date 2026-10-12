@@ -43,12 +43,17 @@ if (!chrome) {
 }
 
 const PAGE = `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>panel smoke</title>
+<html lang="zh-CN" data-platform="darwin"><head><meta charset="utf-8"><title>panel smoke</title>
 <style>html,body{margin:0;padding:0;background:#fff}
+/* DSH 桌面的原生拖拽规则：全屏 body 浮层不能成为 no-drag 矩形。 */
+html[data-platform=darwin] [data-window-drag]{-webkit-app-region:drag}
+html[data-platform=darwin] body>:not(#root){-webkit-app-region:no-drag}
+html[data-platform=darwin] :is(button,input,textarea,[role=button],[role=dialog]){-webkit-app-region:no-drag}
 /* 给主界面留一块"正文"，用来验主界面划词那条路 */
 #doc{padding:40px;font:14px/1.7 -apple-system,"PingFang SC",sans-serif}
 </style></head>
 <body>
+<div id="root"><div id="desktop-drag-probe" data-window-drag style="position:fixed;left:300px;top:0;width:400px;height:24px"></div></div>
 <div id="doc"><p id="docp">Dev: the migration ran long, so we ship Wednesday.</p></div>
 <!-- "别处正在打字"的输入框：必须 fixed 定位 —— 放进文档流会挪动上面那段文字的坐标，
      而这一页里有一族"依赖坐标的划词用例"（见下面 ① 的注释），挪一下就会撞红。 -->
@@ -268,6 +273,11 @@ async function main() {
     check('解读自有浮层已挂载', !!document.querySelector('.dsh-sel-layer'), '')
     var ownedLayer = document.querySelector('.dsh-sel-layer')
     check('解读使用 body 自有根，公开归属且空白穿透', ownedLayer.parentNode === document.body && ownedLayer.getAttribute('data-dsh-floating-owner') === 'explanation' && getComputedStyle(ownedLayer).pointerEvents === 'none', '')
+    check('桌面标题栏仍是原生窗口拖拽区域', getComputedStyle(document.getElementById('desktop-drag-probe')).webkitAppRegion === 'drag', '')
+    check('全屏浮层不把桌面标题栏排除出原生拖拽区域', getComputedStyle(ownedLayer).webkitAppRegion === 'none', getComputedStyle(ownedLayer).webkitAppRegion)
+    check('标题栏的鼠标命中仍穿透插件空白', document.elementFromPoint(500, 10) === document.getElementById('desktop-drag-probe'), '')
+    var desktopControls = Array.from(ownedLayer.querySelectorAll('.dsh-sel-btn,.dsh-sel-panel,.dsh-sel-pill,.dsh-sel-history'))
+    check('插件交互区域仍禁止原生窗口拖拽', desktopControls.every(function (node) { return getComputedStyle(node).webkitAppRegion === 'no-drag' }), desktopControls.map(function (node) { return node.className + ':' + getComputedStyle(node).webkitAppRegion }).join(', '))
     check('解读独立根越过完整视图工作面板', Number(getComputedStyle(ownedLayer).zIndex) > 60, getComputedStyle(ownedLayer).zIndex)
     var modeFrame = document.createElement('div')
     document.body.appendChild(modeFrame)
@@ -1648,6 +1658,9 @@ async function main() {
     }, 2500)
     check('（准备）输入法开麦 → 语音卡自己弹出来', !!cardEl, cardEl ? '' : '没等到卡片')
     if (cardEl) {
+      check('语音卡自身禁止原生窗口拖拽', getComputedStyle(cardEl).webkitAppRegion === 'no-drag', getComputedStyle(cardEl).webkitAppRegion)
+      var marks = Array.from(document.querySelectorAll('.dsh-sel-umark,.dsh-sel-thread'))
+      check('全屏选中提示不阻止原生窗口拖拽', marks.length > 0 && marks.every(function (node) { return getComputedStyle(node).webkitAppRegion === 'none' }), marks.map(function (node) { return node.className.baseVal || node.className }).join(', '))
       var vbox = cardEl.querySelector('.dsh-sel-vcard-box')
       var vsend = cardEl.querySelector('.dsh-sel-vcard-send')
       vbox.value = '这是 在推迟 还是提前'
