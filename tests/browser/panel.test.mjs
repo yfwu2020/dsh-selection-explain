@@ -104,6 +104,7 @@ function sse(events) {
 var micState = { ok: true, available: true, capturing: false, processes: [], reason: '' }
 var pillPosStore = null // 内存版 host 存储（/api/pill）
 var panelSizeStore = null // 内存版 host 存储（/api/panel，只存尺寸）
+var realFetch = window.fetch.bind(window) // 兜底：不认识的 URL 走真 fetch（截图模式要取 /thumb.png）
 window.fetch = function (input, init) {
   var url = String(input)
   var body = {}
@@ -159,14 +160,37 @@ window.fetch = function (input, init) {
       ],
     }), { headers: { 'content-type': 'application/json' } }))
   }
+  if (url.indexOf('/selection-explain/api/attach') >= 0) {
+    // 附件上传：宿主把 base64 存进附件服务、回一个持久引用。这里只记请求、回一件：
+    // 客户端要验的是"逐件上传 + 引用回传"，不是附件服务自己（那条有 tests/unit/attach.test.mjs）。
+    window.__attachHits = window.__attachHits || []
+    window.__attachHits.push(body)
+    var item = (body.items || [])[0] || {}
+    // 失败开关：用来验"失败 → 重试"那条路
+    if (window.__attachFail && window.__attachFail === item.name) {
+      return Promise.resolve(new Response(JSON.stringify({ ok: false, code: 'UNSUPPORTED_IMAGE_TYPE', error: '不是受支持的图片格式（PNG / JPEG / WebP / GIF）', name: item.name }), { status: 400, headers: { 'content-type': 'application/json' } }))
+    }
+    var ref = item.kind === 'image'
+      ? { attachmentId: 'sha256:' + 'a'.repeat(64), mediaType: item.mediaType || 'image/png', width: 800, height: 600, bytes: 12, name: item.name }
+      : { attachmentId: 'sha256:' + 'b'.repeat(64), name: item.name, bytes: 12 }
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, items: [{ kind: item.kind, ref: ref }] }), { headers: { 'content-type': 'application/json' } }))
+  }
   if (url.indexOf('/selection-explain/api/analyze') >= 0) {
-    if (body.question) return Promise.resolve(sse([{ type: 'start', provider: 'fixture', model: 'fixture', mode: 'chat' }, { type: 'delta', text: fixture.chat }, { type: 'done', chars: 8 }]))
+    if (body.question) {
+      // 追问的载荷留下来给附件用例断言（"引用只带引用、不带 base64"）
+      window.__askBodies = window.__askBodies || []
+      window.__askBodies.push(body)
+      return Promise.resolve(sse([{ type: 'start', provider: 'fixture', model: 'fixture', mode: 'chat' }, { type: 'delta', text: fixture.chat }, { type: 'done', chars: 8 }]))
+    }
     var fence = String.fromCharCode(96, 96, 96)
     var code = '## 注释\\n' + fence + 'js\\n// 注释：先声明常量\\nconst x = 1\\n' + fence + '\\n\\n> 小结：一句话说清。\\n'
     var text = body.kind === 'code' ? code : body.stage === 'detail' ? fixture.detail : fixture.translation
     return Promise.resolve(sse([{ type: 'start', provider: 'fixture', model: 'fixture', stage: body.stage || 'translation' }, { type: 'delta', text: text }, { type: 'done', chars: text.length }]))
   }
-  return Promise.resolve(new Response('{}', { headers: { 'content-type': 'application/json' } }))
+  // 兜底：不认识的 URL 走**真** fetch。
+  // 以前这里一律回一个空 JSON —— 截图模式要拿页面自己的一张真 PNG 当缩略图，
+  // 被这条兜底拦住的话拿到的是一段 JSON，缩略图就成了破图。
+  return realFetch.apply(window, arguments)
 }
 
 var disposers = []
@@ -1806,6 +1830,284 @@ async function main() {
     await sleep(60)
   }
 
+  // ⑯ 附件：＋ 在工具行最左、「输出偏好」文字已去掉、上传/失败/发送全链路
+  {
+    hook.open('附件探针', '上下文片段 ABC', '附件冒烟')
+    await waitFor(function () { return hook.state().phase === 'done' }, 8000)
+
+    var tools = document.querySelector('.dsh-sel-asktools')
+    var addBtn = tools && tools.children[0]
+    check('工具行最左是 ＋ 附件键（排在最前面，不是挨着麦克风）',
+      !!addBtn && String(addBtn.className).indexOf('dsh-sel-add') >= 0 && tools.children[1] !== addBtn,
+      addBtn ? addBtn.className : '未找到')
+    // 十字 = 一条 path 里的两段（竖 + 横）；圆底是 CSS 给的（桩环境量不出背景色）
+    var addPaths = addBtn ? Array.from(addBtn.querySelectorAll('path')) : []
+    var addD = addPaths.map(function (p) { return String(p.getAttribute('d')) }).join(' ')
+    check('图标是十字（竖 + 横两段，不是回形针的弧线）',
+      addPaths.length === 1 && /M8 3\.4v9\.2/.test(addD) && /M3\.4 8h9\.2/.test(addD),
+      addD)
+
+    var prefWrap = document.querySelector('.dsh-sel-pref')
+    check('「输出偏好」四个字已从工具行去掉（只剩两格图标）',
+      !!prefWrap && prefWrap.textContent.trim() === '' && !document.querySelector('.dsh-sel-preftext'),
+      prefWrap ? JSON.stringify(prefWrap.textContent) : '未找到')
+    check('去掉文字后语义仍在（title 说明这是什么）',
+      !!prefWrap && String(prefWrap.title).indexOf('输出偏好') >= 0, prefWrap ? prefWrap.title : '')
+
+    var attachBox = document.querySelector('.dsh-sel-attach')
+    var sendBtn = document.querySelector('.dsh-sel-asksend')
+    check('初始没有附件（附件条收着、不占高度）',
+      !!attachBox && attachBox.getAttribute('data-show') === '0' && attachBox.children.length === 0,
+      attachBox ? attachBox.getAttribute('data-show') + '/' + attachBox.children.length : '未找到')
+
+    // 真造两个 File 塞进 <input type=file>（Chrome 支持直接赋 files）
+    var fileInput = document.querySelector('.dsh-sel-ask input[type=file]')
+    check('有隐藏的文件选择器（图片与文件一起选）',
+      !!fileInput && fileInput.multiple === true && !fileInput.getAttribute('accept'),
+      fileInput ? 'multiple=' + fileInput.multiple + ' accept=' + fileInput.getAttribute('accept') : '未找到')
+
+    window.__attachHits = []
+    var dt = new DataTransfer()
+    dt.items.add(new File([new Uint8Array([37, 80, 68, 70])], '季度报表.pdf', { type: 'application/pdf' }))
+    dt.items.add(new File([new Uint8Array([137, 80, 78, 71])], '截图.png', { type: 'image/png' }))
+    fileInput.files = dt.files
+    fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+    check('上传中发送键置灰（不让残缺材料发出去）', sendBtn.disabled === true, String(sendBtn.disabled))
+    await waitFor(function () { return attachBox.children.length === 2 }, 3000)
+    check('两件附件都上了附件条', attachBox.children.length === 2, String(attachBox.children.length))
+    check('附件条展开了', attachBox.getAttribute('data-show') === '1', attachBox.getAttribute('data-show'))
+    check('图片是缩略图（里面是 img）、文件是文件卡',
+      attachBox.children[0].className.indexOf('dsh-sel-fcard') >= 0 && attachBox.children[1].className.indexOf('dsh-sel-thumb') >= 0,
+      attachBox.children[0].className + ' / ' + attachBox.children[1].className)
+
+    await waitFor(function () { return sendBtn.disabled === false }, 3000)
+    check('上传完成后发送键恢复可点', sendBtn.disabled === false, String(sendBtn.disabled))
+    // 名字/大小要等传完再断言：上传途中文件卡第二行写的是「正在上传…」（那是要的行为）
+    check('文件卡显示名字与类型·大小',
+      attachBox.children[0].textContent.indexOf('季度报表.pdf') >= 0 && /PDF/.test(attachBox.children[0].textContent),
+      attachBox.children[0].textContent)
+    check('每件各发一次请求（逐件上传，失败不牵连别件）', window.__attachHits.length === 2, String(window.__attachHits.length))
+    check('请求里带的是 base64（不带 data: 前缀）',
+      window.__attachHits.every(function (hit) { return typeof hit.items[0].data === 'string' && hit.items[0].data.indexOf('data:') !== 0 && hit.items[0].data.length > 0 }),
+      window.__attachHits.map(function (hit) { return String(hit.items[0].data).slice(0, 12) }).join(' | '))
+    check('图片那件声明了 mediaType（附件服务要拿它跟字节比对）',
+      window.__attachHits.some(function (hit) { return hit.items[0].kind === 'image' && hit.items[0].mediaType === 'image/png' }),
+      JSON.stringify(window.__attachHits.map(function (hit) { return hit.items[0].mediaType })))
+
+    // 发送：附件引用必须进这一轮追问的载荷，而且**不带 base64**
+    window.__askBodies = []
+    var askBox = document.querySelector('.dsh-sel-askbox')
+    askBox.value = '这个报表里哪个季度掉得最多？'
+    askBox.dispatchEvent(new Event('input', { bubbles: true }))
+    sendBtn.click()
+    await waitFor(function () { return window.__askBodies.length > 0 }, 3000)
+    var ask = window.__askBodies[0] || {}
+    check('追问载荷带上了两件附件引用',
+      Array.isArray(ask.attachments) && ask.attachments.length === 2 && ask.attachments.every(function (a) { return a.ref && a.ref.attachmentId }),
+      JSON.stringify(ask.attachments))
+    check('载荷里没有 base64（只回传引用）',
+      JSON.stringify(ask.attachments).indexOf('data') < 0 && JSON.stringify(ask).length < 2000,
+      String(JSON.stringify(ask).length))
+    check('附件说明拼进了发给模型的那条消息（历史里也看得到带过附件）',
+      String(ask.question).indexOf('【本条消息带了附件】') >= 0 && String(ask.question).indexOf('季度报表.pdf') >= 0,
+      String(ask.question).slice(0, 120))
+    await waitFor(function () { return attachBox.children.length === 0 }, 2000)
+    check('发送后附件条清空（附件属于这一条消息，不属于会话）',
+      attachBox.children.length === 0 && attachBox.getAttribute('data-show') === '0',
+      String(attachBox.children.length))
+
+    // 气泡里要看得见附件 —— 用户报的就是这条："图片在消息窗口并没有显示"。
+    // 注意图片是走**回放路由**取的（本地 object URL 在发送那一刻就释放了）。
+    await waitFor(function () { return document.querySelector('.dsh-sel-bqattach') !== null }, 2000)
+    var strip = document.querySelector('.dsh-sel-bqattach')
+    check('发出去的消息气泡里有附件条', !!strip && strip.children.length === 2, strip ? String(strip.children.length) : '未找到')
+    var bqImg = document.querySelector('.dsh-sel-bqimg')
+    // 注意 img.src 拿到的是**绝对** URL（浏览器解析过），所以用 includes 而不是 startsWith
+    check('图片渲染成缩略图，且指向回放路由（不是本地 blob —— 那个地址发送时就释放了）',
+      !!bqImg && String(bqImg.getAttribute('src')).includes('/selection-explain/api/attachment') &&
+        String(bqImg.getAttribute('src')).includes('kind=image') && String(bqImg.getAttribute('src')).indexOf('blob:') !== 0,
+      bqImg ? String(bqImg.getAttribute('src')).slice(0, 90) : '未找到')
+    check('缩略图是懒加载、点了能看原图', !!bqImg && bqImg.getAttribute('loading') === 'lazy' && bqImg.parentNode.tagName === 'A' && bqImg.parentNode.target === '_blank', '')
+    // 真去取一次字节：naturalWidth > 0 = 图**解码成功**（只看 src 证明不了它真能显示）
+    await waitFor(function () { return bqImg && bqImg.complete && bqImg.naturalWidth > 0 }, 3000)
+    check('缩略图真的从回放路由取到并解码了（不是破图）',
+      !!bqImg && bqImg.naturalWidth > 0, bqImg ? bqImg.naturalWidth + 'x' + bqImg.naturalHeight : '未找到')
+    // 量比例：源图很宽（810x180），被 max-width 压下来时必须**等比** —— 变形了就是 CSS 写错
+    var bqRect = bqImg.getBoundingClientRect()
+    var naturalRatio = bqImg.naturalWidth / bqImg.naturalHeight
+    var shownRatio = bqRect.width / Math.max(1, bqRect.height)
+    check('缩略图等比缩放、没被压变形',
+      Math.abs(shownRatio - naturalRatio) / naturalRatio < 0.06,
+      '显示 ' + Math.round(bqRect.width) + 'x' + Math.round(bqRect.height) + ' (' + shownRatio.toFixed(2) + ':1) vs 原始 ' + naturalRatio.toFixed(2) + ':1')
+    check('缩略图高度不超过 180px（不许把气泡撑爆）', bqRect.height <= 181, Math.round(bqRect.height) + 'px')
+    var bqFile = document.querySelector('.dsh-sel-bqfile')
+    check('文件渲染成一张可下载的卡（扩展名 + 名字 + 大小）',
+      !!bqFile && /PDF/.test(bqFile.textContent) && /季度报表\.pdf/.test(bqFile.textContent) && /B/.test(bqFile.textContent) && String(bqFile.getAttribute('href')).indexOf('download=1') > 0,
+      bqFile ? bqFile.textContent : '未找到')
+    check('气泡正文里不再重复那行「本条消息带了附件」',
+      String(document.querySelector('.dsh-sel-bubble-user').textContent).indexOf('本条消息带了附件') < 0,
+      String(document.querySelector('.dsh-sel-bubble-user').textContent).slice(0, 80))
+
+    // 跨轮次：第二轮必须把**上一轮**的附件引用随历史回传。
+    // 这就是"附件持久化"在客户端这一侧的终点 —— 没有这一条，模型下一轮就看不见那张图了。
+    await waitFor(function () { return hook.state().asking !== true }, 4000)
+    window.__askBodies = []
+    askBox.value = '那第二列呢？'
+    askBox.dispatchEvent(new Event('input', { bubbles: true }))
+    sendBtn.click()
+    await waitFor(function () { return window.__askBodies.length > 0 }, 3000)
+    var secondAsk = window.__askBodies[0] || {}
+    var carried = (secondAsk.history || []).filter(function (turn) { return turn.attachments && turn.attachments.length > 0 })
+    check('第二轮把上一轮的附件引用带进了历史（跨轮次仍看得见那张图）',
+      carried.length === 1 && carried[0].attachments.length === 2,
+      JSON.stringify(secondAsk.history || []).slice(0, 220))
+    check('历史里的附件只有引用、没有 base64',
+      JSON.stringify(secondAsk.history || []).indexOf('data:') < 0 && JSON.stringify(secondAsk.history || []).length < 3000,
+      String(JSON.stringify(secondAsk.history || []).length))
+    await waitFor(function () { return hook.state().asking !== true }, 4000)
+
+    // 失败 → 就地重试
+    window.__attachFail = '坏图.bmp'
+    var dt2 = new DataTransfer()
+    dt2.items.add(new File([new Uint8Array([1, 2, 3])], '坏图.bmp', { type: 'image/bmp' }))
+    fileInput.files = dt2.files
+    fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+    await waitFor(function () { return attachBox.children.length === 1 && attachBox.children[0].getAttribute('data-state') === 'error' }, 3000)
+    check('被拒的附件标成错误态（不是静默丢掉）',
+      attachBox.children.length === 1 && attachBox.children[0].getAttribute('data-state') === 'error',
+      attachBox.children[0] ? attachBox.children[0].getAttribute('data-state') : '未找到')
+    var note = document.querySelector('.dsh-sel-attachnote')
+    check('错误原因写在附件条下面（把错误码翻成人话）',
+      !!note && note.getAttribute('data-show') === '1' && /图片格式/.test(note.textContent), note ? note.textContent : '')
+    check('错误态有移除键（用户可以删掉这件）', !!attachBox.children[0].querySelector('.dsh-sel-attachx'), '')
+
+    // 重试成功
+    window.__attachFail = null
+    var retryBtn = attachBox.children[0].querySelector('.dsh-sel-attachx')
+    retryBtn.click()
+    await waitFor(function () { return attachBox.children[0].getAttribute('data-state') === 'done' }, 3000)
+    check('点重试后就地成功（不用重新选文件）',
+      attachBox.children[0].getAttribute('data-state') === 'done',
+      attachBox.children[0].getAttribute('data-state'))
+
+    // 移除
+    var removeBtn = attachBox.children[0].querySelector('.dsh-sel-attachx')
+    removeBtn.click()
+    await waitFor(function () { return attachBox.children.length === 0 }, 2000)
+    check('点 ✕ 移除该件', attachBox.children.length === 0, String(attachBox.children.length))
+
+    // ── 拖放的路由：拖到小窗上，**不能**同时落进主会话的输入框 ──
+    //
+    // 主会话的投放监听是 document 级、冒泡阶段，而且**不看 defaultPrevented** ——
+    // 所以只 preventDefault 拦不住它。这里在 document 上装一个同样的监听当"主会话"，
+    // 看它收不收得到事件。（这一段放在场景最后：它会往附件条里加东西，
+    // 放前面会把后面"失败→重试→移除"那几条的状态搅乱。）
+    var mainDrops = []
+    var mainEnters = []
+    function mainDropProbe(event) { mainDrops.push(String(event.target.className || event.target.tagName)) }
+    function mainEnterProbe(event) { mainEnters.push(String(event.target.className || event.target.tagName)) }
+    document.addEventListener('drop', mainDropProbe)
+    document.addEventListener('dragenter', mainEnterProbe)
+    try {
+      function fileDrag() {
+        var box = new DataTransfer()
+        box.items.add(new File([new Uint8Array([1, 2, 3])], '拖进来的.txt', { type: 'text/plain' }))
+        return box
+      }
+      var dragOpts = function (transfer) { return { dataTransfer: transfer, bubbles: true, cancelable: true } }
+      var asked = document.querySelector('.dsh-sel-askbox')
+
+      // ① 拖进来（还没松手）：遮罩亮、且主会话不该被点亮
+      var transfer = fileDrag()
+      asked.dispatchEvent(new DragEvent('dragenter', dragOpts(transfer)))
+      asked.dispatchEvent(new DragEvent('dragover', dragOpts(transfer)))
+      check('拖到小窗上：小窗自己铺了投放遮罩',
+        document.querySelector('.dsh-sel-panel').getAttribute('data-dropping') === '1',
+        String(document.querySelector('.dsh-sel-panel').getAttribute('data-dropping')))
+      check('拖到小窗上：主会话的拖入监听也收不到（全视口遮罩不会在小窗上方点亮）',
+        mainEnters.length === 0, JSON.stringify(mainEnters))
+
+      // ② 松手：文件只进小窗
+      var before = attachBox.children.length
+      asked.dispatchEvent(new DragEvent('drop', dragOpts(transfer)))
+      await waitFor(function () { return attachBox.children.length > before }, 2000)
+      check('松手：文件进了小窗的附件条', attachBox.children.length === before + 1, String(attachBox.children.length))
+      check('松手：document 级（=主会话）的投放监听**收不到** —— 不会同时落进主会话',
+        mainDrops.length === 0, JSON.stringify(mainDrops))
+      check('松手后投放遮罩收起',
+        document.querySelector('.dsh-sel-panel').getAttribute('data-dropping') === null,
+        String(document.querySelector('.dsh-sel-panel').getAttribute('data-dropping')))
+
+      // ③ 反向对照：拖到小窗**外面**，主会话照常收到（小窗不是全局拦截器）
+      var outside = fileDrag()
+      var doc = document.getElementById('doc')
+      doc.dispatchEvent(new DragEvent('dragenter', dragOpts(outside)))
+      doc.dispatchEvent(new DragEvent('drop', dragOpts(outside)))
+      check('拖到小窗外面：主会话照常收到（没有把小窗变成全局拦截器）', mainDrops.length === 1, JSON.stringify(mainDrops))
+
+      // ④ 拖一段**文字**：小窗完全不插手（它没有"接文字"这回事），仍归主会话
+      var textDrag = new DataTransfer()
+      textDrag.setData('text/plain', '一段被拖动的文字')
+      mainDrops.length = 0
+      asked.dispatchEvent(new DragEvent('drop', dragOpts(textDrag)))
+      check('拖的是文字（不是文件）时小窗不插手 —— 仍归主会话', mainDrops.length === 1, JSON.stringify(mainDrops))
+
+      // 收尾：把拖进来的那件移掉，别留给下一个场景
+      var dragged = attachBox.children[attachBox.children.length - 1]
+      var dragRemove = dragged && dragged.querySelector('.dsh-sel-attachx')
+      if (dragRemove) dragRemove.click()
+      await waitFor(function () { return attachBox.children.length === 0 }, 2000)
+    } finally {
+      document.removeEventListener('drop', mainDropProbe)
+      document.removeEventListener('dragenter', mainEnterProbe)
+    }
+
+
+    hook.close()
+    await sleep(60)
+  }
+
+  // 可选截图模式（?shot=attach）：把"小窗 composer 带附件"的**真实渲染**摆出来。
+  // 用服务端的一张真 PNG（/thumb.png）当被选中的图片 —— 假字节画不出缩略图，
+  // 截出来会是一张破图，那就没法核对了。
+  if (location.search.indexOf('shot=attach') >= 0 || location.search.indexOf('shot=drop') >= 0 || location.search.indexOf('shot=bubble') >= 0) {
+    freezeMotion()
+    if (panelIsOpen()) hook.close()
+    await sleep(150)
+    hook.open('小窗支持添加图片或文件', '上下文片段 ABC', '截图')
+    await waitFor(function () { return hook.state().phase === 'done' }, 8000)
+    var shotInput = document.querySelector('.dsh-sel-ask input[type=file]')
+    var shotBox = document.querySelector('.dsh-sel-attach')
+    window.__attachFail = null
+    var pngBytes = new Uint8Array(await (await fetch('/thumb.png')).arrayBuffer())
+    var shotDt = new DataTransfer()
+    shotDt.items.add(new File([new Uint8Array([37, 80, 68, 70, 45, 49, 46, 52])], '季度报表.pdf', { type: 'application/pdf' }))
+    shotDt.items.add(new File([pngBytes], '截图.png', { type: 'image/png' }))
+    shotDt.items.add(new File([new Uint8Array([123, 34, 97, 34, 58, 49, 125])], 'config.json', { type: 'application/json' }))
+    shotInput.files = shotDt.files
+    shotInput.dispatchEvent(new Event('change', { bubbles: true }))
+    await waitFor(function () {
+      return shotBox.children.length === 3 && Array.prototype.every.call(shotBox.children, function (c) { return c.getAttribute('data-state') === 'done' })
+    }, 6000)
+    document.querySelector('.dsh-sel-askbox').value = '这个报表里哪个季度掉得最多？'
+    // 让面板落在窗口里、别贴着边缘（截图好看一点，也不影响任何判定）
+    var shotPanel = document.querySelector('.dsh-sel-panel')
+    if (shotPanel) { shotPanel.style.left = '24px'; shotPanel.style.top = '18px' }
+    // ?shot=bubble / ?shot=drop 都先发一条带附件的消息，好让气泡里有东西可看
+    if (location.search.indexOf('shot=bubble') >= 0) {
+      var shotAsk = document.querySelector('.dsh-sel-askbox')
+      shotAsk.value = '这个图片上是什么呀？'
+      shotAsk.dispatchEvent(new Event('input', { bubbles: true }))
+      document.querySelector('.dsh-sel-asksend').click()
+      await waitFor(function () { return document.querySelector('.dsh-sel-bqimg') !== null }, 8000)
+      await sleep(400)
+    }
+    // ?shot=drop：额外把拖放遮罩点亮（那层只有拖拽时才出现，不摆出来就永远没被看过）
+    if (location.search.indexOf('shot=drop') >= 0 && shotPanel) shotPanel.setAttribute('data-dropping', '1')
+    await sleep(300)
+  }
+
   finish()
 }
 
@@ -1822,6 +2124,19 @@ const server = createServer((req, res) => {
   if (url === '/client.js') {
     res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8' })
     res.end(readFileSync(BUNDLE))
+    return
+  }
+  // 回放路由：<img src> 是**浏览器自己**发起的资源请求，走不到 window.fetch 的桩，
+  // 所以必须在真服务器上有一条。用真 PNG 回，缩略图才画得出来（假字节 = 破图）。
+  if (url === '/selection-explain/api/attachment') {
+    res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' })
+    res.end(readFileSync(resolve(ROOT, 'assets', 'voice.png')))
+    return
+  }
+  // ?shot=attach 用的真图片：缩略图要能画出东西，截出来才可核对
+  if (url === '/thumb.png') {
+    res.writeHead(200, { 'content-type': 'image/png' })
+    res.end(readFileSync(resolve(ROOT, 'assets', 'voice.png')))
     return
   }
   if (url === '/' || url === '/smoke.html') {
@@ -1902,6 +2217,75 @@ try {
     console.log(`=== 截图（圆点 / 星芒 两个终态）：${shotPath} ===`)
   } catch (error) {
     console.log('（截图跳过：' + ((error && error.message) || String(error)) + '）')
+  }
+
+  // 截图（可选）：小窗 composer 带附件时的**真样子**（不是设计稿）。
+  // ?shot=attach 会让页面开窗 + 挂两件附件（一张真图 + 一个文件）后停住。
+  try {
+    const shotDir = resolve(ROOT, 'docs')
+    if (!existsSync(shotDir)) mkdirSync(shotDir, { recursive: true })
+    const shotPath = resolve(shotDir, 'attach-composer-real.png')
+    await new Promise((done) => {
+      execFile(
+        chrome,
+        [
+          '--headless',
+          '--disable-gpu',
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--window-size=760,560',
+          '--virtual-time-budget=25000',
+          `--screenshot=${shotPath}`,
+          `http://127.0.0.1:${port}/smoke.html?shot=attach`,
+        ],
+        { encoding: 'utf8', timeout: 90000 },
+        () => done(),
+      )
+    })
+    console.log(`=== 截图（小窗 composer 带附件 · 真实渲染）：${shotPath} ===`)
+  } catch (error) {
+    console.log('（附件截图跳过：' + ((error && error.message) || String(error)) + '）')
+  }
+
+  // 截图（可选）：发出去的那条消息 —— 气泡里的缩略图与文件卡
+  try {
+    const shotPath = resolve(ROOT, 'docs', 'attach-bubble-real.png')
+    await new Promise((done) => {
+      execFile(
+        chrome,
+        ['--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--window-size=760,620', '--virtual-time-budget=25000', `--screenshot=${shotPath}`, `http://127.0.0.1:${port}/smoke.html?shot=bubble`],
+        { encoding: 'utf8', timeout: 90000 },
+        () => done(),
+      )
+    })
+    console.log(`=== 截图（消息气泡里的附件 · 真实渲染）：${shotPath} ===`)
+  } catch (error) {
+    console.log('（气泡截图跳过：' + ((error && error.message) || String(error)) + '）')
+  }
+
+  // 截图（可选）：拖放遮罩（拖文件到小窗上时铺的那一层）
+  try {
+    const shotPath = resolve(ROOT, 'docs', 'attach-drop-real.png')
+    await new Promise((done) => {
+      execFile(
+        chrome,
+        [
+          '--headless',
+          '--disable-gpu',
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--window-size=760,560',
+          '--virtual-time-budget=25000',
+          `--screenshot=${shotPath}`,
+          `http://127.0.0.1:${port}/smoke.html?shot=drop`,
+        ],
+        { encoding: 'utf8', timeout: 90000 },
+        () => done(),
+      )
+    })
+    console.log(`=== 截图（拖放遮罩 · 真实渲染）：${shotPath} ===`)
+  } catch (error) {
+    console.log('（遮罩截图跳过：' + ((error && error.message) || String(error)) + '）')
   }
 } finally {
   if (typeof server.closeAllConnections === 'function') server.closeAllConnections()

@@ -378,3 +378,45 @@ export function quoteIcon() {
   }
   return svg
 }
+
+/**
+ * 附件入口：十字（＋）。
+ *
+ * 为什么是十字不是回形针：十字在**工具行最左**、圆形浅底，和主会话 composer 的 ＋ 同款；
+ * 回形针在这个位置会让人以为是"引用"（小窗里已经有一个 ❝ 引用）。
+ * 两者含义本来就一样（都开系统文件选择器，图片和文件一起选），换形状只是位置带来的可读性。
+ */
+export function plusIcon() {
+  var svg = iconCanvas(14)
+  iconPath(svg, 'M8 3.4v9.2M3.4 8h9.2')
+  return svg
+}
+
+/** 文件（通用文件卡左侧的文档图标）：一张带折角的纸。 */
+export function docIcon() {
+  var svg = iconCanvas(14)
+  iconPath(svg, 'M4.3 1.9h4.4l3 3v9.2H4.3z')
+  iconPath(svg, 'M8.5 1.9v3.2h3.2')
+  return svg
+}
+
+/** 图片（缩略图加载失败时的占位）：方框 + 一点远山。 */
+export function imageIcon() {
+  var svg = iconCanvas(14)
+  iconPath(svg, 'M2.6 3.2h10.8v9.6H2.6z')
+  var dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+  dot.setAttribute('cx', '5.7')
+  dot.setAttribute('cy', '6.3')
+  dot.setAttribute('r', '0.9')
+  svg.appendChild(dot)
+  iconPath(svg, 'M2.6 10.9l3.1-2.9 2.5 2.3 2.3-2.1 2.9 2.7')
+  return svg
+}
+
+/** 重试（失败附件卡上的小箭头圈）。 */
+export function retryIcon() {
+  var svg = iconCanvas(13)
+  iconPath(svg, 'M12.6 8a4.6 4.6 0 1 1-1.6-3.5')
+  iconPath(svg, 'M12.9 2.6v3.1h-3.1')
+  return svg
+}

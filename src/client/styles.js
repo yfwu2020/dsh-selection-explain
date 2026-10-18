@@ -270,12 +270,98 @@ export var CSS = [
   'background:transparent;color:var(--dsw-alias-label-secondary,inherit);opacity:.5;font:inherit;font-size:11px;',
   'line-height:1;display:inline-flex;align-items:center;justify-content:center}',
   '.dsh-sel-quotechip-x:hover{opacity:1;background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.16))}',
+  // ── 附件（composer 第一行，和引用同栏）──
+  // 引用是竖着排的卡片（有出处 + 一段文字），附件是横着一排的缩略图 —— 两种形状，
+  // 所以是**两条独立的条**、共用 ask 的第一行区域，而不是把附件塞进引用卡片里。
+  // 横向溢出就滚动（附件最多 10 件，小窗宽度装不下是常态），滚动条藏起来不占高度。
+  '.dsh-sel-attach{display:none;flex-direction:row;align-items:center;gap:6px;overflow-x:auto;overflow-y:hidden;',
+  'scrollbar-width:none;padding:1px 0 0}',
+  '.dsh-sel-attach[data-show="1"]{display:flex}',
+  '.dsh-sel-attach::-webkit-scrollbar{width:0;height:0;display:none}',
+  // 40px 见方：比主会话的 64px 小一圈（小窗的 composer 整体是收着的：按钮 26、输入 13px）
+  '.dsh-sel-thumb{position:relative;flex:0 0 auto;width:40px;height:40px;border-radius:9px;overflow:hidden;',
+  'border:1px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.14));',
+  'display:grid;place-items:center;color:var(--dsw-alias-label-secondary,inherit)}',
+  '.dsh-sel-thumb img{width:100%;height:100%;object-fit:cover;display:block}',
+  '.dsh-sel-thumb svg{width:15px;height:15px;opacity:.55}',
+  '.dsh-sel-thumb[data-state="error"]{border-color:color-mix(in srgb,var(--sel-bad,#e5534b) 70%,transparent)}',
+  '.dsh-sel-thumb[data-state="error"] svg{opacity:.9;color:var(--sel-bad,#e5534b)}',
+  // 转圈 + 不定态进度条：fetch 拿不到上传进度，所以**不假装知道百分比**
+  // （主会话在"首次报告字节之前"用的也是不定态）
+  '.dsh-sel-attachspin{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.42)}',
+  '.dsh-sel-attachspin svg{width:16px;height:16px;opacity:1;color:var(--sel-a1,#0d9488);animation:dsh-sel-spin .9s linear infinite}',
+  '.dsh-sel-attachbar{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(140,140,140,.35);overflow:hidden}',
+  '.dsh-sel-attachbar i{display:block;height:100%;width:38%;background:var(--sel-a1,#0d9488);animation:dsh-sel-indeterminate 1.1s ease-in-out infinite}',
+  '@keyframes dsh-sel-indeterminate{0%{transform:translateX(-100%)}100%{transform:translateX(280%)}}',
+  // 移除：缩略图/文件卡右上角。**常驻可见**（触摸设备上没有 hover，藏起来就删不掉了）
+  // 兜底色必须是**中性灰 + 白字**：主题变量缺席时（非 DSH 宿主 / 测试页）
+  // 原来的 `bg-layer-2 → #3a3f46` 配 `label-primary → CanvasText`（浅色方案下是黑）
+  // 会画成"深底黑叉"，实拍就是一坨看不出是什么的黑点。
+  '.dsh-sel-attachx{position:absolute;top:-5px;right:-5px;width:15px;height:15px;padding:0;border-radius:50%;',
+  'border:1px solid var(--dsw-alias-bg-layer-1,Canvas);background:var(--dsw-alias-bg-layer-2,rgba(120,120,120,.92));',
+  'color:var(--dsw-alias-label-primary,#fff);font:inherit;font-size:9px;line-height:1;cursor:pointer;',
+  'display:grid;place-items:center;opacity:.85}',
+  '.dsh-sel-attachx:hover{opacity:1}',
+  // 文件卡：和缩略图同高（40px），名字一行、扩展名 + 字节数一行小字
+  '.dsh-sel-fcard{position:relative;display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;height:40px;',
+  'padding:0 7px 0 6px;border-radius:9px;border:1px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));',
+  'background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.1));font-size:11.5px;line-height:1.35}',
+  '.dsh-sel-fcard[data-state="error"]{border-color:color-mix(in srgb,var(--sel-bad,#e5534b) 70%,transparent)}',
+  '.dsh-sel-fico{flex:0 0 auto;width:22px;height:22px;border-radius:6px;display:grid;place-items:center;',
+  'background:linear-gradient(160deg,#3f6ee0,#7aa2ff);color:#fff}',
+  '.dsh-sel-fico svg{width:13px;height:13px;opacity:1}',
+  '.dsh-sel-fname{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.dsh-sel-fmeta{font-size:10.5px;opacity:.6;letter-spacing:.3px;white-space:nowrap}',
+  '.dsh-sel-fretry{flex:0 0 auto;height:16px;padding:0 6px;border-radius:8px;cursor:pointer;font:inherit;font-size:10.5px;',
+  'line-height:14px;color:var(--sel-bad,#e5534b);border:1px solid color-mix(in srgb,var(--sel-bad,#e5534b) 50%,transparent);',
+  'background:transparent}',
+  '.dsh-sel-fretry:hover{background:color-mix(in srgb,var(--sel-bad,#e5534b) 12%,transparent)}',
+  // 附件出错时的说明行（贴在附件条下面，一行小字）
+  '.dsh-sel-attachnote{display:none;margin:0;padding:0 2px;font-size:11px;line-height:1.6;color:var(--sel-warn-fg,#b45309)}',
+  '.dsh-sel-attachnote[data-show="1"]{display:block}',
+  // ＋ 入口：圆形浅底（和主会话 composer 的 ＋ 同款），放在工具行**最左**
+  '.dsh-sel-add{background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.14));color:var(--dsw-alias-label-primary,CanvasText)}',
+  '.dsh-sel-add:hover{background:var(--dsw-alias-interactive-bg-active,rgba(140,140,140,.22))}',
+  '.dsh-sel-add[data-busy="1"]{opacity:.6}',
+  // 拖放遮罩：铺满面板（面板本身 overflow:hidden，所以内缩 6px 的圆角块正好贴住内容区）
+  '.dsh-sel-drop{position:absolute;inset:6px;z-index:9;display:none;flex-direction:column;align-items:center;',
+  'justify-content:center;gap:9px;border:2px dashed var(--sel-a1,#0d9488);border-radius:13px;',
+  'background:color-mix(in srgb,var(--dsw-alias-bg-layer-1,Canvas) 88%,transparent);pointer-events:none}',
+  '.dsh-sel-panel[data-dropping="1"] .dsh-sel-drop{display:flex}',
+  '.dsh-sel-drop-art{width:52px;height:52px;border-radius:14px;display:grid;place-items:center;',
+  'background:var(--sel-a1-soft);color:var(--sel-a1,#0d9488)}',
+  '.dsh-sel-drop-art svg{width:25px;height:25px}',
+  '.dsh-sel-drop-title{font-size:14px;font-weight:600}',
+  '.dsh-sel-drop-hint{font-size:11.5px;opacity:.7}',
   // 气泡里的引用块（用户消息）：引用在上、问题在下 —— 和发出去给模型的那份顺序一致
   '.dsh-sel-bq{display:flex;flex-direction:column;gap:3px;margin-bottom:6px}',
   '.dsh-sel-bqitem{padding:3px 8px;border-radius:8px;border-left:2px solid color-mix(in srgb,var(--sel-a1,#0d9488) 45%,transparent);',
   'background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.14));font-size:11.5px;line-height:1.55;',
   'opacity:.82;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
   '.dsh-sel-bqitem b{font-weight:600;opacity:.75;margin-right:5px}',
+  // 气泡里的附件：图片是缩略图（点开原图），文件是一张卡（点一下下载）。
+  // 和输入框上面那条 rail 是**同一个东西的两个阶段**（发送前 / 发送后），
+  // 所以尺寸、圆角、配色都对齐：缩略图 40px、文件卡同高。
+  '.dsh-sel-bqattach{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:6px}',
+  // ⚠️ flex:0 0 auto 会让这个盒子的宽度由**图片自己**撑出来，于是图片上的 max-width:100%
+  // 变成"相对于自己"（循环引用）→ 一张 810px 宽的图会照原样渲染并溢出气泡（实测量到 810x180）。
+  // 必须允许它收缩（flex:0 1 auto + min-width:0），百分比才有一个确定的参照。
+  '.dsh-sel-bqimgwrap{flex:0 1 auto;min-width:0;max-width:100%;display:block;border-radius:9px;overflow:hidden;line-height:0;',
+  'border:1px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35))}',
+  // 上限 180px 高、最宽占满气泡：小窗本来就窄，缩略图不能把气泡撑爆
+  '.dsh-sel-bqimg{display:block;max-width:100%;max-height:180px;width:auto;height:auto;border-radius:8px;cursor:zoom-in}',
+  '.dsh-sel-bqimgfail{display:inline-block;padding:5px 9px;border-radius:8px;font-size:11.5px;opacity:.7;',
+  'background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.14))}',
+  '.dsh-sel-bqfile{display:inline-flex;align-items:center;gap:7px;max-width:100%;padding:5px 9px;border-radius:9px;',
+  'text-decoration:none;color:inherit;cursor:pointer;font-size:11.5px;line-height:1.35;',
+  'border:1px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));',
+  'background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.1))}',
+  '.dsh-sel-bqfile:hover{border-color:color-mix(in srgb,var(--sel-a1,#0d9488) 45%,transparent)}',
+  '.dsh-sel-bqfileext{flex:0 0 auto;font-size:9.5px;font-weight:700;letter-spacing:.4px;padding:0 5px;',
+  'border-radius:5px;line-height:15px;background:var(--sel-fill,#0f766e);color:var(--sel-fill-fg,#fff)}',
+  '.dsh-sel-bqfilename{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:190px}',
+  '.dsh-sel-bqfilemeta{flex:0 0 auto;font-size:10.5px;opacity:.6}',
+
   // 「引用整条」：贴在助手气泡末尾，**平时不出现**（正文优先），鼠标移到这条消息上才浮出来。
   // 键盘 Tab 也能到（:focus-visible 同样点亮），触屏上另有浮标那条路。
   '.dsh-sel-bubquote{margin-top:7px;display:inline-flex;align-items:center;gap:4px;padding:2px 9px;',

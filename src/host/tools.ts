@@ -180,3 +180,30 @@ export async function runTool(
     return { content: [{ type: 'text', text: `工具执行失败：${String((error as Error)?.message ?? error)}` }], isError: true }
   }
 }
+
+/**
+ * 文件工具这道门：**项目内放行；本次用户亲手附带的文件也放行**。
+ *
+ * 为什么需要第二张名单：附件的只读副本存在 `~/.dsh/attachments/…`（附件仓），
+ * 而 `readRoot` 默认是会话工作目录 —— 两者没有交集。可 dsh-llm 交给模型的
+ * 文件句柄文本明确写着"用你的文件工具去读那个路径，需要内容时就读"，
+ * 于是模型**必然**去读、**必然**被拒，工具轮就这么被烧光：
+ * 实测连续两轮 `emitted=0 / finish=tool-calls`，最后只剩
+ * 「工具查询完成了，但模型没有产出正文」那句兜底 —— 附文件等于白附。
+ *
+ * 为什么不是把 readRoot 调大：那等于给**整段对话**（以及项目外的任意路径）开口子。
+ * 这里只放行"这次请求里真的拼进消息的那些文件"（路径由附件服务按内容哈希推出，
+ * 名字还有 `ref.name === fileLeafName(ref.name)` 的校验），
+ * 所以放开的范围严格等于用户的意图，边界其余部分一字不动。
+ *
+ * @param root - 会话工作目录（空 = 不限）
+ * @param target - 模型请求的路径（原样，未解析）
+ * @param attached - 本次附带的文件绝对路径集合（已 `resolve` 过）
+ * @returns 是否放行
+ */
+export function isReadAllowed(root: string, target: string, attached?: ReadonlySet<string>): boolean {
+  // 走到这里说明 root 非空、target 也非空（两者有任何一个为空，isInsideRoot 就直接放行了）
+  if (isInsideRoot(root, target)) return true
+  if (!attached || attached.size === 0) return false
+  return attached.has(resolve(String(target).trim()))
+}

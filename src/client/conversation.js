@@ -58,7 +58,15 @@ export function createConversationController(env) {
       env.askSend.setAttribute('aria-label', generating ? '停止' : '发送')
       env.askSend.title = generating ? '停止生成（点一下打断这次输出）' : '发送（Enter）'
     }
-    env.askSend.disabled = generating ? false : !String(env.askBox.value || '').trim() && env.state.quotes.length === 0
+    // 附件还在传时**发送键置灰**：这一轮的材料还没齐，发出去模型看到的是残缺的
+    //（只有"生成中"才让按钮变成可点的「停止」——那是另一件事）
+    var waitingAttachments = env.attachmentsBusy()
+    env.askSend.disabled = generating ? false : waitingAttachments || (!String(env.askBox.value || '').trim() && env.state.quotes.length === 0 && env.state.attachments.length === 0)
+    // 输入框的提示跟着"有没有附件"走：没附件时把"可以拖 / 可以粘"写出来（这两条入口没有按钮，不说就没人知道）
+    var placeholder = env.state.attachments.length > 0
+      ? '就这段文字继续追问…（Enter 发送，Shift+Enter 换行）'
+      : '就这段文字继续追问…（可拖入图片 / 文件，或 ⌘V 粘贴）'
+    if (env.askBox.placeholder !== placeholder) env.askBox.placeholder = placeholder
   }
 
   /** 停止当前这一轮：追问走自己的 abort；首轮/详解复用"用户中止"那条路径。 */
@@ -108,7 +116,14 @@ export function createConversationController(env) {
     var asked = String(question || '').trim()
     // 引用先取出来：只挂引用、没写问题也允许发（这时用一句兜底提问）
     var quotes = env.state.quotes.slice()
-    if ((!asked && quotes.length === 0) || !env.state.payload) return
+    // 附件同理：只挂附件、一个字没写也允许发（附件本身就是内容）
+    var attachments = env.attachmentsPayload()
+    if ((!asked && quotes.length === 0 && attachments.length === 0) || !env.state.payload) return
+    if (env.attachmentsBusy()) {
+      // 还有附件在传：发出去的话模型看到的是残缺材料 —— 拦住并说清楚在等什么
+      env.setStatus('附件还在上传，稍等一下…')
+      return
+    }
     if (env.state.resolvingQuotes) {
       env.setStatus('正在取引用的上下文…')
       return
@@ -130,27 +145,43 @@ export function createConversationController(env) {
       env.renderQuotes()
       refreshAskState()
     }
+    // ⚠️ 附件说明必须在**清空之前**拼好：describe() 要读每件的 name / status，
+    // 而 payload() 给的是 `{kind, ref}`（没有名字），清空之后更是什么都读不到。
+    // 这里先算，再往下清空，最后连同引用一起交给 sendAsk。
+    var attachmentsNote = env.attachmentsDescribe()
+    // 附件同理：引用（ref）已经在手上，composer 里那一排缩略图可以收了 ——
+    // 本地 object URL 也在这时释放，不然每发一次都留一份内存里的预览
+    if (attachments.length > 0) {
+      env.clearAttachments()
+      refreshAskState()
+    }
     if (quotes.length === 0) {
-      sendAsk(asked, quotes)
+      sendAsk(asked, quotes, attachments, attachmentsNote)
       return
     }
     env.state.resolvingQuotes = true
     env.resolveQuoteContexts(quotes).then(function (resolved) {
       env.state.resolvingQuotes = false
-      sendAsk(asked, resolved)
+      sendAsk(asked, resolved, attachments, attachmentsNote)
     })
   }
 
   /** 真正把这一轮发出去（引用已经带上上下文了）。 */
-  function sendAsk(asked, quotes) {
+  function sendAsk(asked, quotes, attachments, attachmentsNote) {
     var payload = env.state.payload
     if (!payload) return
+    var withAttachments = attachments || []
     // 引用拼进**这一条**消息：发给模型、进历史、升格用的都是拼好的那份
     var sent = env.composeQuestion(quotes, asked)
+    // 附件也拼一行进正文：小窗的历史只存文本，不写这一行的话，
+    // 后面几轮模型就不知道"上一轮还带了张图 / 一个文件"（见 attach.js 的 describe）
+    if (attachmentsNote) sent = attachmentsNote + '\n' + sent
     if (env.state.turns.length === 0 && (env.state.raw.trim() || env.state.parts.translation || env.state.parts.detail)) {
       env.state.turns.push({ role: 'assistant', text: env.seedHistoryFromExplanation(), seed: true, hidden: true })
     }
-    env.state.turns.push({ role: 'user', text: asked || QUOTE_ONLY_QUESTION, quotes: quotes, sent: sent })
+    // attachments 挂在这一轮上：它既随历史落盘（saveHistory → history-store），
+    // 也在下面拼模型历史时回传（→ analyze 的图片预算）。**只存引用，不存字节**。
+    env.state.turns.push({ role: 'user', text: asked || QUOTE_ONLY_QUESTION, quotes: quotes, sent: sent, attachments: withAttachments })
     // asking 只管"等待特效要不要显示"（首字一到就置 false），
     // streaming 才是"这一轮还没写完"。两者必须分开：以前拿 asking 当定稿判据，
     // 结果是首字一到就认定"定稿了"→ 每个 delta 都重建一个 iframe（实测一条回答建了 24 个），
@@ -194,7 +225,13 @@ export function createConversationController(env) {
       // 最近一轮保持原样（可能还要"改这一页的版式"），更早的整页 HTML 折叠成 Markdown。
       // 折叠结果缓存在 turn 上：同一轮只折一次，之后每轮直接复用。
       var keepRaw = env.FOLD_HISTORY_KEEP_LATEST && index === historyTurns.length - 1
-      return { role: turn.role, text: env.historyTextOf(turn, keepRaw) }
+      // 附件引用跟着这一轮一起回传：host 据此让模型在后续轮次里**仍然看得见**当时那张图 /
+      // 那个文件（图片有预算，超了 host 会降级成一行文字；见 history-attachments.ts）
+      return {
+        role: turn.role,
+        text: env.historyTextOf(turn, keepRaw),
+        ...(turn.attachments && turn.attachments.length > 0 ? { attachments: turn.attachments } : {}),
+      }
     })
 
     // 这一轮的 abort 句柄：生成中按「停止」会打断它（不是失败，保留已流出的内容）
@@ -255,6 +292,8 @@ export function createConversationController(env) {
         sessionId: env.panelOrCurrentSessionId(),
         question: sent,
         history: history,
+        // 附件只带**引用**（图片/文件都已经在 host 的附件服务里），body 不会因为一张截图胖几 MB
+        ...(withAttachments.length > 0 ? { attachments: withAttachments } : {}),
         // 网页输出要跟着当前深浅走：深色 Harness 里给一张白底页面会很刺眼
         ...(env.state.webAnswer ? { webAnswer: true, theme: env.currentSurfaceTheme() } : {}),
         ...(env.state.modelChoice ? { provider: env.state.modelChoice.provider, model: env.state.modelChoice.model } : {}),

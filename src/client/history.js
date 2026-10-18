@@ -1,6 +1,7 @@
 import { isDarkSurface, renderRich, splitSections } from './render.js'
 import { HISTORY } from './constants.js'
 import { el, listen } from './dom.js'
+import { attachmentUrl, formatBytes, extensionOf } from './attach.js'
 
 /** history state and operations; dependencies are supplied as live node/callback accessors. */
 export function createHistoryController(env) {
@@ -984,7 +985,12 @@ export function createHistoryController(env) {
       node.className = 'dsh-sel-bubble ' + (turn.role === 'user' ? 'dsh-sel-bubble-user' : 'dsh-sel-bubble-bot') + (turn.error ? ' dsh-sel-bubble-err' : '')
       if (turn.role === 'user') {
         // 用户气泡可能带引用块：签名包含引用，别每次重绘都白重建一遍
-        var usig = (turn.text || '') + '|' + (turn.quotes || []).map(function (item) { return item.text }).join('\u0000')
+        var usig =
+          (turn.text || '') +
+          '|' +
+          (turn.quotes || []).map(function (item) { return item.text }).join('\u0000') +
+          '|' +
+          (turn.attachments || []).map(function (item) { return (item.kind || '') + ':' + String((item.ref && item.ref.attachmentId) || '') }).join(',')
         if (node.__sig !== usig) {
           node.__sig = usig
           fillUserBubble(node, turn)
@@ -1047,6 +1053,12 @@ export function createHistoryController(env) {
   function fillUserBubble(node, turn) {
     node.textContent = ''
     var quotes = turn.quotes || []
+    // 附件排在引用**后面**（引用是"从正文里挑的材料"，附件是"从外面带进来的"），
+    // 两者都在正文之前 —— 和发给模型的那份顺序一致。
+    var attachments = turn.attachments || []
+    if (attachments.length > 0) {
+      node.appendChild(attachmentStrip(attachments))
+    }
     if (quotes.length > 0) {
       var box = el('div', 'dsh-sel-bq')
       for (var i = 0; i < quotes.length; i += 1) {
@@ -1058,7 +1070,76 @@ export function createHistoryController(env) {
       }
       node.appendChild(box)
     }
-    if (turn.text) node.appendChild(el('div', null, turn.text))
+    var display = displayTextOf(turn)
+    if (display) node.appendChild(el('div', null, display))
+  }
+
+  /**
+   * 附件条：图片是缩略图（点开看原图），文件是一张卡（点一下下载）。
+   *
+   * 图片用 `<img src=回放路由>`：发出去的消息里只留了引用，本地 object URL 在发送时就释放了，
+   * 历史回放时更是连 File 都没有 —— 只能回宿主取一次。加载失败（引用失效/被清理）
+   * 就地换成一行说明，不留一个破图。
+   */
+  function attachmentStrip(attachments) {
+    var strip = el('div', 'dsh-sel-bqattach')
+    for (var i = 0; i < attachments.length; i += 1) {
+      var item = attachments[i] || {}
+      var ref = item.ref || {}
+      if (item.kind === 'image') {
+        strip.appendChild(attachmentImage(ref))
+      } else {
+        strip.appendChild(attachmentFile(ref))
+      }
+    }
+    return strip
+  }
+
+  function attachmentImage(ref) {
+    var link = document.createElement('a')
+    link.className = 'dsh-sel-bqimgwrap'
+    link.href = attachmentUrl('image', ref)
+    link.target = '_blank'
+    link.rel = 'noreferrer noopener'
+    link.title = '点击查看原图' + (ref.name ? '：' + ref.name : '')
+    var img = document.createElement('img')
+    img.className = 'dsh-sel-bqimg'
+    img.src = link.href
+    img.alt = ref.name || '图片'
+    img.loading = 'lazy'
+    img.addEventListener('error', function () {
+      // 引用失效（对象仓被清理）时不留破图
+      var box = el('span', 'dsh-sel-bqimgfail', '图片已不在附件仓里')
+      if (link.parentNode) link.parentNode.replaceChild(box, link)
+    })
+    link.appendChild(img)
+    return link
+  }
+
+  function attachmentFile(ref) {
+    var link = document.createElement('a')
+    link.className = 'dsh-sel-bqfile'
+    link.href = attachmentUrl('file', ref, true)
+    link.rel = 'noreferrer noopener'
+    link.title = '下载：' + (ref.name || '文件')
+    link.appendChild(el('span', 'dsh-sel-bqfileext', ref.name ? extensionOf(ref.name) : 'FILE'))
+    link.appendChild(el('span', 'dsh-sel-bqfilename', ref.name || '文件'))
+    if (typeof ref.bytes === 'number') link.appendChild(el('span', 'dsh-sel-bqfilemeta', formatBytes(ref.bytes)))
+    return link
+  }
+
+  /**
+   * 气泡里显示的正文。
+   *
+   * 回放出来的轮次，`text` 是**发出去的那份**（含 `【本条消息带了附件】…` 一行）——
+   * 那一行是给模型看的历史锚点，界面上已经有缩略图了，再显示一遍就是重复。
+   * 所以有附件时把这一行去掉（只去开头那一行，正文别的一字不动）。
+   */
+  function displayTextOf(turn) {
+    var text = turn.text || ''
+    if (!text) return ''
+    if (!turn.attachments || turn.attachments.length === 0) return text
+    return text.replace(/^【本条消息带了附件】[^\n]*\n?/, '')
   }
 
   function bubbleFor(turn) {

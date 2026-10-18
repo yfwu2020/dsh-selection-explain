@@ -10,13 +10,13 @@
 | `src/host/plugin.ts` | 创建服务、注册 HTTP 路由和生命周期清理 |
 | `src/host/models.ts`、`sessions.ts` | 模型选择、推理能力清单、会话模型与背景缓存 |
 | `src/host/settings-store.ts`、`history-store.ts` | 设置覆盖、历史条目和界面位置/尺寸的持久化 |
-| `src/host/analyze.ts`、`promote.ts`、`speech.ts` | 流式解读、升格和语音识别接口 |
-| `src/host/filters.ts`、`effort.ts`、`context.ts`、`tools.ts` | 可独立测试的处理规则及宿主工具适配 |
+| `src/host/analyze.ts`、`promote.ts`、`speech.ts`、`attach.ts` | 流式解读、升格、语音识别，以及附件的上传与回放接口 |
+| `src/host/filters.ts`、`effort.ts`、`context.ts`、`tools.ts`、`history-attachments.ts` | 可独立测试的处理规则、附件引用的收敛与预算、宿主工具适配与读取边界 |
 | `src/config-values.ts` | 配置类型、默认值和数值边界 |
 | `src/settings.ts` | 设置控件元数据与补丁归一化 |
 | `src/prompts.ts` | 提示词文本 |
 | `src/client/index.js` | 创建界面节点、装配控制器、绑定事件和卸载 |
-| `src/client/*` | 设置、面板、选区、语音卡、引用、预览、历史、对话及录音控制器；样式与渲染辅助 |
+| `src/client/*` | 设置、面板、选区、语音卡、引用、附件、预览、历史、对话及录音控制器；样式与渲染辅助 |
 | `native/mic-probe.c` | macOS 麦克风占用探针源码 |
 | `skills/web-design/` | 网页回答时由宿主读取的设计规范 |
 | `tests/unit/`、`integration/`、`browser/` | 规则测试、隔离宿主集成、真实浏览器验证 |

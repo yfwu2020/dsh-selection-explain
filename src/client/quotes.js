@@ -286,7 +286,14 @@ export function createQuotesController(env) {
   function exportTurns() {
     var out = []
     for (var i = 0; i < env.state.turns.length; i += 1) {
-      out.push({ role: env.state.turns[i].role, text: sentTextOf(env.state.turns[i]) })
+      var turn = env.state.turns[i]
+      // 附件引用随轮次一起落盘（只有 user 轮会有）。存的是引用不是字节，
+      // 所以历史文件不会因为一张截图胖几 MB —— 见 host 的 history-attachments.ts。
+      out.push({
+        role: turn.role,
+        text: sentTextOf(turn),
+        ...(turn.attachments && turn.attachments.length > 0 ? { attachments: turn.attachments } : {}),
+      })
     }
     return out
   }

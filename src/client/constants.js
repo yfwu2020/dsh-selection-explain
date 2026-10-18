@@ -18,6 +18,29 @@ export var HISTORY = '/selection-explain/api/history'
 export var MODELS = '/selection-explain/api/models'
 
 /**
+ * 小窗附件上传：POST { items:[{kind:'image'|'file', name, mediaType, data(base64)}] }
+ *   → { ok:true, items:[{kind, ref}] }（ref 是附件服务的持久引用，发送时原样回传给 /analyze）。
+ *
+ * 为什么一个文件一次请求：失败与重试都落在**那一件**上 —— 一张图被拒不该把同一批里
+ * 别的附件一起废掉（主会话那条路是整批同生共死，小窗这里逐个来更适合"就地重试"）。
+ */
+export var ATTACH = '/selection-explain/api/attach'
+
+/**
+ * 把存好的附件读回来显示：GET ?ref=<base64url(JSON)>&kind=image|file[&download=1]
+ *
+ * 气泡里的缩略图走它 —— 发出去的消息里只有引用，本地 object URL 在发送那一刻就释放了，
+ * 历史回放更连 File 都没有。主会话的图片也是从宿主取回来显示的。
+ */
+export var ATTACHMENT = '/selection-explain/api/attachment'
+
+/** 一次最多带几件（与 host 的 ATTACH_MAX_ITEMS 一致；超了 host 也会拒）。 */
+export var ATTACH_MAX_ITEMS = 10
+
+/** 单个文件的字节上限（与 host 的 ATTACH_MAX_ITEM_BYTES 一致）。 */
+export var ATTACH_MAX_ITEM_BYTES = 20 * 1024 * 1024
+
+/**
  * 小窗设置：GET 拿 spec + 当前值，POST 写回。
  *
  * spec（分组 / 标题 / 说明 / 边界 / 单位）由 host 下发 —— 客户端**不做业务判断**，

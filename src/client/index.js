@@ -2,7 +2,7 @@ import { handlePanelEscape, handleVoiceCardEscape } from './keyboard.js'
 import { el, listen, selectionDetached, clamp } from './dom.js'
 import { CSS } from './styles.js'
 import { Z_BTN, Z_PANEL, PILL_STAR_DOT_D, preferences, PING, PILL_MORPH_MS, PILL_STAR_D, VOICE_FALLBACK_SECONDS, PILL_BALL_SIZE, PILL_SNAP_RADIUS } from './constants.js'
-import { sparkleIcon, quoteIcon, actionButton, headerHistoryIcon, headerPromoteIcon, headerSettingsIcon, iconButton, headerCloseIcon, buildSection, markdownIcon, windowIcon, sendIcon, micIcon, closeIcon, stopIcon, backIcon } from './icons.js'
+import { sparkleIcon, quoteIcon, actionButton, headerHistoryIcon, headerPromoteIcon, headerSettingsIcon, iconButton, headerCloseIcon, buildSection, markdownIcon, windowIcon, sendIcon, micIcon, closeIcon, stopIcon, backIcon, plusIcon, docIcon } from './icons.js'
 import React from 'react'
 import { previewFrames, applyPreviewHeight, splitSections } from './render.js'
 import { recordingSupported } from './audio.js'
@@ -11,6 +11,7 @@ import { createSettingsController } from './settings.js'
 import { createSelectionController } from './selection.js'
 import { createVoiceCardController } from './voice-card.js'
 import { createQuotesController } from './quotes.js'
+import { createAttachController } from './attach.js'
 import { createPreviewController } from './preview.js'
 import { createPanelController } from './panel.js'
 import { createPillController } from './pill.js'
@@ -77,6 +78,14 @@ export function apply(ctx) {
      * 只属于**下一条**提问（发送即清空）；关掉面板不清 —— 回来接着写还看得见。
      */
     quotes: [],
+    /**
+     * 待发送的附件：[{ id, kind:'image'|'file', name, size, mediaType, file, url, status, ref, error }]。
+     * 和引用同一条规矩 —— 只属于**下一条**追问，发送即清空；
+     * 区别是上传状态挂在每一项上（逐件上传、逐件重试，见 attach.js）。
+     */
+    attachments: [],
+    /** 附件条下面那行提示（"文件夹不支持""一次最多 10 件"之类），空串就不显示。 */
+    attachNote: '',
     /** 最近一次"可以引用"的选区：[{ text, label, rect, source }]（浮标据此显示）。 */
     quoteSelection: null,
     /** 正在取引用的会话上下文（这期间再按 Enter 不能空发一条）。 */
@@ -308,6 +317,30 @@ export function apply(ctx) {
 
   askRow.appendChild(quotesBox)
 
+  // 附件条：和引用**同一条区域**（输入框上方），但它是横着一排缩略图，
+  // 而引用是竖着排的卡片 —— 两种形状，所以是两条独立的条。
+  // 排在引用**下面**：引用是"从正文里挑出来的材料"，附件是"从外面带进来的"，越靠近输入框越像"这条消息的"。
+  var attachBox = el('div', 'dsh-sel-attach')
+
+  askRow.appendChild(attachBox)
+
+  // 附件出错 / 被拒时的一行说明（正常时整条收起来，不占高度）
+  var attachNote = el('p', 'dsh-sel-attachnote')
+
+  askRow.appendChild(attachNote)
+
+  // 系统文件选择器：图片和文件**一起选**（不分成两个键），所以 accept 留空。
+  // 放在面板里而不是临时 createElement：免得每次点 ＋ 都新建一个节点。
+  var attachInput = el('input')
+
+  attachInput.type = 'file'
+  attachInput.multiple = true
+  attachInput.style.display = 'none'
+  attachInput.setAttribute('aria-hidden', 'true')
+  attachInput.tabIndex = -1
+
+  askRow.appendChild(attachInput)
+
   var askBox = el('textarea', 'dsh-sel-askbox')
 
   askBox.rows = 1
@@ -315,16 +348,22 @@ export function apply(ctx) {
   askBox.placeholder = '就这段文字继续追问…（Enter 发送，Shift+Enter 换行）'
 
   // 网页模式开关：打开后，追问里较复杂的问题默认用网页回答（并注入附带的设计规范）
-  // 输出偏好：文字 + 图标分段（两格：M↓ = Markdown / ▭ = 网页，选中格是滑动的药丸）
+  // 输出偏好：**只有两格图标**（M↓ = Markdown / ▭ = 网页，选中格是滑动的药丸）。
+  //
+  // 2026-10-18：去掉了原来前面那行「输出偏好」文字。理由是工具行**位置**已经把这排东西
+  // 分好类了 —— 左边是"给这条消息加材料"（＋ / 输出偏好），右边是"怎么发出去"
+  // （模型 / 麦克风 / 发送）。省下的宽度实测约 53px，比新加的 ＋（约 34px）还多，
+  // 于是窄面板下反而更不容易折行（详见 docs/attach-chosen-lab.html 的实测数字）。
+  // 代价是这两格图标自己没字了，语义改由 title + aria-label 承担（下面两处都要写上）。
   var webMode = el('span', 'dsh-sel-pref')
 
-  webMode.appendChild(el('span', 'dsh-sel-preftext', '输出偏好'))
+  webMode.title = '输出偏好：Markdown（默认文字回答）/ 网页（复杂问题生成 HTML 页面）'
 
   var prefSeg = el('span', 'dsh-sel-seg')
 
   prefSeg.setAttribute('role', 'radiogroup')
 
-  prefSeg.setAttribute('aria-label', '输出偏好')
+  prefSeg.setAttribute('aria-label', '输出偏好：Markdown 或网页')
 
   var prefPill = el('span', 'dsh-sel-segpill')
 
@@ -486,7 +525,19 @@ export function apply(ctx) {
 
   var askTools = el('div', 'dsh-sel-asktools')
 
+  // ＋：附件入口，放工具行**最左**（圆形浅底，和主会话 composer 的 ＋ 同款）。
+  // 为什么在最左而不是挨着麦克风：左侧是"给这条消息加材料"（＋ / 输出偏好），
+  // 右侧是"怎么发出去"（模型 / 麦克风 / 发送）—— 两件事分开摆，位置本身就是分类。
+  var addButton = el('button', 'dsh-sel-iconbtn dsh-sel-add')
+
+  addButton.type = 'button'
+  addButton.setAttribute('aria-label', '添加图片或文件')
+  addButton.title = '添加图片或文件（也可以直接粘贴或拖进来）'
+  addButton.appendChild(plusIcon())
+
   var askSpacer = el('span', 'dsh-sel-askspace')
+
+  askTools.appendChild(addButton)
 
   askTools.appendChild(webMode)
 
@@ -620,6 +671,25 @@ export function apply(ctx) {
 
   panel.appendChild(askRow)
 
+  // 拖放遮罩：铺在面板上（面板是 overflow:hidden 的定位祖先，遮罩的圆角正好贴住内容区）。
+  // 它只是**状态展示**，不接收指针事件（pointer-events:none）—— 事件全由面板自己接，
+  // 否则遮罩一出现就把 drop 事件的落点换成了它自己。
+  var dropMask = el('div', 'dsh-sel-drop')
+
+  dropMask.setAttribute('aria-hidden', 'true')
+
+  var dropArt = el('div', 'dsh-sel-drop-art')
+
+  dropArt.appendChild(plusIcon())
+
+  dropMask.appendChild(dropArt)
+
+  dropMask.appendChild(el('div', 'dsh-sel-drop-title', '松开即添加为这条追问的附件'))
+
+  dropMask.appendChild(el('div', 'dsh-sel-drop-hint', '图片直接给模型看 · 文件存成只读路径按需读取'))
+
+  panel.appendChild(dropMask)
+
   layer.appendChild(panel)
   var settingsController = createSettingsController({
     get state() { return state },
@@ -724,6 +794,7 @@ export function apply(ctx) {
     get hideButton() { return selectionController.hideButton },
     get quote() { return quote },
     get clearQuotes() { return quotesController.clearQuotes },
+    get clearAttachments() { return attachController.clear },
     get renderTurns() { return historyController.renderTurns },
     get sendAsk() { return conversationController.sendAsk },
     get restoreFromHistory() { return historyController.restoreFromHistory },
@@ -859,6 +930,10 @@ export function apply(ctx) {
     get renderQuotes() { return quotesController.renderQuotes },
     get resolveQuoteContexts() { return quotesController.resolveQuoteContexts },
     get composeQuestion() { return quotesController.composeQuestion },
+    get attachmentsPayload() { return attachController.payload },
+    get attachmentsBusy() { return attachController.busy },
+    get attachmentsDescribe() { return attachController.describe },
+    get clearAttachments() { return attachController.clear },
     get seedHistoryFromExplanation() { return historyController.seedHistoryFromExplanation },
     get syncPanelStage() { return panelController.syncPanelStage },
     get syncExpandCta() { return panelController.syncExpandCta },
@@ -896,6 +971,15 @@ export function apply(ctx) {
     get closePanel() { return panelController.closePanel },
     get ctx() { return ctx },
     get buildPayload() { return panelController.buildPayload },
+  })
+  var attachController = createAttachController({
+    get state() { return state },
+    get panel() { return panel },
+    get attachBox() { return attachBox },
+    get attachNote() { return attachNote },
+    get attachInput() { return attachInput },
+    get setStatus() { return panelController.setStatus },
+    get refreshAskState() { return conversationController.refreshAskState },
   })
   var modelsController = createModelsController({
     get state() { return state },
@@ -1612,8 +1696,8 @@ export function apply(ctx) {
     event.preventDefault()
     event.stopPropagation()
     var question = askBox.value
-    // 空输入框照发**只在挂了引用时**成立（引用本身就是用户要送出去的内容）
-    if (!question.trim() && state.quotes.length === 0) return
+    // 空输入框照发**只在挂了引用或附件时**成立（引用/附件本身就是用户要送出去的内容）
+    if (!question.trim() && state.quotes.length === 0 && state.attachments.length === 0) return
     // 清空交给 ask()：它收下才清（生成中被拒时保留你打的字）
     conversationController.ask(question)
   })
@@ -1629,10 +1713,30 @@ export function apply(ctx) {
       return
     }
     var question = askBox.value
-    if (!question.trim() && state.quotes.length === 0) return
+    if (!question.trim() && state.quotes.length === 0 && state.attachments.length === 0) return
     // 清空交给 ask()：它收下才清
     conversationController.ask(question)
   })
+
+  // ── 附件：三个入口（＋ / 粘贴 / 拖放）──
+  var offAttachPick = listen(attachInput, 'change', function () {
+    attachController.addFiles(attachInput.files || [])
+    // 清掉 value：同一个文件连选两次也要能触发 change（不清的话第二次选它毫无反应）
+    attachInput.value = ''
+  })
+
+  var offAttachButton = listen(addButton, 'click', function (event) {
+    event.stopPropagation()
+    attachController.pick()
+  })
+
+  // 粘贴挂在**面板**上而不是输入框上：截图之后很多人不会先把光标点进输入框。
+  // 纯文本粘贴不受影响（handlePaste 只在剪贴板里真有文件时才拦）。
+  var offAttachPaste = listen(panel, 'paste', function (event) {
+    attachController.handlePaste(event)
+  })
+
+  attachController.wireDrop()
 
   var offMic = listen(micButton, 'click', function (event) {
     event.stopPropagation()
@@ -2267,6 +2371,9 @@ export function apply(ctx) {
       offAskKey()
       offAskInput()
       offAskSend()
+      offAttachPick()
+      offAttachButton()
+      offAttachPaste()
       // 语音输入：摘掉麦克风监听，并把正在录/正在识别的这一轮彻底作废（松开麦克风）
       offMic()
       offVoiceCancel()

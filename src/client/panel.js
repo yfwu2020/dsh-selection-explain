@@ -195,6 +195,9 @@ export function createPanelController(env) {
     // digest 则该在这里（以及历史回放）动。
     env.state.toolDigest = ''
     env.clearQuotes()
+    // 附件同理：它属于"上一次那段文字的追问"。换选区还留着，就会把上一段的截图
+    // 带进一段毫不相干的追问里（而且用户多半已经忘了它还挂在输入框上面）。
+    env.clearAttachments()
     env.state.parts = (cached && cached.parts) || { translation: '', detail: '' }
     env.state.stage = ''
     env.state.raw = ''

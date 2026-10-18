@@ -3,6 +3,14 @@ import type { ServerResponse, IncomingMessage } from 'node:http'
 /** 单次请求体上限（字节）。 */
 export const BODY_LIMIT = 512 * 1024
 
+/**
+ * 附件上传的请求体上限（字节）。
+ *
+ * 比 BODY_LIMIT 大得多：附件是 base64 传的（体积 ×4/3），一张 20 MiB 的图到这里就 ~27 MiB。
+ * 单独开一个常量而不是把 BODY_LIMIT 调大 —— 提示词那条路仍然只该有 512 KiB。
+ */
+export const ATTACH_BODY_LIMIT = 32 * 1024 * 1024
+
 /** 写一条 SSE 事件。 */
 export function sse(res: ServerResponse, payload: unknown): void {
   if (res.writableEnded) return

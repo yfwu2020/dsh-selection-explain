@@ -9,6 +9,8 @@ import { name } from './constants.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sendJson, readBody } from './http.js'
 import type { AnalyzeBody } from './types.js'
+import { readHistoryAttachments } from './history-attachments.js'
+import type { HistoryAttachment } from './history-attachments.js'
 
 // ───────────────────────── 小窗对话历史（A′） ─────────────────────────
 //
@@ -22,6 +24,15 @@ import type { AnalyzeBody } from './types.js'
 interface HistoryTurn {
   role: string
   text: string
+  /**
+   * 这一轮带的附件（只有 user 轮会有）：`[{ kind, ref }]`，ref 是附件服务的持久引用。
+   *
+   * 存它 = 让"第 N 轮还能看见第 1 轮那张图"成为可能。**存的只是引用**
+   * （内容哈希 + 名字 + 字节数 + 像素），没有 base64、没有本地路径 ——
+   * 与主会话往会话事件里写的是同一套形状，代价是每轮几百字节而不是几 MB。
+   * 载荷的大小由 history-attachments.ts 的预算管，这里只负责**如实存下来**。
+   */
+  attachments?: HistoryAttachment[]
 }
 
 /** 落库入参：一律宽松收，内部统一裁剪（来源是浏览器，不能信）。 */
@@ -31,7 +42,8 @@ interface HistoryInput {
   context?: unknown
   label?: unknown
   parts?: { translation?: unknown; detail?: unknown }
-  turns?: { role?: unknown; text?: unknown }[]
+  /** 轮次（含每轮的附件引用）：形状由 readTurns 统一收敛，这里一律宽松收。 */
+  turns?: unknown
   toolDigest?: unknown
   pinned?: unknown
 }
@@ -253,6 +265,27 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
 
   const clampText = (value: unknown, max: number): string => (typeof value === 'string' ? value.slice(0, max) : '')
 
+  /**
+   * 收敛一段轮次：只留 role / text / attachments，最多 60 轮。
+   *
+   * 载入与保存**共用同一份**（以前是两段一模一样的 map，加字段时最容易只改一处 ——
+   * 那会变成"存得下、读不回"这种极难发现的错）。
+   */
+  const readTurns = (raw: unknown): HistoryTurn[] => {
+    if (!Array.isArray(raw)) return []
+    return raw.slice(0, 60).map((turn) => {
+      const item = (turn ?? {}) as { role?: unknown; text?: unknown; attachments?: unknown }
+      // 附件走和 analyze 同一个收敛器：白名单字段 + 单轮条数上限，
+      // 于是"历史文件被手改过"也不会把脏东西带进模型请求
+      const attachments = readHistoryAttachments(item.attachments)
+      return {
+        role: item.role === 'assistant' ? 'assistant' : 'user',
+        text: clampText(item.text, 20000),
+        ...(attachments.length > 0 ? { attachments } : {}),
+      }
+    })
+  }
+
   async function loadHistory(): Promise<void> {
     if (historyLoaded) return
     historyLoaded = true
@@ -275,12 +308,7 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
             translation: clampText(entry.parts?.translation, 20000),
             detail: clampText(entry.parts?.detail, 20000),
           },
-          turns: Array.isArray(entry.turns)
-            ? entry.turns.slice(0, 60).map((turn) => ({
-                role: turn?.role === 'assistant' ? 'assistant' : 'user',
-                text: clampText(turn?.text, 20000),
-              }))
-            : [],
+          turns: readTurns(entry.turns),
           toolDigest: clampText(entry.toolDigest, 2000),
           pinned: entry.pinned === true,
         })
@@ -327,12 +355,7 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
         translation: clampText(input.parts?.translation, 20000),
         detail: clampText(input.parts?.detail, 20000),
       },
-      turns: Array.isArray(input.turns)
-        ? input.turns.slice(0, 60).map((turn) => ({
-            role: turn?.role === 'assistant' ? 'assistant' : 'user',
-            text: clampText(turn?.text, 20000),
-          }))
-        : [],
+      turns: readTurns(input.turns),
       toolDigest: clampText(input.toolDigest, 2000),
       pinned: input.pinned === true || previous?.pinned === true,
     }
@@ -432,7 +455,7 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
           context: typeof body?.context === 'string' ? body.context : '',
           label: typeof body?.label === 'string' ? body.label : '',
           parts: (body?.parts ?? {}) as { translation?: unknown; detail?: unknown },
-          turns: (Array.isArray(body?.turns) ? body.turns : []) as { role?: unknown; text?: unknown }[],
+          turns: body?.turns,
           toolDigest: typeof body?.toolDigest === 'string' ? body.toolDigest : '',
           pinned: body?.pinned === true,
         })

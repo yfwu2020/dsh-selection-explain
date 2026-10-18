@@ -12,6 +12,7 @@ import { createSessions } from './sessions.js'
 import { createHistoryStore } from './history-store.js'
 import { createRoutes } from './routes.js'
 import { createPromote } from './promote.js'
+import { createAttach } from './attach.js'
 
 export function apply(ctx: Context, rawConfig: Config): void {
   const config = resolveConfig(rawConfig)
@@ -23,6 +24,18 @@ export function apply(ctx: Context, rawConfig: Config): void {
   const routes = createRoutes(ctx, config, historyStore, sessions, models, settingsStore)
   const promote = createPromote(ctx, config, sessions, historyStore)
   const analyze = createAnalyze(ctx, config, models, sessions, historyStore)
+  const attach = createAttach(ctx)
+
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/attach`, handler: attach.handleAttach }),
+    `${name}: attach route`,
+  )
+
+  // 把存好的附件读回来给界面显示（气泡里的缩略图 / 文件卡；历史回放也要用）
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/attachment`, handler: attach.handleAttachment }),
+    `${name}: attachment playback route`,
+  )
 
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/analyze`, handler: analyze.handleAnalyze }),

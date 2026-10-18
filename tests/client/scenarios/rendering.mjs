@@ -309,7 +309,14 @@ export async function run(env) {
     const prefSeg = webBtn && Array.from(env.walk(webBtn)).find((n) => String(n.className) === 'dsh-sel-seg')
     const cells = prefSeg ? Array.from(env.walk(prefSeg)).filter((n) => String(n.className) === 'dsh-sel-segcell') : []
     const cellIcon = (cell) => (cell ? Array.from(env.walk(cell)).find((n) => n.tagName === 'SVG') : null)
-    env.assert('追问行里有「输出偏好」控件', !!webBtn && env.textOf(webBtn).indexOf('输出偏好') >= 0, webBtn ? env.textOf(webBtn) : '未找到')
+    // 2026-10-18：前面那行「输出偏好」文字去掉了（省下的宽度留给左侧的 ＋ 附件键）。
+    // 语义不能跟着一起丢 —— 断言改成"文字没有了，但 title / aria-label 说清楚了"。
+    env.assert(
+      '追问行里有「输出偏好」控件（已无文字标签，语义落在 title 上）',
+      !!webBtn && env.textOf(webBtn).trim() === '' && String(webBtn.title || '').indexOf('输出偏好') >= 0,
+      webBtn ? `${JSON.stringify(env.textOf(webBtn))} / ${webBtn.title}` : '未找到',
+    )
+    env.assert('去掉文字后仍留 aria-label（读屏可达）', !!prefSeg && String(prefSeg.getAttribute('aria-label') || '').indexOf('输出偏好') >= 0, prefSeg ? String(prefSeg.getAttribute('aria-label')) : '')
     env.assert('它是 radiogroup（两格各自 aria-checked）', !!prefSeg && prefSeg.getAttribute('role') === 'radiogroup' && cells.length === 2 && cells.every((c) => c.getAttribute('role') === 'radio'), prefSeg ? `${prefSeg.getAttribute('role')} / cells=${cells.length}` : '')
     env.assert('左格是 Markdown 图标（M↓ 两峰 + 箭头，13px）', !!cellIcon(cells[0]) && Array.from(env.walk(cells[0])).filter((n) => n.tagName === 'PATH').length === 2 && cellIcon(cells[0]).getAttribute('width') === '13', String(cellIcon(cells[0]) && cellIcon(cells[0]).getAttribute('width')))
     env.assert('右格是网页窗口图标（矩形 + 顶栏）', !!cellIcon(cells[1]) && Array.from(env.walk(cells[1])).some((n) => n.tagName === 'RECT') && Array.from(env.walk(cells[1])).some((n) => n.tagName === 'PATH'), '')

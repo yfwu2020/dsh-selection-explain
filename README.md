@@ -8,7 +8,7 @@ DSH 中的翻译、上下文解读与语音追问。
 
 [快速安装](#install) · [语音输入](#voice) · [功能一览](#read) · [使用与设置](#settings)
 
-`DSH 插件` · `v0.10.6` · `MIT`
+`DSH 插件` · `v0.11.0` · `MIT`
 
 </div>
 
@@ -77,6 +77,16 @@ DSH 中的翻译、上下文解读与语音追问。
 
 ![真实小窗中，所选内容作为引用卡片出现在追问输入框上方](https://raw.githubusercontent.com/yfwu2020/dsh-selection-explain/v0.10.4/assets/quotes.png)
 
+### 图片和文件，直接拖进来
+
+追问时可以把图片或文件**拖进小窗**，也可以直接粘贴（`⌘V`）或用输入框左下角的 **+** 选择。一次最多 **10 件**，单件不超过 **20 MB**。
+
+- 图片显示为缩略图（点开看原图），文件显示为可下载的卡片。**发送后仍留在消息气泡里**，关掉小窗再打开也在 —— 存的是引用而不是字节，历史文件不会因为几张截图变胖。
+- 拖到小窗上的文件**只会进小窗**，不会同时落进主会话的输入框；拖到小窗外面则照常归主会话。
+- 模型可以直接读取你附带的文件（读它的只读副本），不必你复制路径过去。
+- 追问时最近 **2 张图片**会重新带给模型，更早的图片自动降级成一行文字说明（避免请求超限）；文件不占这个额度。
+- **升格**时这些附件会一并带进正式会话，继续在主会话里追问同一张图、同一个文件。
+
 不必每次从头来：
 
 | 想做什么 | 入口 |
@@ -103,11 +113,11 @@ dsh plugin --profile web add @yfwu2020/dsh-selection-explain
 <details>
 <summary>安装 Release 构建包</summary>
 
-将下载的 `.tgz` 放到当前目录，以 v0.10.6 为例：
+将下载的 `.tgz` 放到当前目录，以 v0.11.0 为例：
 
 ```bash
 mkdir -p ~/.dsh/plugins/dsh-selection-explain
-tar -xzf yfwu2020-dsh-selection-explain-0.10.6.tgz -C ~/.dsh/plugins/dsh-selection-explain --strip-components=1
+tar -xzf yfwu2020-dsh-selection-explain-0.11.0.tgz -C ~/.dsh/plugins/dsh-selection-explain --strip-components=1
 dsh plugin --profile web add ~/.dsh/plugins/dsh-selection-explain
 ```
 

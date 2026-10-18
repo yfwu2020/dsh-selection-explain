@@ -8,6 +8,23 @@ import type { AnalyzeBody } from './types.js'
 import { sessionIdOf } from './context.js'
 import { name, PLUGIN_SOURCE_KIND } from './constants.js'
 import type { LiveSessionLike } from './sessions.js'
+import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { readHistoryAttachments } from './history-attachments.js'
+import type { HistoryAttachment } from './history-attachments.js'
+
+/**
+ * 去掉小窗正文里那行 `【本条消息带了附件】…`。
+ *
+ * 那行是**小窗**的说法（历史里给模型看的锚点）。升格时附件是**真带过来**的，
+ * 再留着它，主会话里就会同时出现"一行字说带了附件"和"附件本身"，
+ * 而且措辞（"本条消息"）在主会话语境下也不通顺。
+ *
+ * 只在**确实带上了附件**时才去（`hasAttachments`）：没有附件时那行是唯一的信息，不能抹。
+ */
+function attachmentMarkerStripped(text: string, hasAttachments: boolean): string {
+  if (!hasAttachments) return text
+  return text.replace(/^【本条消息带了附件】[^\n]*\n?/, '')
+}
 
 /** Owns promote state for one plugin instance. */
 export function createPromote(ctx: Context, config: Config, sessions: ReturnType<typeof createSessions>, historyStore: ReturnType<typeof createHistoryStore>) {
@@ -108,9 +125,16 @@ export function createPromote(ctx: Context, config: Config, sessions: ReturnType
       const detail = historyStore.clampText(body.detail, 12000)
       const turns = (Array.isArray(body.turns) ? body.turns : [])
         .slice(-20)
-        .map((turn) => turn as { role?: unknown; text?: unknown; seed?: unknown })
+        .map((turn) => turn as { role?: unknown; text?: unknown; seed?: unknown; attachments?: unknown })
         .filter((turn) => turn.seed !== true && typeof turn.text === 'string' && turn.text.trim().length > 0)
-        .map((turn) => ({ role: turn.role === 'assistant' ? 'assistant' : 'user', text: (turn.text as string).trim() }))
+        .map((turn) => ({
+          role: turn.role === 'assistant' ? ('assistant' as const) : ('user' as const),
+          text: (turn.text as string).trim(),
+          // 附件（图片/文件）随轮次一起带过来 —— 走的是和 /analyze、历史落盘**同一个收敛器**。
+          // 客户端本来就在发它们（exportTurns 带 attachments），是这里以前只认 role/text 把它们丢了，
+          // 于是升格出来的会话「声称带了附件、却看不到图」。
+          attachments: readHistoryAttachments(turn.attachments),
+        }))
 
       const live = (ctx.get('sessions') as { get?: (id: string) => LiveSessionLike | undefined } | undefined)?.get?.(
         newSessionId,
@@ -127,6 +151,26 @@ export function createPromote(ctx: Context, config: Config, sessions: ReturnType
         // 一定从 1 开始（phase.turn 初始为 0），所以历史轮必须避开低位号段，
         // 否则历史的 turn 1 会和真实的 turn 1 并成同一组、看起来"历史没进去"。
         // 同时这也是 resume 语义安全的：resume 时 phase.turn = lastTurn + 1 = 1000+N+1，仍不与历史重号。
+        /**
+         * 一轮升格后的**内容块**：附件在前、正文在后。
+         *
+         * 顺序与主会话、与 /analyze 完全一致（先给材料，再读问题）——
+         * 形状也是主会话真实使用的那一种（`{type:'image', attachment:{…}}`），
+         * 所以升格后客户端能画出缩略图、模型也能真的看到图。
+         */
+        const contentOfTurn = (turn: { text: string; attachments: HistoryAttachment[] }): ContentBlock[] => {
+          const blocks: ContentBlock[] = []
+          for (const item of turn.attachments) {
+            blocks.push(
+              item.kind === 'image'
+                ? { type: 'image', attachment: item.ref as never }
+                : { type: 'file', attachment: item.ref as never },
+            )
+          }
+          blocks.push({ type: 'text', text: attachmentMarkerStripped(turn.text, turn.attachments.length > 0) })
+          return blocks
+        }
+
         let turnNo = 1000
         const appendTurn = (userEvent: Record<string, unknown> | null, assistantText: string): void => {
           turnNo += 1
@@ -193,7 +237,7 @@ export function createPromote(ctx: Context, config: Config, sessions: ReturnType
                 id: `sel-u-${stamp}-${i}`,
                 role: 'user',
                 source: { kind: 'user' },
-                content: [{ type: 'text', text: turn.text }],
+                content: contentOfTurn(turn),
               },
               turns[i + 1] && turns[i + 1]?.role === 'assistant' ? (turns[i + 1]?.text ?? '') : '（未记录）',
             )
@@ -206,10 +250,22 @@ export function createPromote(ctx: Context, config: Config, sessions: ReturnType
         seeded = true
       }
 
-      // ⑤ 开场消息：让 agent 接手（也是整段历史落盘的触发点）
-      const opener = seeded
-        ? '（本会话由划词解读小窗升格而来，以上是这段文字的上下文与我们的讨论）请用一句话确认，然后等我继续提问。'
-        : [
+      // ⑤ 开场消息
+      //
+      // ⚠️ 这个 prompt **只在打包回退路径下需要** —— 那时它本身就是"背景"的载体
+      //（一整段打包文字），不发就等于背景没进去。
+      // history 模式下历史已经是真实的 user/assistant 事件，来源也写在第一条上下文消息里
+      //（`选中文字：… / 所在位置：… / 来源：划词解读小窗（来源会话 …）`），
+      // 再发一句"请用一句话确认"没有任何作用，只剩代价：
+      //   · 每次升格白烧一次模型调用（升格时模型往往正忙）；
+      //   · 升格出来的会话顶部多一条"好的，我确认"的噪声；
+      //   · 把 agent 的第 1 轮占掉 —— 用户自己问的第一句变成第 2 轮。
+      //
+      // 曾经的理由是「整段历史落盘的触发点」。**实测否掉了**（2026-10-19）：
+      // 种子事件 +328ms 就写进磁盘，模型回复 +2863ms 才出现 ——
+      // 落盘靠的是 `live.append`（当场写盘），与这次 prompt 无关。
+      if (!seeded) {
+        const opener = [
             '【划词解读 · 升格为会话】',
             '下面这段文字来自一次划词解读小窗；上下文、结论与小窗里的追问一并附上，作为本次会话的既有背景。',
             '',
@@ -231,16 +287,17 @@ export function createPromote(ctx: Context, config: Config, sessions: ReturnType
             '',
             '以上是背景，请把它作为本次会话的既有上下文；先不需要展开，等我继续提问。',
           ].join('\n')
-      const promoteController = new AbortController()
-      await controller.prompt(
-        {
-          requestId: `sel-promote-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          sessionId: newSessionId,
-          mode: 'queue',
-          content: [{ type: 'text', text: opener }],
-        },
-        promoteController.signal,
-      )
+        const promoteController = new AbortController()
+        await controller.prompt(
+          {
+            requestId: `sel-promote-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            sessionId: newSessionId,
+            mode: 'queue',
+            content: [{ type: 'text', text: opener }],
+          },
+          promoteController.signal,
+        )
+      }
       sendJson(res, 200, {
         ok: true,
         sessionId: newSessionId,

@@ -11,12 +11,15 @@ import { sessionIdOf } from './context.js'
 import type { Message, ToolSchema, ContentBlock } from '@deepseek-ai/dsh-llm'
 import { createAssistantMessage, createUserMessage, ReasoningEffortId, BlockAssembler, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { name } from './constants.js'
-import { resolveToolNames, webFetchUsable, FS_TOOL_NAMES, describeToolCall, isInsideRoot, runTool, digestToolResult } from './tools.js'
+import { resolveToolNames, webFetchUsable, FS_TOOL_NAMES, describeToolCall, isReadAllowed, runTool, digestToolResult } from './tools.js'
 import { CHAT_SYSTEM_PROMPT, DETAIL_PROMPT, CODE_PROMPT, TRANSLATION_PROMPT } from '../prompts.js'
 import { loadDesignSkill } from './design-skill.js'
 import { systemMessageOf } from './messages.js'
 import { createThinkFilter, splitLeakedReasoning, looksLikeLeakedReasoning } from './filters.js'
+import { resolve } from 'node:path'
 import { looksLikeReasoningRequired, looksLikeUnsupportedTier, EFFORT_LABEL } from './effort.js'
+import { historyContentBlocks, looksLikeAttachmentFailure, readHistoryAttachments } from './history-attachments.js'
+import type { HistoryContentPlan } from './history-attachments.js'
 
 /** Owns analyze state for one plugin instance. */
 export function createAnalyze(ctx: Context, config: Config, models: ReturnType<typeof createModels>, sessions: ReturnType<typeof createSessions>, historyStore: ReturnType<typeof createHistoryStore>) {
@@ -127,19 +130,83 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
     // 追问模式：客户端带 question 时，就是「就这段选中文字继续聊」
     const question = typeof body.question === 'string' ? body.question.trim() : ''
     const isChat = question.length > 0
-    const historyMessages: Message[] = []
-    if (isChat) {
-      const rawHistory = Array.isArray(body.history) ? body.history : []
-      for (const turn of rawHistory.slice(-20)) {
-        const item = turn as { role?: unknown; text?: unknown }
-        const text = typeof item.text === 'string' ? item.text : ''
-        if (!text) continue
+    // 这一轮的附件（追问）：/api/attach 存好之后的持久引用。形状在这里**收敛一次**，
+    // 历史那条路用的也是同一个收敛器（见 history-attachments.ts）。
+    const currentAttachments = readHistoryAttachments(body.attachments)
+    const rawHistory = Array.isArray(body.history) ? body.history : []
+    // 预算规划的结果（图片几张回带、几张降级），只用于上报与诊断
+    let historyImages = { kept: 0, omitted: 0, files: 0 }
+    // 历史里有没有真带过附件：决定"附件读不回来"时值不值得降级重试一次
+    let historyHadAttachments = false
+    // 引用失效后的降级开关（置真 = 历史附件全部换成文字）
+    let historyDropped = false
+
+    // 闭包里的 TS 收窄到不了：把 route 的两字段先取成常量（route 在更早处已经非空校验过）
+    const historySource = { provider: route.provider, model: route.model }
+
+    /**
+     * 历史规划（纯计算）：预算、降级、以及**这次请求真的进了消息的那些附件**。
+     * 每次都要能重算 —— 引用失效时会降级再跑一遍（见下面 errored 分支里的那一跳）。
+     */
+    function planHistory(): HistoryContentPlan {
+      if (!isChat) return { blocks: [], kept: [], keptImages: 0, omittedImages: 0, keptFiles: 0, omittedFiles: 0 }
+      const window = rawHistory.slice(-20)
+      const turns = historyDropped
+        ? window.map((turn) => {
+            const item = (turn ?? {}) as { role?: unknown; text?: unknown }
+            return { role: item.role, text: item.text }
+          })
+        : window
+      const plan = historyContentBlocks(turns, currentAttachments)
+      historyImages = { kept: plan.keptImages, omitted: plan.omittedImages, files: plan.keptFiles + plan.omittedFiles }
+      return plan
+    }
+
+    /** 重建历史消息。 */
+    function buildHistoryMessages(): Message[] {
+      const out: Message[] = []
+      if (!isChat) return out
+      const window = rawHistory.slice(-20)
+      const plan = planHistory()
+      window.forEach((turn, index) => {
+        const item = turn as { role?: unknown; attachments?: unknown }
+        if (!historyDropped && Array.isArray(item.attachments) && item.attachments.length > 0) historyHadAttachments = true
+        const content = plan.blocks[index] ?? []
+        if (content.length === 0) return
         if (item.role === 'assistant') {
-          historyMessages.push(createAssistantMessage({ content: [{ type: 'text', text }], source: { provider: route.provider, model: route.model } }))
+          out.push(createAssistantMessage({ content, source: historySource }))
         } else {
-          historyMessages.push(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] }))
+          out.push(createUserMessage({ source: { kind: 'user' }, content }))
+        }
+      })
+      return out
+    }
+
+    /**
+     * 文件工具的**访客名单**：这次请求里"模型真的看得见"的文件，在磁盘上的绝对路径。
+     *
+     * 组成 = 本轮的附件 + 历史里真的拼进消息的那部分（`plan.kept`）。
+     * 不另算一套口径：**模型看得见的，才读得到**。
+     *
+     * 路径由附件服务按内容哈希推出（不碰磁盘，纯路径计算，所以每次请求重算没有成本）；
+     * 引用不合法就当场丢掉 —— 它本来也读不出来，让门禁拒掉即可。
+     */
+    function collectAttachedPaths(): Set<string> {
+      const paths = new Set<string>()
+      const store = ctx.get('attachments') as { fileHostPath?: (ref: unknown) => string | undefined } | undefined
+      if (!store || typeof store.fileHostPath !== 'function') return paths
+      const refs = []
+      for (const item of currentAttachments) if (item.kind === 'file') refs.push(item.ref)
+      for (const item of planHistory().kept) if (item.kind === 'file') refs.push(item.ref)
+      for (const ref of refs) {
+        try {
+          const hostPath = store.fileHostPath(ref)
+          if (hostPath) paths.add(resolve(hostPath))
+        } catch {
+          /* 引用不合法：当它不存在（读的时候自然会被门禁拒） */
         }
       }
+      return paths
     }
 
     const cacheKey = resultKeyOf(
@@ -303,8 +370,19 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
             '背景用 #ffffff~#f7f7f8 一档，正文 #171717，次级文字 #6b7280，分隔线 rgba(0,0,0,.10)，' +
             '卡片底色与页面底拉开一档。**不要深色底**，也不要只写 prefers-color-scheme（宿主的深浅由用户设置决定，与系统不一定一致）。\n')
     }
+    // 访客名单要在**拼系统提示词之前**算好：提示词里要告诉模型"你附的那几个文件也在可读范围里"。
+    //
+    // ⚠️ 措辞很要紧。原来写的是「范围：项目目录。超出该范围的路径会被拒绝」，再追加一句
+    // "附带的文件也能读" —— 实测模型会**逮住前半句直接放弃**：它一次 read 都不试，
+    // 就回"这个文件我读不了，它在附件仓，而我的工具被限制在项目目录"。
+    // 所以改成**先把可读范围说全**（项目 + 本次附带的文件），再说"除此之外会被拒"。
+    let attachedPaths = collectAttachedPaths()
     const fileRule = wantsFsTools
-      ? `\n\n【文件访问】你可以用 read/grep/glob 查看当前项目里的文件（范围：${readRoot || '不限'}）。超出该范围的路径会被拒绝；引用文件内容时只取必要的一两行，不要整段粘贴。`
+      ? attachedPaths.size > 0
+        ? `\n\n【文件访问】你可以用 read/grep/glob 读文件。**可读范围 = 当前项目（${readRoot || '不限'}）加上用户这次附带的文件**（它们的只读副本在附件仓里，路径就在消息里给出）。除此之外的路径会被拒绝。` +
+          `\n  · 附带的文件**直接 read 那个路径**就行 —— 不要还没试就断定"项目外读不了"，也不要反复换 grep/glob 重试；` +
+          `\n  · 引用文件内容时只取必要的一两行，不要整段粘贴。`
+        : `\n\n【文件访问】你可以用 read/grep/glob 查看当前项目里的文件（范围：${readRoot || '不限'}）。超出该范围的路径会被拒绝；引用文件内容时只取必要的一两行，不要整段粘贴。`
       : ''
     const fetchRule = fetchBlockedSample
       ? `\n\n【抓取网页不可用】本机域名解析到保留地址段（${fetchBlockedSample}），网页抓取会被安全策略拒绝：只做联网搜索，**不要尝试抓取具体网址**（省掉一次注定失败的往返）。`
@@ -360,6 +438,13 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
       effort: sentEffort,
       tools: toolSchemas.map((schema) => schema.name),
       toolScope: agentScope,
+      // 这一轮请求里附件的情况：本轮带了几件、历史里回带/省略了几张。
+      // **一件都没有时不带这个字段**（保持 start 事件与从前逐字节一致）。
+      // 注意条件要算上"历史里回带的"—— 只看本轮附件的话，
+      // "第二问靠历史里的图回答"这种最该被看见的情况反而不上报。
+      ...(currentAttachments.length > 0 || historyImages.kept > 0 || historyImages.omitted > 0 || historyImages.files > 0
+        ? { attachments: { ...historyImages, current: currentAttachments.length } }
+        : {}),
       ...(toolFallbackUsed ? { toolFallbackUsed: true } : {}),
       ...(wantsFsTools ? { readRoot: readRoot || '(不限)' } : {}),
       ...(fetchBlockedSample ? { fetchBlocked: fetchBlockedSample } : {}),
@@ -392,8 +477,15 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
     const questionText = toolDigest
       ? `【本会话已经查到的结果】（同一会话里查过的，不要重复查同样的内容；只在与本轮问题相关时才用）\n${toolDigest}\n\n【用户这一轮的问题】\n${question}`
       : question
-    const openingMessages: Message[] = isChat
-      ? [...historyMessages, createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: questionText }] })]
+    // 附件排在正文**前面**：模型先拿到材料（图片 / 文件句柄），再读到这一轮的问题。
+    // 没有附件时 content 与从前逐字节一致（一个元素、纯文本），既有行为一点不变。
+    const currentBlocks: ContentBlock[] = currentAttachments.map((item) =>
+      item.kind === 'image' ? { type: 'image', attachment: item.ref as never } : { type: 'file', attachment: item.ref as never },
+    )
+    const questionContent: ContentBlock[] =
+      currentBlocks.length > 0 ? [...currentBlocks, { type: 'text', text: questionText }] : [{ type: 'text', text: questionText }]
+    let openingMessages: Message[] = isChat
+      ? [...buildHistoryMessages(), createUserMessage({ source: { kind: 'user' }, content: questionContent })]
       : []
     try {
       let errored = false
@@ -544,6 +636,27 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
           outTokens: (usage as { outputTokens?: number } | null)?.outputTokens,
         })
         if (errored) {
+          // 附件读不回来（对象仓里的字节被清理/损坏）：把**历史**里的附件全降级成文字再试一次。
+          // 这是持久化带来的新故障面 —— 引用的寿命超过了那一轮，字节却不一定还在。
+          //
+          // ⚠️ 必须排在**换档重试前面**：换档是冲着"上游不认这个推理档"去的，
+          // 对"附件读不到"毫无意义 —— 排后面的话会先白烧两次模型调用（实测事件序列就是
+          // upstream-retry → upstream-retry → attachments-dropped），还会把档位无谓地换掉。
+          if (roundText.length === 0 && historyHadAttachments && !historyDropped && looksLikeAttachmentFailure(errorMessage, errorCode)) {
+            historyDropped = true
+            historyImages = { kept: 0, omitted: 0, files: 0 }
+            openingMessages = [...buildHistoryMessages(), createUserMessage({ source: { kind: 'user' }, content: questionContent })]
+            // 历史附件被丢掉了 → 名单跟着缩小（只放"还看得见的"那些）
+            attachedPaths = collectAttachedPaths()
+            errored = false
+            sse(res, {
+              type: 'notice',
+              code: 'attachments-dropped',
+              text: '历史里的附件已经读不回来了（可能被清理过），这一轮先不带上它，其余照常',
+            })
+            round -= 1
+            continue
+          }
           // 一个字都没吐出来 → 可以安全重试**同一轮**（保守：已经吐出正文的失败不重试，
           // 免得把半截答案丢掉）。重试换一个没试过的档位，而不是把档位去掉。
           if (roundText.length === 0 && effortRetries > 0) {
@@ -653,12 +766,12 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
           const execution =
             !toolSchemas.some((schema) => schema.name === call.name)
               ? { content: [{ type: 'text' as const, text: `（调用已拒绝：${call.name} 不在本次允许的工具中）` }], isError: true }
-              : FS_TOOL_NAMES.includes(call.name) && !isInsideRoot(readRoot, wantPath)
+              : FS_TOOL_NAMES.includes(call.name) && !isReadAllowed(readRoot, wantPath, attachedPaths)
               ? {
                   content: [
                     {
                       type: 'text' as const,
-                      text: `（越界已拒绝：文件类工具只能访问当前项目目录${readRoot ? `（${readRoot}）` : ''}，请求的路径是 ${wantPath || '(未给)'}）`,
+                      text: `（越界已拒绝：文件类工具只能访问当前项目目录${readRoot ? `（${readRoot}）` : ''}，以及用户本次附带的文件；请求的路径是 ${wantPath || '(未给)'}）`,
                     },
                   ],
                   isError: true,
