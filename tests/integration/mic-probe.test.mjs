@@ -68,13 +68,24 @@ try {
     await sleep(100)
     status = await fetch(origin + '/selection-explain/api/mic').then((r) => r.json())
   }
-  check('宿主侧麦克风探针可用（语音卡与「开麦即引用」的前提）', () =>
-    assert.equal(status.available, true, JSON.stringify(status)))
-  check('探针报得出完整状态（capturing / processes）', () => {
-    assert.equal(typeof status.capturing, 'boolean')
-    assert.ok(Array.isArray(status.processes))
-  })
-  console.log(`\n=== 麦克风探针可用性：${checks} 通过 / 0 失败 ===`)
+
+  // 探针是 macOS 专属（读 CoreAudio）。Linux CI 上它按设计就是不启用
+  // （reason: 'not-macos'）—— 那不是缺陷，跳过而不是判失败。
+  if (process.platform !== 'darwin') {
+    check('非 macOS：探针按设计不启用，并如实说明原因（not-macos）', () => {
+      assert.equal(status.available, false)
+      assert.equal(status.reason, 'not-macos')
+    })
+    console.log(`\n=== 麦克风探针可用性：${checks} 通过 / 0 失败（非 macOS，跳过可用性断言）===`)
+  } else {
+    check('宿主侧麦克风探针可用（语音卡与「开麦即引用」的前提）', () =>
+      assert.equal(status.available, true, JSON.stringify(status)))
+    check('探针报得出完整状态（capturing / processes）', () => {
+      assert.equal(typeof status.capturing, 'boolean')
+      assert.ok(Array.isArray(status.processes))
+    })
+    console.log(`\n=== 麦克风探针可用性：${checks} 通过 / 0 失败 ===`)
+  }
 } finally {
   server.closeAllConnections()
   await new Promise((resolve) => server.close(resolve))
