@@ -449,6 +449,10 @@ export function createHistoryController(env) {
           turns: turns,
           toolDigest: env.state.toolDigest,
           pinned: !!(options && options.pinned),
+          // 这段对话有没有解读，必须跟着条目落盘：回放时靠它决定画不画「翻译」一节。
+          // 不落盘的话，语音卡那条"跳过翻译与详解、直接追问"的对话下次开出来，
+          // 会顶着一张空翻译卡片（"这次没有返回内容"）——用户实测。
+          skipped: env.state.skipInterpretation === true,
         }),
       }).catch(function () {
         /* 历史写失败不影响主流程 */
@@ -462,6 +466,30 @@ export function createHistoryController(env) {
   function applyHistoryEntry(entry, source) {
     var parts = entry.parts || {}
     env.state.parts = { translation: parts.translation || '', detail: parts.detail || '' }
+    // 「这段对话有没有解读」跟着条目走：没有解读的对话（语音卡"跳过翻译与详解、直接追问"）
+    // 回放时也不画翻译节 —— 否则回放会画出一张空的「翻译 /（这次没有返回内容）」卡片，
+    // 而那正是用户否掉的东西。反过来也重要：回放一段**有**解读的对话时必须把标记清掉，
+    // 否则上一段跳过解读的对话留下的标记会把这一段的翻译整节藏掉。
+    //
+    // 老条目（skipped 这个键是后来才加的）没有键时按内容兜一次：既没有翻译、也没有详解，
+    // 却已经有追问轮次 —— 这段对话本来就没有解读。只在键**缺失**时兜：
+    // 显式 false 的含义是"跑过解读、结果为空"，那是另一回事。
+    //
+    // ⚠️ 但"缺失"这条路实际走不到：旧版宿主读盘时把缺失写成了 false（已修）。
+    // 所以被写坏的那批显式 false 条目，是靠 paint() 里的**内容兜底**兜住的
+    // （见 panel.js：一节正文都没有 + 已有追问 → 整节不画）。这里保持语义精确：
+    // 只有 true 和"缺失"能推出"跳过解读"，false 不推。
+    var replayTurns = Array.isArray(entry.turns) ? entry.turns : []
+    var hasAskTurn = false
+    for (var step = 0; step < replayTurns.length; step += 1) {
+      if (replayTurns[step] && replayTurns[step].role === 'user') {
+        hasAskTurn = true
+        break
+      }
+    }
+    var noInterpretation = !String(parts.translation || '').trim() && !String(parts.detail || '').trim()
+    env.state.skipInterpretation =
+      entry.skipped === true || (entry.skipped === undefined && noInterpretation && hasAskTurn)
     env.state.turns = Array.isArray(entry.turns) ? entry.turns.slice() : []
     // 回放的是**另一段**对话：输入框里攒的引用跟着清掉
     env.clearQuotes()

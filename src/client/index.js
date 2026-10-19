@@ -69,6 +69,14 @@ export function apply(ctx) {
     payload: null,
     /** 已生成的两节内容（分阶段产出）。 */
     parts: { translation: '', detail: '' },
+    /**
+     * 这段对话**没有解读**（语音卡那条"跳过翻译与详解、直接追问"的路）：
+     * 翻译节整节不画，追问输入框直接可见。
+     *
+     * 语义单位是"一段对话"而不是"一次开窗"：落盘时写进历史条目的 skipped，
+     * 回放/缓存命中时按它复原（否则同一个词再开一次，空翻译卡片又冒出来 —— 用户实测）。
+     */
+    skipInterpretation: false,
     /** 当前阶段：'translation' | 'detail' | 'chat'。 */
     stage: '',
     /** 追问轮次：[{ role: 'user' | 'assistant', text }]，只活在面板/内存里（临时）。 */

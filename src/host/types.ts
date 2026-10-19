@@ -21,6 +21,8 @@ export interface AnalyzeBody {
   key?: unknown
   parts?: unknown
   pinned?: unknown
+  /** 小窗历史：这段对话**没有解读**（"跳过翻译与详解、直接追问"那条路）；回放时据此不画「翻译」一节。 */
+  skipped?: unknown
   /** 单次请求的推理档位覆盖（off / low / high / max）；不传用插件配置。 */
   effort?: unknown
   /** 小窗的「模型」控件：显式指定 provider + model（按清单校验，缺省跟随会话默认）。 */

@@ -133,13 +133,22 @@ function resolveMicProbe(): string {
     micProbeResolved = built
     return micProbeResolved
   }
-  try {
-    mkdirSync(pluginDataDir(), { recursive: true })
-    const result = spawnSync(
-      'clang',
-      ['-O2', '-framework', 'CoreAudio', '-framework', 'CoreFoundation', MIC_PROBE_SRC, '-o', built],
-      { timeout: 60_000 },
-    )
+  // 逐个工具链试，第一个能编出来的就用它。
+  //
+  // 为什么不能只写一句 `clang`：本机实测（2026-10-19）PATH 上的 /usr/bin/clang 解析到
+  // CommandLineTools 的 MacOSX27.0 SDK，而那个 SDK 的 .tbd 里有这版 ld 不认识的
+  // `arm64e.x1-macos` 架构 —— 链接阶段直接 "tapi error: malformed file"，
+  // 探针永远编不出来，于是**语音卡和"开麦即引用"两条功能一起静默失效**
+  // （available:false，客户端按设计完全不启用）。
+  // 换成 Xcode 自带的 clang + 它的 SDK（xcrun 给出）就能编。
+  mkdirSync(pluginDataDir(), { recursive: true })
+  for (const attempt of probeCompileAttempts()) {
+    let result: ReturnType<typeof spawnSync>
+    try {
+      result = spawnSync(attempt.command, [...attempt.args, MIC_PROBE_SRC, '-o', built], { timeout: 60_000 })
+    } catch {
+      continue
+    }
     if (result.status === 0 && existsSync(built)) {
       try {
         chmodSync(built, 0o755)
@@ -149,12 +158,49 @@ function resolveMicProbe(): string {
       micProbeResolved = built
       return micProbeResolved
     }
-  } catch {
-    /* 下面统一给失败原因 */
   }
   micProbeResolved = ''
   micProbeReason = 'probe-build-failed'
   return micProbeResolved
+}
+
+/** 一套编译尝试：命令 + 参数（源码与 -o 由调用处追加）。 */
+interface ProbeCompileAttempt {
+  command: string
+  args: string[]
+}
+
+/**
+ * 现场编探针时该试哪些工具链（按优先级）。
+ *
+ * ① Xcode 自带 clang + xcrun 报的 SDK：这是本机实测能编出来的那一套；
+ * ② PATH 上的 clang（不指定 sysroot）：干净环境 / 只装了 CommandLineTools 且 SDK 正常的机器；
+ * ③ xcrun 包一层：让 clang 自己去找当前选中的 SDK（xcode-select 指到 Xcode 时等价于 ①，
+ *    指到 CommandLineTools 时就是它自己那套，行为与 ② 同源但更"官方"）。
+ *
+ * 只读环境、不写任何东西：拿不到就跳过这一项（例如没装 Xcode）。
+ */
+function probeCompileAttempts(): ProbeCompileAttempt[] {
+  const frameworks = ['-O2', '-framework', 'CoreAudio', '-framework', 'CoreFoundation']
+  const attempts: ProbeCompileAttempt[] = []
+  const developerDir = '/Applications/Xcode.app/Contents/Developer'
+  const toolchainClang = join(developerDir, 'Toolchains/XcodeDefault.xctoolchain/usr/bin/clang')
+  if (existsSync(toolchainClang)) {
+    let sdkPath = ''
+    try {
+      const found = spawnSync('xcrun', ['--sdk', 'macosx', '--show-sdk-path'], { timeout: 15_000 })
+      if (found.status === 0) sdkPath = String(found.stdout ?? '').trim()
+    } catch {
+      /* 拿不到 SDK 就退化成不指定 sysroot */
+    }
+    attempts.push({
+      command: toolchainClang,
+      args: sdkPath ? ['-isysroot', sdkPath, ...frameworks] : [...frameworks],
+    })
+  }
+  attempts.push({ command: 'clang', args: [...frameworks] })
+  attempts.push({ command: 'xcrun', args: ['clang', ...frameworks] })
+  return attempts
 }
 
 /**

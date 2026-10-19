@@ -46,6 +46,16 @@ interface HistoryInput {
   turns?: unknown
   toolDigest?: unknown
   pinned?: unknown
+  /**
+   * 这段对话**压根没有解读**（语音卡那条"跳过翻译与详解、直接追问"的路）。
+   *
+   * 必须落盘：回放时面板就是靠它决定「翻译」一节画不画。少了它，回放会在
+   * 一句"（这次没有返回内容）"的空卡片上重开一段本来就没有翻译的对话 ——
+   * 用户实测（2026-10-19）：跳过翻译直接追问的那段对话，再开一次时那张
+   * 翻译卡片又冒出来了。注意它不是"翻译返回为空"（那是模型没给内容，
+   * 该如实说一声），而是"这一轮从来没请求过解读"。
+   */
+  skipped?: unknown
 }
 
 interface HistoryEntry {
@@ -58,6 +68,17 @@ interface HistoryEntry {
   turns: HistoryTurn[]
   toolDigest: string
   pinned: boolean
+  /**
+   * 这段对话**没有解读**（见 HistoryInput.skipped）。
+   *
+   * 三态，别把它降成布尔：`true` = 明确没有解读；`false` = 明确跑过解读；
+   * **键不存在** = 老条目，不知道（那时候还没有这个字段）。
+   *
+   * ⚠️ 以前这里写成必填布尔，读盘时一句 `entry.skipped === true` 就把"不知道"
+   * 改写成 `false`，写盘又整份覆盖——未知状态被永久抹掉，客户端再怎么兜也没用
+   * （2026-10-19 用户实测：14 条老对话一直顶着空翻译卡片）。
+   */
+  skipped?: boolean
 }
 
 /** Owns history-store state for one plugin instance. */
@@ -311,6 +332,9 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
           turns: readTurns(entry.turns),
           toolDigest: clampText(entry.toolDigest, 2000),
           pinned: entry.pinned === true,
+          // 只搬运，不解释：老条目没有这个键就让它继续没有。
+          // 改写成 false 等于替客户端断言"这条跑过解读"，而事实是"不知道"。
+          ...(typeof entry.skipped === 'boolean' ? { skipped: entry.skipped } : {}),
         })
       }
       ctx.logger?.info?.(`[${name}] 小窗历史已载入 ${String(history.size)} 条（${historyFile()}）`)
@@ -358,6 +382,14 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
       turns: readTurns(input.turns),
       toolDigest: clampText(input.toolDigest, 2000),
       pinned: input.pinned === true || previous?.pinned === true,
+      // 客户端现在每次整段保存都会带上这个值（true/false），照它写；
+      // **没带**时（老客户端 / 老脚本）保留原来的"没有这个键"，不要补一个 false ——
+      // 补 false 就是在替客户端断言"这条跑过解读"，而它其实只是没上报。
+      ...(typeof input.skipped === 'boolean'
+        ? { skipped: input.skipped }
+        : previous && typeof previous.skipped === 'boolean'
+          ? { skipped: previous.skipped }
+          : {}),
     }
     history.delete(key)
     history.set(key, entry)
@@ -435,7 +467,12 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
           return
         }
         history.delete(entry.key)
-        history.set(entry.key, entry)
+        // 快照来自客户端（DELETE 的返回），字段理论上齐全；缺 skipped 就让它继续缺着，
+        // 别在这里补一个 false —— 那会把"不知道"变成"明确跑过解读"。
+        history.set(entry.key, {
+          ...entry,
+          ...(typeof entry.skipped === 'boolean' ? { skipped: entry.skipped } : {}),
+        })
         scheduleHistoryWrite()
         sendJson(res, 200, { ok: true, size: history.size })
         return
@@ -458,6 +495,9 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
           turns: body?.turns,
           toolDigest: typeof body?.toolDigest === 'string' ? body.toolDigest : '',
           pinned: body?.pinned === true,
+          // 只在客户端**明确上报** true/false 时才带着走；没报就是"不知道"，
+          // 不能在这里用 `=== true` 把它压成 false（那正是把三态压成两态的那一步）。
+          ...(body?.skipped === true || body?.skipped === false ? { skipped: body.skipped } : {}),
         })
         sendJson(res, 200, { ok: true, size })
         return

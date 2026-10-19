@@ -167,9 +167,11 @@ export function createPanelController(env) {
    * 否则钩子会绕过缓存（缓存行为只能靠人工点选才能验证）。
    */
   function openPanelWithInner(text, context, label, anchor, keyContext, options) {
-    // 这一轮是不是"从语音卡直接进追问"：paint() 靠它决定不画翻译/详解两节、
-    // 并且让追问输入框直接可见（见 state.voiceAsk 的几处用法）
-    env.state.voiceAsk = !!(options && options.askFirst)
+    // 这段对话有没有解读：「从语音卡直接进追问」那条路没有（paint() 靠它决定不画翻译节、
+    // 并让追问输入框直接可见）。它不是"只在这一次开窗时有效"的临时标记 ——
+    // 历史回放 / 本地缓存命中会按条目里存的 skipped 复原它（见 history.js 的
+    // applyHistoryEntry 与 saveHistory），所以同一个词下次再开也还是"没有解读"的样子。
+    env.state.skipInterpretation = !!(options && options.askFirst)
     // 记下"这次划词发生在哪个会话"——小窗后续所有按会话解析的东西都用它
     env.panelSessionId = currentSessionId()
     env.state.payload = buildPayload(text, context, label)
@@ -221,6 +223,9 @@ export function createPanelController(env) {
     }
     env.renderTurns()
     if (cached) {
+      // 缓存条目只可能来自**跑过解读**的那一轮（succeed() 里才写缓存）→ 这段对话有解读，
+      // 别把上一段"跳过解读"的对话留下的标记带过来（那会把这次的翻译节整节藏掉）。
+      env.state.skipInterpretation = false
       env.state.turns = (cached.turns || []).slice()
       env.state.phase = 'done'
       env.state.stage = ''
@@ -673,7 +678,7 @@ export function createPanelController(env) {
       if (env.state.turns[i].role === 'user') asked = true
     }
     // 语音卡那条路没有解读可展开，别摆一个点了没反应的按钮
-    env.expandButton.style.display = !hasDetail && translationReady && !asked && !env.state.voiceAsk ? '' : 'none'
+    env.expandButton.style.display = !hasDetail && translationReady && !asked && !env.state.skipInterpretation ? '' : 'none'
     env.expandButton.disabled = false
     return asked
   }
@@ -701,13 +706,28 @@ export function createPanelController(env) {
     var stage = env.state.stage
     var selected = env.state.payload && env.state.payload.text ? env.state.payload.text : env.state.selection ? env.state.selection.text : ''
     var sections = splitSections(env.visibleRaw())
-    // 语音卡那条路（选中文字 + 输入法语音 → 直接追问）：这一轮**没有解读**，
-    // 所以翻译节整节不画 —— 不是"画个空节、里面写这次没有返回内容"（用户否掉的正是它）。
-    env.translationSection.root.style.display = env.state.voiceAsk ? 'none' : ''
-
     // 翻译节：首轮流式期间逐字渲染；已有结果就用结果；一个字都还没有时给等待特效
     var live = stripEchoPrefix(stage === 'detail' ? '' : sections.translation || sections.other, selected)
     var liveDetail = (sections.detail || sections.other || '').trim()
+    // 这段对话没有解读（语音卡那条"跳过翻译与详解、直接追问"的路）：翻译节整节不画 ——
+    // 不是"画个空节、里面写这次没有返回内容"（用户否掉的正是它）。
+    // 标记跟着**对话**走（回放时按条目里的 skipped 复原），不是只跟着这一次开窗走：
+    // 少了这一层，同一个词再开一次（历史/缓存回放）那张空翻译卡片就又冒出来了（用户实测）。
+    //
+    // 兜底（2026-10-19 补）：光靠上面的标记不够 —— 老条目磁盘上根本没有 skipped 这个键，
+    // 而宿主过去读盘时会把它改写成 false，客户端永远看不到"缺失"。所以这里再按**内容**判一次：
+    // 一节正文都没有、却已经有用户追问了 → 这一节没有任何可看的东西，整节不画。
+    // 真正"跑了翻译但模型没返回"的对话也会有追问，同样不画 —— 那张卡片本来就只有一句
+    // "（这次没有返回内容）"、而且重试按钮在 done 状态会被摘掉，留着只是噪音。
+    var askedSoFar = false
+    for (var qi = 0; qi < env.state.turns.length; qi += 1) {
+      if (env.state.turns[qi].role === 'user') {
+        askedSoFar = true
+        break
+      }
+    }
+    var emptyInterpretation = !env.state.parts.translation && !env.state.parts.detail && !live.trim()
+    env.translationSection.root.style.display = env.state.skipInterpretation || (emptyInterpretation && askedSoFar) ? 'none' : ''
     if (env.state.parts.translation) {
       renderRich(env.translationSection.content, stripEchoPrefix(env.state.parts.translation, selected), { callout: true, settled: true })
     } else if (stage !== 'detail' && live.trim()) {
@@ -768,7 +788,7 @@ export function createPanelController(env) {
     var surfaceTheme = env.currentSurfaceTheme()
     env.layer.setAttribute('data-theme', surfaceTheme)
     env.panel.setAttribute('data-theme', surfaceTheme)
-    env.askRow.style.display = wide || translationReady || env.state.voiceAsk || env.state.quotes.length > 0 ? '' : 'none'
+    env.askRow.style.display = wide || translationReady || env.state.skipInterpretation || env.state.quotes.length > 0 ? '' : 'none'
     // 展开 CTA：翻译还在跑（含思考期）时先不出现——那时候该看的是等待特效，
     // 摆在下面只会是个灰着的按钮，反而像"没反应"；发过追问之后也收起（见 syncExpandCta）。
     syncExpandCta()

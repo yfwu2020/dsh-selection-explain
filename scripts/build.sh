@@ -117,6 +117,14 @@ if [ -z "$TSC" ]; then
   exit 1
 fi
 echo "=== tsc $("$TSC" -v) ==="
+# 先把上一次编出来的探针**挪到一边**，再删 lib —— 顺序反了就等于"编不出来时净损失"。
+# （2026-10-19 实测踩过：rm -rf lib 先跑，旧二进制已经没了，后面再想捡都无从捡起。）
+PROBE_OUT="$ROOT/lib/native/mic-probe"
+PROBE_SAVED=""
+if [ -f "$PROBE_OUT" ]; then
+  PROBE_SAVED="$(mktemp -t dsh-sel-micprobe)"
+  cp "$PROBE_OUT" "$PROBE_SAVED"
+fi
 rm -rf "$ROOT/lib"
 "$TSC" -p tsconfig.json
 
@@ -128,19 +136,54 @@ node --check lib/client.js
 # ── ⑤ 原生探针（macOS 专用）──
 # 「检测输入法正在语音输入」靠读 CoreAudio 的进程对象列表（macOS 14.4+），
 # Node 没有 FFI，所以编一个小二进制放进 lib/native/，host 需要时 spawn 它
-# （见 src/index.ts 里的 micPresence）。
+# （见 src/host/mic.ts 的 resolveMicProbe）。
 # 编不出来**不算构建失败**：功能降级成 available:false（和"没装识别服务"一个待遇），
 # 其余功能一律不受影响；非 macOS 直接跳过。
-mkdir -p lib/native
+#
+# ⚠️ 这一节曾经只写一句 `clang`，在本机（2026-10-19）直接编不出来：
+#    PATH 上的 /usr/bin/clang 解析到 CommandLineTools 的 MacOSX27.0 SDK，
+#    那个 SDK 的 .tbd 里有这版 ld 不认识的 `arm64e.x1-macos` 架构 →
+#    链接阶段 "tapi error: malformed file"。
+#    而上一行的 `rm -rf lib` 已经把这个**原本好好的**二进制删掉了 ——
+#    结果语音卡和"开麦即引用"两条功能一起静默失效（用户："语音卡片被你改没了"）。
+# 所以：① 多试几套工具链，编出来一个就用；② 编不出来时**把旧的捡回来**，绝不净损失。
+#    （旧二进制在 ③ 之前就已经暂存到 $PROBE_SAVED 了。）
+mkdir -p "$ROOT/lib/native"
+
+probe_compile() {
+  # $@ = 编译器命令与参数（源码与 -o 由这里追加）
+  "$@" -O2 -framework CoreAudio -framework CoreFoundation native/mic-probe.c -o "$PROBE_OUT" >/dev/null 2>&1
+}
+
 if [ "$(uname -s)" = "Darwin" ] && command -v clang >/dev/null 2>&1; then
-  if clang -O2 -framework CoreAudio -framework CoreFoundation native/mic-probe.c -o lib/native/mic-probe; then
-    echo "=== 原生探针：lib/native/mic-probe ==="
+  PROBE_OK=""
+  # ① Xcode 自带 clang + 它自己的 SDK（本机实测能编的那一套）
+  XCODE_CLANG="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+  XCODE_SDK="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+  if [ -x "$XCODE_CLANG" ] && [ -n "$XCODE_SDK" ] && probe_compile "$XCODE_CLANG" -isysroot "$XCODE_SDK"; then
+    PROBE_OK="Xcode clang + $(basename "$XCODE_SDK")"
+  # ② PATH 上的 clang（不指定 sysroot）
+  elif probe_compile clang; then
+    PROBE_OK="clang"
+  # ③ xcrun 包一层
+  elif probe_compile xcrun clang; then
+    PROBE_OK="xcrun clang"
+  fi
+  if [ -n "$PROBE_OK" ]; then
+    echo "=== 原生探针：${PROBE_OUT}（${PROBE_OK}）==="
+  elif [ -n "$PROBE_SAVED" ]; then
+    # 编不出来：把上一次那个捡回来。它多半仍然可用（源码没改过），
+    # 而"没有探针"意味着语音功能整个消失 —— 两害相权，宁可留着旧的。
+    cp "$PROBE_SAVED" "$PROBE_OUT"
+    chmod +x "$PROBE_OUT" 2>/dev/null || true
+    echo "build: 原生探针编译失败 —— 沿用上一次编出来的那份（语音功能不受影响）" >&2
   else
-    echo "build: 原生探针编译失败 —— 麦克风占用检测将不可用（不影响其它功能）" >&2
+    echo "build: 原生探针编译失败 —— 麦克风占用检测将不可用（语音卡与开麦引用不会启用）" >&2
   fi
 else
   echo "build: 跳过原生探针（非 macOS 或没有 clang）—— 麦克风占用检测不可用"
 fi
+if [ -n "$PROBE_SAVED" ]; then rm -f "$PROBE_SAVED"; fi
 
 echo "=== 构建完成 ==="
 ls -l lib
