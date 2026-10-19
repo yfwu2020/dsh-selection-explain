@@ -2294,6 +2294,12 @@ try {
 
 let failed = 0
 if (!results) {
+  // 与 voice / bridge 冒烟同一套规矩：**Chrome 根本没跑起来**（容器缺 dbus/显示、
+  // 或有别的浏览器占着）不是面板的错，按 SKIP 处理；真跑起来了却没有结果仍然判失败。
+  if (!dump.trim() && process.env.REQUIRE_BROWSER !== '1' && process.env.SEL_ONLINE !== '1') {
+    console.log('SKIP  Chrome 没起来（没拿到任何页面输出）—— 面板冒烟本次不跑')
+    process.exit(0)
+  }
   console.log('FAIL  浏览器里没拿到结果（<pre id="out">）')
   console.log(dump.slice(0, 400))
   failed += 1

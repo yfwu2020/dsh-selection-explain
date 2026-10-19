@@ -331,6 +331,8 @@ async function send(method, params = {}) {
     ws.send(JSON.stringify({ id, method, params }))
   })
 }
+// Chrome 到底起没起来：只有"起不来"才允许 SKIP；起来了但页面没结果，是**真失败**。
+let chromeStarted = false
 try {
   const activePortFile = join(profile, 'DevToolsActivePort')
   const started = Date.now()
@@ -339,6 +341,7 @@ try {
     await sleep(100)
   }
   if (!existsSync(activePortFile)) throw new Error('DevTools not ready: ' + chromeLog.slice(-1000))
+  chromeStarted = true
   const debugPort = Number(readFileSync(activePortFile, 'utf8').split('\n')[0])
   const targets = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()
   ws = new WebSocket(targets.find(target => target.type === 'page').webSocketDebuggerUrl)
@@ -380,6 +383,13 @@ try {
   rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 }
 
+// Chrome 起不来（容器里缺 dbus/显示、或有别的浏览器占着）不是"桥坏了"：
+// 与 voice 冒烟一致，按 SKIP 处理 —— 但**只在 Chrome 根本没启动**时这样做，
+// 起来了却没拿到结果仍然判失败（那才是真问题）。
+if (!chromeStarted && process.env.REQUIRE_BROWSER !== '1' && process.env.SEL_ONLINE !== '1') {
+  console.log('SKIP  Chrome 没起来（DevTools 端口没响应）：' + chromeLog.slice(0, 300))
+  process.exit(0)
+}
 assert('浏览器里拿到了验证结果（<pre id="out">）', !!payload, dump.slice(0, 120))
 if (payload) {
   const fromA = payload.msgs.filter((m) => m.from === 'A' && m.kind === 'selection')
