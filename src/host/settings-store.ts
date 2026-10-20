@@ -30,7 +30,7 @@ export function createSettingsStore(ctx: Context, config: Config) {
    */
   let settingsOverrides: Record<string, unknown> = {}
 
-  let settingsLoaded = false
+  let settingsLoad: Promise<void> | null = null
 
   let settingsTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -53,22 +53,22 @@ export function createSettingsStore(ctx: Context, config: Config) {
     }
   }
 
-  /** 读设置覆盖文件（进程内只读一次，与 loadHistory / loadPillPos 同节奏）。 */
-  async function loadSettings(): Promise<void> {
-    if (settingsLoaded) return
-    settingsLoaded = true
-    try {
-      const parsed = JSON.parse(await readFile(settingsFile(), 'utf8')) as { values?: unknown }
-      const raw = parsed?.values
-      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-        const values = normalizeStoredSettings(raw)
-        settingsOverrides = values
-        applyOverrides(values)
+  /** 进程内只读一次；并发请求共同等待覆盖值生效。 */
+  function loadSettings(): Promise<void> {
+    return settingsLoad ??= (async () => {
+      try {
+        const parsed = JSON.parse(await readFile(settingsFile(), 'utf8')) as { values?: unknown }
+        const raw = parsed?.values
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+          const values = normalizeStoredSettings(raw)
+          settingsOverrides = values
+          applyOverrides(values)
+        }
+      } catch {
+        // 没存过 / 坏了都当作"没改过"：出厂默认本来就是可用状态，没必要因此报错
+        settingsOverrides = {}
       }
-    } catch {
-      // 没存过 / 坏了都当作"没改过"：出厂默认本来就是可用状态，没必要因此报错
-      settingsOverrides = {}
-    }
+    })()
   }
 
   /** 落盘（防抖：拖数字输入框会连发多次，没必要每次都写文件）。 */

@@ -70,9 +70,11 @@ export const SETTINGS_GROUPS: SettingGroup[] = [
     id: 'model', label: '模型',
     sections: [
       {"label": "模型", "keys": ["modelChoice"]},
+      {"label": "对话记忆", "keys": ["chatContextTokens"], "note": "容量允许时保留完整对话；接近预算时压缩较早问答，原始历史和附件仍保留。图片计入预算，不按固定张数淘汰。"},
       {"label": "思考强度", "keys": ["translationReasoningEffort", "reasoningEffort", "chatReasoningEffort"], "note": "关闭思考仍会生成回答。"},
     ],
     items: [
+      {"key": "chatContextTokens", "kind": "number", "label": "对话输入预算", "hint": "按模型容量自动收紧，并为回答及工具结果预留空间；未知模型使用此预算。用量为估算。", "unit": "tokens", "min": CONFIG_LIMITS.chatContextTokens.min, "max": CONFIG_LIMITS.chatContextTokens.max, "step": 1024},
       {"key": "modelChoice", "kind": "model", "label": "模型", "hint": "", "keys": ["provider", "model"]},
       {"key": "translationReasoningEffort", "kind": "seg", "label": "首轮", "hint": "翻译 / 解读 / 注释", "options": ["off", "low", "high", "max"]},
       {"key": "reasoningEffort", "kind": "seg", "label": "次轮", "hint": "点击「展开详解」", "options": ["off", "low", "high", "max"]},
@@ -141,7 +143,7 @@ export const SETTINGS_GROUPS: SettingGroup[] = [
   {
     id: 'data', label: '数据',
     sections: [
-      {"label": "历史记录", "keys": ["historyMaxEntries"], "note": "0 为不保存，已有对话保留。超出时移除最久未更新的对话，已升格的保留。"},
+      {"label": "历史记录", "keys": ["historyMaxEntries"], "note": "0 仅停止保存新历史，不清空已有记录。超出数量时移除最久未更新的对话，已升格的也参与淘汰；正式会话不受影响。"},
     ],
     items: [
       {"key": "historyMaxEntries", "kind": "number", "label": "保留最近对话数量", "hint": "每条包含所选文字、模型回答及后续追问。", "unit": "条", "min": CONFIG_LIMITS.historyMaxEntries.min, "max": CONFIG_LIMITS.historyMaxEntries.max, "step": 1},

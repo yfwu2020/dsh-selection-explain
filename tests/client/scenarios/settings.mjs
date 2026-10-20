@@ -65,7 +65,7 @@ export async function run(env) {
     for (let i = 0; i < 80 && env.sent.length === before; i += 1) await env.sleep(20)
     const payload = env.sent[env.sent.length - 1] || {}
     env.assert('越过详解也能发出追问', payload.question === '不展开详解，直接问一句', JSON.stringify({ q: payload.question, stage: payload.stage }))
-    const seed = payload.history && payload.history[0] ? String(payload.history[0].text) : ''
+    const seed = String(payload.initialExplanation || '')
     env.assert('前情只带翻译：不留空的「详解：」', seed.indexOf('前情') >= 0 && seed.indexOf('详解：') < 0, seed.slice(0, 70))
     for (let i = 0; i < 80 && env.textOf(env.chatLog).indexOf('这是对追问的回答') < 0; i += 1) await env.sleep(20)
     env.assert('回答渲染进小窗消息区', env.textOf(env.chatLog).indexOf('这是对追问的回答') >= 0, env.textOf(env.chatLog).slice(0, 60))

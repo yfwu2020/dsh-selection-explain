@@ -124,7 +124,6 @@ export function createPromote(ctx: Context, config: Config, sessions: ReturnType
       const translation = historyStore.clampText(body.translation, 8000)
       const detail = historyStore.clampText(body.detail, 12000)
       const turns = (Array.isArray(body.turns) ? body.turns : [])
-        .slice(-20)
         .map((turn) => turn as { role?: unknown; text?: unknown; seed?: unknown; attachments?: unknown })
         .filter((turn) => turn.seed !== true && typeof turn.text === 'string' && turn.text.trim().length > 0)
         .map((turn) => ({

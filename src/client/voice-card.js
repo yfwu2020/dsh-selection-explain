@@ -191,7 +191,7 @@ export function createVoiceCardController(env) {
    */
   function unpinVCardBox() {
     if (vcardState.unpinTimer) {
-      clearTimeout(vcardState.unpinTimer)
+      env.timerScope.clear(vcardState.unpinTimer)
       vcardState.unpinTimer = null
     }
     if (vcard && vcardState.unpinHandler) {
@@ -212,7 +212,7 @@ export function createVoiceCardController(env) {
   function scheduleVCardUnpin() {
     if (!vcard) return
     if (vcardState.unpinTimer) {
-      clearTimeout(vcardState.unpinTimer)
+      env.timerScope.clear(vcardState.unpinTimer)
       vcardState.unpinTimer = null
     }
     if (vcardState.unpinHandler) {
@@ -678,7 +678,7 @@ export function createVoiceCardController(env) {
     line.setAttribute('data-off', 'a')
     var done = function () {
       if (vcardState.crtTimer) {
-        clearTimeout(vcardState.crtTimer)
+        env.timerScope.clear(vcardState.crtTimer)
         vcardState.crtTimer = null
       }
       if (vcard && vcardState.crtHandler) {
@@ -704,7 +704,7 @@ export function createVoiceCardController(env) {
   function finishCrtOff() {
     vcardState.closing = false
     if (vcardState.crtTimer) {
-      clearTimeout(vcardState.crtTimer)
+      env.timerScope.clear(vcardState.crtTimer)
       vcardState.crtTimer = null
     }
     if (vcard && vcardState.crtHandler) {
@@ -926,8 +926,7 @@ export function createVoiceCardController(env) {
     if (vcardState.timer) return
     // 两条路都要盯麦克风：解读选区（面板没开 → 语音卡）与引用选区（面板开着 → 自动引用）
     if (!env.state.selection && !env.state.quoteSelection) return
-    vcardState.timer = setInterval(micTick, MIC_POLL_MS)
-    env.timers.push(vcardState.timer)
+    vcardState.timer = env.timerScope.interval(micTick, MIC_POLL_MS)
     micTick()
   }
 
@@ -945,7 +944,7 @@ export function createVoiceCardController(env) {
     // 语义上这样才对：一次观察窗口（浮标亮着的这段时间）里只处理第一次开麦。
     quoteVoiceHandled = false
     if (!vcardState.timer) return
-    clearInterval(vcardState.timer)
+    env.timerScope.clear(vcardState.timer)
     vcardState.timer = null
   }
 

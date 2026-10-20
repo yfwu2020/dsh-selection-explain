@@ -1,4 +1,5 @@
-import { isDarkSurface, renderRich, splitSections } from './render.js'
+import { readContextState } from '../chat-context.js'
+import { isDarkSurface, renderRich, splitSections, releasePreviewFrames } from './render.js'
 import { HISTORY } from './constants.js'
 import { el, listen } from './dom.js'
 import { attachmentUrl, formatBytes, extensionOf } from './attach.js'
@@ -13,22 +14,7 @@ export function createHistoryController(env) {
    * `<ds_safety_tool_call><tool_name>web_search</tool_name>…` 整段喷出来）。
    * 这里在**渲染时**清理（不改 state.raw，流式期间半截标签也不会丢内容）。
    */
-  /**
-   * ── 历史折叠 ──────────────────────────────────────────────────────────
-   * 追问时历史是"原文逐字带上"，于是整页 HTML（实测 8k 字 ≈ 2,150 tokens）
-   * 会在之后**每一轮**重发一次，还占掉 20 条窗口里的位置。
-   *
-   * 这里把它折叠成**结构化 Markdown**（标题/表格行列/列表/强调/代码都保留，
-   * 只丢 <style>、class、内联 style、SVG 路径这些"渲染实现细节"），
-   * 实测：8,021 字 → 1,146 字，可见文本覆盖率 100.0%，≈2,150 → ≈860 tokens。
-   *
-   * 三条边界：
-   *   ① 只作用于**发历史**这一步 —— 面板里渲染的、代码视图复制的永远是原文；
-   *   ② 折一次就缓存在那一轮（`turn.foldedCache`），之后每轮直接复用，不重折；
-   *   ③ **最近一轮保持原样** —— 用户说"把上一页的高亮改成蓝色"时仍能改到版式。
-   */
-  var FOLD_HISTORY_KEEP_LATEST = true
-
+  /** HTML转文字只用于明确引用和引用附近的可读快照；发送历史保持原文。 */
   var foldCount = 0
 
   var HTML_VOID_TAGS = {
@@ -351,18 +337,6 @@ export function createHistoryController(env) {
    * 取某一轮"发历史"用的文本：折一次缓存一次，之后每轮直接复用（不重折）。
    * streaming 中的那一轮不折也不缓存（历史本来也不含最后两条）。
    */
-  function historyTextOf(turn, keepRaw) {
-    if (!turn) return ''
-    // 用户那轮：发出去的是什么就带回什么（带引用时是拼好的那份，见 composeQuestion）。
-    // 引用块必须进历史 —— 否则下一轮模型只看到"上面那段呢？"，而"那段"已经在上下文里消失了。
-    if (turn.role === 'user') return env.sentTextOf(turn)
-    if (keepRaw) return turn.text
-    if (typeof turn.foldedCache === 'string') return turn.foldedCache
-    if (turn.streaming === true) return turn.text
-    var folded = foldForHistory(turn.text)
-    turn.foldedCache = folded
-    return folded
-  }
 
   /**
    * 当前面板底色是深还是浅（'dark' | 'light'）。
@@ -425,6 +399,8 @@ export function createHistoryController(env) {
   //   ③ 「最近聊过的」列表，点一条把那段对话整个调回来
 
   /** 把当前状态存成一条历史（整段覆盖）。 */
+  var historySaveSequence = 0
+
   function saveHistory(options) {
     var payload = env.state.payload
     if (!payload || !env.state.cacheKey) return
@@ -435,6 +411,21 @@ export function createHistoryController(env) {
       if (turn.hidden === true) continue
       // 落盘的是"实际发出去的那份"（用户那轮带引用块）：回放出来时这轮对话是自洽的
       turns.push(exported[i])
+    }
+    var owner = env.state.turns
+    var ownerKey = env.state.cacheKey
+    var sequence = ++historySaveSequence
+    function noteSaved(error) {
+      if (sequence !== historySaveSequence || env.state.turns !== owner || env.state.cacheKey !== ownerKey) return
+      var last = owner[owner.length - 1]
+      if (!last || last.role !== 'assistant') return
+      if (error) {
+        last.notice = '历史记录保存失败，当前原文仍在小窗中；刷新或退出前请先复制重要内容。'
+        last.noticeCode = 'history-save-failed'
+      } else if (last.noticeCode === 'history-save-failed') {
+        last.notice = ''; last.noticeCode = ''
+      } else return
+      renderTurns()
     }
     try {
       fetch(HISTORY, {
@@ -448,17 +439,23 @@ export function createHistoryController(env) {
           parts: env.state.parts,
           turns: turns,
           toolDigest: env.state.toolDigest,
+          contextState: env.state.contextState || null,
           pinned: !!(options && options.pinned),
           // 这段对话有没有解读，必须跟着条目落盘：回放时靠它决定画不画「翻译」一节。
           // 不落盘的话，语音卡那条"跳过翻译与详解、直接追问"的对话下次开出来，
           // 会顶着一张空翻译卡片（"这次没有返回内容"）——用户实测。
           skipped: env.state.skipInterpretation === true,
         }),
+      }).then(function (response) {
+        if (!response.ok) throw new Error('HTTP ' + response.status)
+        return response.json()
+      }).then(function (result) {
+        noteSaved(!result || result.ok !== true)
       }).catch(function () {
-        /* 历史写失败不影响主流程 */
+        noteSaved(true)
       })
     } catch (error) {
-      /* noop */
+      noteSaved(true)
     }
   }
 
@@ -490,6 +487,8 @@ export function createHistoryController(env) {
     var noInterpretation = !String(parts.translation || '').trim() && !String(parts.detail || '').trim()
     env.state.skipInterpretation =
       entry.skipped === true || (entry.skipped === undefined && noInterpretation && hasAskTurn)
+    env.state.contextState = readContextState(entry.contextState)
+    if (env.state.contextState && typeof env.state.contextState.sessionId === 'string') env.panelSessionId = env.state.contextState.sessionId
     env.state.turns = Array.isArray(entry.turns) ? entry.turns.slice() : []
     // 回放的是**另一段**对话：输入框里攒的引用跟着清掉
     env.clearQuotes()
@@ -529,8 +528,7 @@ export function createHistoryController(env) {
       settled = true
       if (env.state.cacheKey === cacheKey && onMiss) onMiss()
     }
-    var timer = setTimeout(miss, 1500)
-    env.timers.push(timer)
+    var timer = env.timerScope.later(miss, 1500)
     try {
       fetch(HISTORY + '?key=' + encodeURIComponent(cacheKey))
         .then(function (response) {
@@ -545,7 +543,7 @@ export function createHistoryController(env) {
           }
           if (data && data.ok === true && data.entry) {
             settled = true
-            clearTimeout(timer)
+            env.timerScope.clear(timer)
             applyHistoryEntry(data.entry, 'history')
             return
           }
@@ -741,7 +739,7 @@ export function createHistoryController(env) {
     })
     bar.appendChild(undo)
     env.historyList.appendChild(bar)
-    setTimeout(function () {
+    env.timerScope.later(function () {
       if (bar.parentNode) bar.parentNode.removeChild(bar)
     }, 5000)
   }
@@ -974,32 +972,90 @@ export function createHistoryController(env) {
     env.state.follow = nearBottom()
   }
 
+  var turnWindowSize = 40
+  var turnWindowKey = null
+  var renderedTurns = []
+
+  function clearRenderedTurns() {
+    env.clearWaiting(env.chatLog)
+    releasePreviewFrames(env.chatLog)
+    env.chatLog.textContent = ''
+    renderedTurns = []
+    turnWindowSize = 40
+    turnWindowKey = null
+  }
+
   /** 渲染追问气泡（用户右侧、助手左侧）。
    *  只更新最后一条气泡：全量重建会让滚动容器先塌再长，滚动位置被夹回顶部。 */
   function renderTurns(options) {
+    if (!env.panelOpen) { clearRenderedTurns(); return }
     var force = !!(options && options.stick === true)
     // 注意：这里仍用 nearBottom()（不管用户是滚轮还是别的途径离开底部都成立）；
     // state.follow 只服务于下面的 ResizeObserver —— 内容"长高"之后再量 nearBottom 必然是 false，
     // 所以必须有一个"长高之前是否贴底"的记忆。
-    var stick = force || nearBottom()
+    var stick = !(options && options.preservePosition) && (force || nearBottom())
     var visible = []
     for (var i = 0; i < env.state.turns.length; i++) {
       // 种子轮（前情提要）只发给模型当上下文，不在小窗里再显示一遍
       if (env.state.turns[i].hidden !== true) visible.push(env.state.turns[i])
     }
-    if (env.chatLog.children.length !== visible.length) {
+    if (turnWindowKey !== env.state.cacheKey) {
+      turnWindowKey = env.state.cacheKey
+      turnWindowSize = 40
+    }
+    var earlier = Math.max(0, visible.length - turnWindowSize)
+    visible = visible.slice(earlier)
+    var sameWindow = renderedTurns.length === visible.length && visible.every(function (turn, index) {
+      return renderedTurns[index] === turn
+    })
+    var prependCount = visible.length - renderedTurns.length
+    var canPrepend = options && options.prepend && renderedTurns.length > 0 && prependCount > 0 && renderedTurns.every(function (turn, index) {
+      return visible[prependCount + index] === turn
+    })
+    if (canPrepend) {
+      // Keep existing bubbles mounted: rebuilding would reload their iframes and reset
+      // measured preview heights, moving the reader even when scrollTop is adjusted.
+      var moreButton = env.chatLog.children[0]
+      var firstBubble = env.chatLog.children[1]
+      if (earlier > 0) moreButton.textContent = '显示更早的消息（还有 ' + earlier + ' 条）'
+      else env.chatLog.removeChild(moreButton)
+      for (var p = 0; p < prependCount; p++) {
+        var prepended = bubbleFor(visible[p])
+        prepended.__turn = visible[p]
+        env.chatLog.insertBefore(prepended, firstBubble)
+      }
+      renderedTurns = visible.slice()
+    } else if (!sameWindow || env.chatLog.children.length !== visible.length + (earlier > 0 ? 1 : 0)) {
       env.clearWaiting(env.chatLog)
+      releasePreviewFrames(env.chatLog)
       env.chatLog.textContent = ''
+      if (earlier > 0) {
+        var more = el('button', 'dsh-sel-expand', '显示更早的消息（还有 ' + earlier + ' 条）')
+        more.type = 'button'
+        more.setAttribute('data-history-more', '1')
+        listen(more, 'click', function (event) {
+          event.preventDefault()
+          event.stopPropagation()
+          var top = env.body.scrollTop
+          var height = env.body.scrollHeight
+          turnWindowSize += 40
+          renderTurns({ preservePosition: true, prepend: true })
+          env.body.scrollTop = top + Math.max(0, env.body.scrollHeight - height)
+          env.state.follow = false
+        })
+        env.chatLog.appendChild(more)
+      }
       for (var j = 0; j < visible.length; j++) {
         var bubble = bubbleFor(visible[j])
         // 气泡记下自己属于哪一轮：引用时要据此取"这一轮 ± 一轮"的上下文
         bubble.__turn = visible[j]
         env.chatLog.appendChild(bubble)
       }
+      renderedTurns = visible.slice()
       // 刚入列的"待答"气泡：此时才挂进 DOM，可以画等待特效了
       var fresh = visible[visible.length - 1]
       if (fresh && fresh.role === 'assistant' && fresh.asking === true && !fresh.text) {
-        env.showWaiting(env.chatLog.children[visible.length - 1], '正在回答…', {
+        env.showWaiting(env.chatLog.children[env.chatLog.children.length - 1], '正在回答…', {
           startedAt: fresh.startedAt,
           effort: fresh.effort,
           effortOf: function () { return fresh.effort || 'high' },
@@ -1007,7 +1063,7 @@ export function createHistoryController(env) {
         })
       }
     } else if (visible.length > 0) {
-      var node = env.chatLog.children[visible.length - 1]
+      var node = env.chatLog.children[env.chatLog.children.length - 1]
       var turn = visible[visible.length - 1]
       var painted = false
       node.className = 'dsh-sel-bubble ' + (turn.role === 'user' ? 'dsh-sel-bubble-user' : 'dsh-sel-bubble-bot') + (turn.error ? ' dsh-sel-bubble-err' : '')
@@ -1241,6 +1297,7 @@ export function createHistoryController(env) {
     return seed.length > 1500 ? seed.slice(0, 1500) + '…' : seed
   }
   return {
+    clearRenderedTurns,
     hideHistoryList,
     placeHistoryList,
     toggleHistoryList,
@@ -1261,9 +1318,6 @@ export function createHistoryController(env) {
     loadHistoryEntry,
     seedHistoryFromExplanation,
     ensureChatFollow,
-    get FOLD_HISTORY_KEEP_LATEST() { return FOLD_HISTORY_KEEP_LATEST },
-    set FOLD_HISTORY_KEEP_LATEST(value) { FOLD_HISTORY_KEEP_LATEST = value },
-    historyTextOf,
     clearTransientNotice,
     saveHistory,
     applyToolEvent,

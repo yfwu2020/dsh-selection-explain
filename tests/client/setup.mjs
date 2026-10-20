@@ -81,6 +81,15 @@ export async function createClientFixture() {
       this.children.push(child)
       return child
     }
+    insertBefore(child, reference) {
+      if (reference == null) return this.appendChild(child)
+      if (child === reference) return child
+      if (!this.children.includes(reference)) throw new Error('Reference node is not a child')
+      if (child.parentNode) child.parentNode.removeChild(child)
+      child.parentNode = this
+      this.children.splice(this.children.indexOf(reference), 0, child)
+      return child
+    }
     removeChild(child) {
       const i = this.children.indexOf(child)
       if (i >= 0) this.children.splice(i, 1)
@@ -861,6 +870,7 @@ export async function createClientFixture() {
         )
       }
       const extra = globalThis.__askExtra || {}
+      if (extra.rejectContext) return Promise.resolve(new Response(`data: ${JSON.stringify({ type: 'error', code: 'context-rejected', message: '当前引用超过容量' })}\n\n`, { headers: { 'content-type': 'text/event-stream' } }))
       // noticeGapMs：在 notice 与正文之间留一段空档。
       // 验"过程提示在正文到达前看得见"必须有观察窗口 —— 一口气发完的话，
       // 提示会在同一批 SSE 里被 delta 立刻撤掉，轮询根本抓不到。
@@ -886,6 +896,8 @@ export async function createClientFixture() {
       }
       const payload = [
         `data: ${JSON.stringify({ type: 'start', provider: 'fixture', model: 'fixture', mode: 'chat', effort: 'low' })}\n\n`,
+        ...(extra.contextState ? [`data: ${JSON.stringify({ type: 'context-state', state: extra.contextState })}\n\n`] : []),
+        ...(extra.materialRestored ? [`data: ${JSON.stringify({ type: 'material-restored', attachment: extra.materialRestored })}\n\n`] : []),
         ...(extra.notice && !extra.strip ? [`data: ${JSON.stringify({ type: 'notice', ...extra.notice })}\n\n`] : []),
         `data: ${JSON.stringify({ type: 'delta', text: extra.delta || '这是对追问的回答：' + body.question })}\n\n`,
         ...(extra.strip ? [`data: ${JSON.stringify({ type: 'strip', text: extra.strip })}\n\n`] : []),

@@ -643,6 +643,8 @@ export async function run(env) {
     // 让这一轮流式里含一条 effort-rejected notice（模拟 host 的回退）
     env.hook.close()
     await env.sleep(30)
+    // 正常用户从已打开的小窗发送；隐藏时不再保留气泡 DOM。
+    env.hook.pill().dispatch('click', { preventDefault() {}, stopPropagation() {} })
     globalThis.__askExtra = { notice: { code: 'effort-rejected', tier: 'max', text: '「max」档位该模型不支持，已按默认档位重试' } }
     env.hook.ask('档位被拒的用例')
     for (let i = 0; i < 200 && env.hook.turns().some((t) => t.streaming === true); i += 1) await env.sleep(20)

@@ -18,6 +18,8 @@ export interface Config {
   reasoningEffort: string
   /** **首轮**（翻译 / 解读 / 注释）的推理档位。 */
   translationReasoningEffort: string
+  /** 小窗模型输入预算（估算 tokens），另受模型容量约束。 */
+  chatContextTokens: number
   historyMaxEntries: number
   /** 采样温度。 */
   temperature: number
@@ -110,6 +112,7 @@ export const CONFIG_DEFAULTS: Readonly<Config> = Object.freeze({
     chatModel: '',
     reasoningEffort: 'high',
     translationReasoningEffort: 'off',
+    chatContextTokens: 32768,
     historyMaxEntries: 20,
     temperature: -1,
     maxTokens: 0,
@@ -140,6 +143,7 @@ export const CONFIG_DEFAULTS: Readonly<Config> = Object.freeze({
   })
 
 export const CONFIG_LIMITS = {
+  chatContextTokens: { min: 4096, max: 262144 },
   historyMaxEntries: { min: 0, max: 500 },
   temperature: { min: -1, max: 2 },
   maxTokens: { min: 0, max: 32000 },

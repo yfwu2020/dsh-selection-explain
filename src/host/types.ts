@@ -36,6 +36,10 @@ export interface AnalyzeBody {
   question?: unknown
   /** 追问模式下的历史轮次：[{ role: 'user' | 'assistant', text }]。 */
   history?: unknown
+  historyStart?: unknown
+  contextState?: unknown
+  materials?: unknown
+  initialExplanation?: unknown
   /**
    * 这一轮追问带的附件：[{ kind: 'image' | 'file', ref }]，ref 是 /api/attach 存好之后的持久引用。
    * 图片 → ImageBlock（模型直接看）；文件 → FileBlock（dsh-llm 投影成"名字 + 字节数 + 只读路径"一行）。

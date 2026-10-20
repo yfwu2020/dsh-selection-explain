@@ -2,6 +2,7 @@ import { stopIcon, sendIcon } from './icons.js'
 import { QUOTE_ONLY_QUESTION, API, PROMOTE } from './constants.js'
 import { el } from './dom.js'
 import { splitSections } from './render.js'
+import { CHAT_REQUEST_BYTES, contextSource, prepareChatHistory, readContextState } from '../chat-context.js'
 
 /** conversation state and operations; dependencies are supplied as live node/callback accessors. */
 export function createConversationController(env) {
@@ -181,7 +182,8 @@ export function createConversationController(env) {
     }
     // attachments 挂在这一轮上：它既随历史落盘（saveHistory → history-store），
     // 也在下面拼模型历史时回传（→ analyze 的图片预算）。**只存引用，不存字节**。
-    env.state.turns.push({ role: 'user', text: asked || QUOTE_ONLY_QUESTION, quotes: quotes, sent: sent, attachments: withAttachments })
+    var questionTurn = { role: 'user', text: asked || QUOTE_ONLY_QUESTION, quotes: quotes, sent: sent, attachments: withAttachments }
+    env.state.turns.push(questionTurn)
     // asking 只管"等待特效要不要显示"（首字一到就置 false），
     // streaming 才是"这一轮还没写完"。两者必须分开：以前拿 asking 当定稿判据，
     // 结果是首字一到就认定"定稿了"→ 每个 delta 都重建一个 iframe（实测一条回答建了 24 个），
@@ -210,7 +212,7 @@ export function createConversationController(env) {
     // 都会让消息区长高，由 ResizeObserver 负责续贴；定时硬贴会在用户翻看上文时把他拽回底部。
     if (env.state.sessionOpen !== undefined) { /* noop */ }
     var startedAt = Date.now()
-    var timer = setInterval(function () {
+    var timer = env.timerScope.interval(function () {
       env.paintPill()
       // 追问期间也一样：只报"在检索/在生成"，不报工具细节
       env.setStatus(
@@ -218,21 +220,16 @@ export function createConversationController(env) {
       )
       updateWaitClocks()
     }, 200)
-    env.timers.push(timer)
 
     var historyTurns = env.state.turns.slice(0, env.state.turns.length - 2)
-    var history = historyTurns.map(function (turn, index) {
-      // 最近一轮保持原样（可能还要"改这一页的版式"），更早的整页 HTML 折叠成 Markdown。
-      // 折叠结果缓存在 turn 上：同一轮只折一次，之后每轮直接复用。
-      var keepRaw = env.FOLD_HISTORY_KEEP_LATEST && index === historyTurns.length - 1
-      // 附件引用跟着这一轮一起回传：host 据此让模型在后续轮次里**仍然看得见**当时那张图 /
-      // 那个文件（图片有预算，超了 host 会降级成一行文字；见 history-attachments.ts）
-      return {
-        role: turn.role,
-        text: env.historyTextOf(turn, keepRaw),
-        ...(turn.attachments && turn.attachments.length > 0 ? { attachments: turn.attachments } : {}),
-      }
-    })
+    var initialExplanation = env.state.skipInterpretation ? '' : env.seedHistoryFromExplanation()
+    var source = contextSource(env.panelOrCurrentSessionId(), payload.text.trim(), payload.context, initialExplanation)
+    if (env.state.contextState && env.state.contextState.source !== source) env.state.contextState = null
+    var prepared = prepareChatHistory(historyTurns, env.state.contextState)
+    env.state.contextState = prepared.contextState
+    var history = prepared.history
+    var requestTurns = env.state.turns
+    var requestKey = env.state.cacheKey
 
     // 这一轮的 abort 句柄：生成中按「停止」会打断它（不是失败，保留已流出的内容）
     env.state.stopped = false
@@ -248,7 +245,7 @@ export function createConversationController(env) {
     }
 
     function finish(error) {
-      clearInterval(timer)
+      env.timerScope.clear(timer)
       env.state.asking = false
       env.state.toolBusy = false
       // 本轮结束了："正在整理结论…"这类过程提示一律撤掉（结论轮一个字没吐时也别留着）
@@ -282,16 +279,18 @@ export function createConversationController(env) {
       env.askFocusAfterTurn()
     }
 
-    fetch(API, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+    var requestBody = JSON.stringify({
         text: payload.text,
         context: payload.context,
         label: payload.label,
         sessionId: env.panelOrCurrentSessionId(),
         question: sent,
         history: history,
+        key: requestKey,
+        historyStart: prepared.historyStart,
+        contextState: prepared.contextState,
+        materials: prepared.materials,
+        initialExplanation: initialExplanation,
         // 附件只带**引用**（图片/文件都已经在 host 的附件服务里），body 不会因为一张截图胖几 MB
         ...(withAttachments.length > 0 ? { attachments: withAttachments } : {}),
         // 网页输出要跟着当前深浅走：深色 Harness 里给一张白底页面会很刺眼
@@ -299,7 +298,18 @@ export function createConversationController(env) {
         ...(env.state.modelChoice ? { provider: env.state.modelChoice.provider, model: env.state.modelChoice.model } : {}),
         ...(env.state.effort ? { effort: env.state.effort } : {}),
         ...(env.state.toolDigest ? { toolDigest: env.state.toolDigest } : {}),
-      }),
+    })
+    if (new TextEncoder().encode(requestBody).byteLength > CHAT_REQUEST_BYTES) {
+      questionTurn.contextExcluded = true
+      answerTurn.contextExcluded = true
+      finish('本轮材料超过请求容量，请缩小提问或引用范围；原文仍保留在当前历史中')
+      return
+    }
+
+    fetch(API, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: requestBody,
       signal: askController.signal,
     })
       .then(function (response) {
@@ -329,7 +339,16 @@ export function createConversationController(env) {
             } catch (error) {
               continue
             }
-            if (message.type === 'delta') {
+            if (message.type === 'context-state') {
+              if (!askController.signal.aborted && env.state.turns === requestTurns && env.state.cacheKey === requestKey) {
+                env.state.contextState = readContextState(message.state)
+              }
+            } else if (message.type === 'material-restored') {
+              var material = message.attachment
+              if (!askController.signal.aborted && material && (material.kind === 'image' || material.kind === 'file') && material.ref && material.ref.attachmentId) {
+                if (!questionTurn.attachments.some(function (a) { return a.kind === material.kind && a.ref.attachmentId === material.ref.attachmentId })) questionTurn.attachments.push(material)
+              }
+            } else if (message.type === 'delta') {
               // 正文开始到达 → 撤掉"正在整理结论…"这类过程提示（以前它永远挂着）
               env.clearTransientNotice(answerTurn)
               if (!answerTurn.text.trim()) answerTurn.asking = false
@@ -378,6 +397,7 @@ export function createConversationController(env) {
                 env.paintModelPill()
               }
               scheduleTurnsRender()                } else if (message.type === 'error') {
+              if (message.code === 'context-rejected') { questionTurn.contextExcluded = true; answerTurn.contextExcluded = true }
               finish(message.message || '模型返回错误')
             }
           }
@@ -570,7 +590,7 @@ export function createConversationController(env) {
     env.state.elapsed = 0
     env.paint()
 
-    var ticker = setInterval(function () {
+    var ticker = env.timerScope.interval(function () {
       env.paintPill()
       if (env.state.phase === 'loading' || env.state.phase === 'streaming') {
         env.setStatus(env.progressText())
@@ -578,10 +598,9 @@ export function createConversationController(env) {
         updateWaitClocks()
       }
     }, 200)
-    env.timers.push(ticker)
 
     function stopTicker() {
-      clearInterval(ticker)
+      env.timerScope.clear(ticker)
     }
 
     function fail(message) {

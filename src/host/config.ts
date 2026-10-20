@@ -14,8 +14,9 @@ export const Config = z.object({
   translationReasoningEffort: z.string().default(CONFIG_DEFAULTS.translationReasoningEffort),
   /**
    * 小窗对话历史（A′）：把整段对话落到插件自己的目录，重划同一个词直接回放。
-   * 0 = 关闭历史。只留最近 N 个「划词条目」（每个条目内含它自己的全部追问轮次）。
+   * 0 = 停止保存新历史，不清空已有记录。所有条目（含已升格）统一保留最近 N 个。
    */
+  chatContextTokens: z.number().min(CONFIG_LIMITS.chatContextTokens.min).max(CONFIG_LIMITS.chatContextTokens.max).default(CONFIG_DEFAULTS.chatContextTokens),
   historyMaxEntries: z.number().min(CONFIG_LIMITS.historyMaxEntries.min).max(CONFIG_LIMITS.historyMaxEntries.max).default(CONFIG_DEFAULTS.historyMaxEntries),
   /** 采样温度。**默认 -1 = 不传**（交给供应商默认，与主会话一致）。0~2 之间才真的传。 */
   temperature: z.number().min(CONFIG_LIMITS.temperature.min).max(CONFIG_LIMITS.temperature.max).default(CONFIG_DEFAULTS.temperature),

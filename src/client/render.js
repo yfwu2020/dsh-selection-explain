@@ -508,6 +508,15 @@ export var previewSeq = 0
 
 export var previewFrames = {}
 
+/** Release references before a rendered subtree is cleared or removed. */
+export function releasePreviewFrames(root) {
+  if (!root) return
+  for (var key in previewFrames) {
+    var frame = previewFrames[key].frame
+    if (frame === root || (root.contains && root.contains(frame))) delete previewFrames[key]
+  }
+}
+
 export function registerPreviewFrame(frame) {
   previewSeq += 1
   var id = 'pv' + previewSeq
@@ -608,6 +617,7 @@ export function webPreviewBlock(code) {
 }
 
 export function renderRich(parent, text, options) {
+  releasePreviewFrames(parent)
   parent.textContent = ''
   var lines = String(text || '').replace(/\r/g, '').split('\n')
   var current = null // { level, node }

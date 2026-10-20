@@ -1,4 +1,4 @@
-import { MAX_QUOTE_CHARS, MAX_QUOTES, QUOTE_CONTEXT_TIMEOUT, QUOTE_CONTEXT_API, QUOTE_ONLY_QUESTION } from './constants.js'
+import { MAX_QUOTES, QUOTE_CONTEXT_TIMEOUT, QUOTE_CONTEXT_API, QUOTE_ONLY_QUESTION } from './constants.js'
 import { el, listen } from './dom.js'
 import { normalizeSpace, collectContext } from './context.js'
 
@@ -31,13 +31,11 @@ export function createQuotesController(env) {
    * 同一段划两次不再加（引用区是材料清单，不是记事本）；超过 MAX_QUOTES 段也不再加。
    *
    * `extra` = { context, session }：引用**当时所在**的上下文（见 quoteContextFor），
-   * session=true 表示"这段文字来自主界面会话"，发送前会再问 host 要一份按轮取整的干净上下文。
+   * session=true 表示"这段文字来自主界面会话"，加入引用时立即向host取得一次按轮取整的干净上下文快照。
    */
   function addQuote(text, label, extra) {
     var clean = String(text || '').replace(/\u00a0/g, ' ').trim()
     if (!clean) return false
-    var truncated = clean.length > MAX_QUOTE_CHARS
-    if (truncated) clean = clean.slice(0, MAX_QUOTE_CHARS) + '…'
     for (var i = 0; i < env.state.quotes.length; i += 1) {
       if (env.state.quotes[i].text === clean) {
         env.setStatus('这段已经在引用里了')
@@ -50,13 +48,21 @@ export function createQuotesController(env) {
     }
     quoteSeq += 1
     var context = extra && typeof extra.context === 'string' ? extra.context.trim() : ''
-    env.state.quotes.push({
+    var quote = {
       id: quoteSeq,
       label: label || '引用',
       text: clean,
       context: context,
       session: !!(extra && extra.session === true),
-    })
+      sessionId: extra && extra.sessionId || env.currentSessionId(),
+      contextJob: null,
+    }
+    env.state.quotes.push(quote)
+    if (quote.session && quote.sessionId) {
+      quote.contextJob = fetchQuoteContext(quote.sessionId, quote.text).then(function (context) {
+        if (context) quote.context = context
+      })
+    }
     renderQuotes()
     env.refreshAskState()
     // 输入框按阶段本来可能是藏着的（首轮还在跑）：引用一进来就得看得见，顺手聚焦。
@@ -70,7 +76,6 @@ export function createQuotesController(env) {
         ' · ' +
         clean.length +
         ' 字' +
-        (truncated ? '（原文更长，已截断）' : '') +
         (context ? ' · 带上下文 ' + context.length + ' 字' : '') +
         '）',
     )
@@ -157,12 +162,23 @@ export function createQuotesController(env) {
 
   /**
    * 点「❝ 引用」那一刻才采上下文（划选过程中每次 selectionchange 都采太贵）。
-   * 会话里的引用（主界面）先用**局部窗口**兜底，发送前再问 host 要按轮取整的干净上下文。
+   * 会话里的引用（主界面）先用**局部窗口**兜底，加入引用时向host取一次按轮取整的干净上下文快照。
    */
   function quoteContextFor(selection) {
     if (!selection) return { context: '', session: false }
     if (selection.source === 'panel') {
-      // 小窗正文：不带上文，只靠标签说清"出自哪里"（见 panelSourceLabel）
+      var index = selection.turnIndex
+      var through = env.state.contextState && env.state.contextState.through || 0
+      var visibleBefore = env.state.turns.slice(0, index).filter(function (t) { return !t.hidden }).length
+      if (index >= 0 && visibleBefore < through) {
+        var pieces = env.state.turns.slice(Math.max(0, index - 1), index + 2).filter(function (t) { return !t.hidden }).map(function (t) {
+          var text = t.role === 'assistant' ? env.foldForHistory(t.text || '') : sentTextOf(t)
+          var at = text.indexOf(selection.text)
+          var start = at >= 0 ? Math.max(0, at - 500) : 0
+          return (t.role === 'user' ? '用户：' : '助手：') + text.slice(start, start + Math.max(1500, selection.text.length + 500))
+        })
+        return { context: pieces.join('\n'), session: false }
+      }
       return { context: '', session: false }
     }
     if (selection.source === 'iframe') {
@@ -190,24 +206,16 @@ export function createQuotesController(env) {
     for (var i = 0; i < quotes.length; i += 1) {
       if (quotes[i].session === true) jobs.push(quotes[i])
     }
-    var sessionId = env.currentSessionId()
-    if (jobs.length === 0 || !sessionId) return Promise.resolve(quotes)
-    return Promise.all(
-      jobs.map(function (quote) {
-        return fetchQuoteContext(sessionId, quote.text).then(function (context) {
-          if (context) quote.context = context
-          return quote
-        })
-      }),
-    ).then(function () {
-      return quotes
-    })
+    if (jobs.length === 0) return Promise.resolve(quotes)
+    return Promise.all(jobs.map(function (quote) {
+      return quote.contextJob || Promise.resolve()
+    })).then(function () { return quotes })
   }
 
   /** 取一次会话版引用上下文（带超时；失败一律返回空串走兜底）。 */
   function fetchQuoteContext(sessionId, text) {
     var controller = typeof AbortController === 'function' ? new AbortController() : null
-    var timer = setTimeout(function () {
+    var timer = env.timerScope.later(function () {
       if (controller) {
         try {
           controller.abort()
@@ -216,7 +224,6 @@ export function createQuotesController(env) {
         }
       }
     }, QUOTE_CONTEXT_TIMEOUT)
-    env.timers.push(timer)
     return fetch(QUOTE_CONTEXT_API, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -227,12 +234,12 @@ export function createQuotesController(env) {
         return response.ok ? response.json() : null
       })
       .then(function (data) {
-        clearTimeout(timer)
+        env.timerScope.clear(timer)
         if (data && data.ok === true && data.matched === true && typeof data.context === 'string') return data.context
         return ''
       })
       .catch(function () {
-        clearTimeout(timer)
+        env.timerScope.clear(timer)
         return ''
       })
   }
@@ -292,6 +299,7 @@ export function createQuotesController(env) {
       out.push({
         role: turn.role,
         text: sentTextOf(turn),
+        ...(turn.contextExcluded === true ? { contextExcluded: true } : {}),
         ...(turn.attachments && turn.attachments.length > 0 ? { attachments: turn.attachments } : {}),
       })
     }

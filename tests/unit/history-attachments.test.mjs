@@ -6,9 +6,6 @@
  */
 import assert from 'node:assert/strict'
 import {
-  HISTORY_FILE_MAX,
-  HISTORY_IMAGE_BYTES,
-  HISTORY_IMAGE_MAX,
   historyContentBlocks,
   omittedFileText,
   omittedImageText,
@@ -43,79 +40,22 @@ assert.equal(readAttachmentRef('sha256:aa'), null, '字符串不是引用')
 assert.deepEqual(Object.keys(readAttachmentRef({ attachmentId: 'sha256:aa', evil: 'x', path: '/etc/passwd' })), ['attachmentId'])
 assert.equal(readHistoryAttachments([{ kind: 'video', ref: { attachmentId: 'sha256:aa' } }]).length, 0, 'kind 不认识就丢')
 assert.equal(readHistoryAttachments('nope').length, 0)
-// 单轮条数上限：**保留最后几件**（用户最后加的最要紧）
+// 历史引用不能因模型恢复材料而挤掉原上传项；上传入口另行限制10件。
 const many = readHistoryAttachments(Array.from({ length: 14 }, (_, i) => imageRef(String(i), 1)))
-assert.equal(many.length, 10)
-assert.equal(many[0].ref.attachmentId, 'sha256:4', '超限时丢最早的那几件')
+assert.equal(many.length, 14)
+assert.equal(many[0].ref.attachmentId, 'sha256:0', '持久引用全部保留')
 
-// ───────────────── 预算：从最近往前数，新图优先 ─────────────────
-
+// Context capacity is planned before block reconstruction. No rolling image/file eviction.
 {
-  // 三轮各一张图，预算 2 张 → 最老那张降级
-  const plan = historyContentBlocks([{ role: 'user', text: 'A', attachments: [imageRef('a', 1000, 'A.png')] }, { role: 'assistant', text: '答' }, { role: 'user', text: 'B', attachments: [imageRef('b', 1000, 'B.png')] }, { role: 'assistant', text: '答2' }, { role: 'user', text: 'C', attachments: [imageRef('c', 1000, 'C.png')] }])
-  assert.equal(plan.keptImages, HISTORY_IMAGE_MAX)
-  assert.equal(plan.omittedImages, 1)
-  assert.deepEqual(blocksOf(plan.blocks[0]), ['text', 'text'], '最老那张被降级成文字')
-  assert.match(textOf(plan.blocks[0]), /图片已省略/, '降级文案要说清是"省略"而不是"没附图"')
-  assert.match(textOf(plan.blocks[0]), /A\.png/, '降级文案要点名是哪张')
-  assert.deepEqual(blocksOf(plan.blocks[2]), ['image', 'text'], '最新那张仍然是真图片')
-  assert.equal(plan.blocks[4][0].type, 'image')
-}
-
-{
-  // 字节预算：单张就超 → 全部降级（张数还够也不行）
-  const huge = HISTORY_IMAGE_BYTES + 1
-  const plan = historyContentBlocks([{ role: 'user', text: 'A', attachments: [imageRef('a', huge)] }])
-  assert.equal(plan.keptImages, 0)
-  assert.equal(plan.omittedImages, 1)
-}
-
-{
-  // 两张各占一半 → 第二张（更老的）因字节超限被挤掉
-  const half = Math.floor(HISTORY_IMAGE_BYTES / 2)
-  const plan = historyContentBlocks([
-    { role: 'user', text: '老', attachments: [imageRef('old', half + 10)] },
-    { role: 'user', text: '新', attachments: [imageRef('new', half)] },
-  ])
-  assert.equal(plan.keptImages, 1, '只剩一张')
-  assert.equal(plan.omittedImages, 1)
-  assert.equal(plan.blocks[0][0].type, 'text', '老的那张降级')
-  assert.equal(plan.blocks[1][0].type, 'image', '新的那张回带')
-}
-
-{
-  // 当前这一轮也吃额度：否则"历史 2 张 + 本轮 1 张"会逐轮往上叠
-  const current = [imageRef('cur', 1000)]
-  const plan = historyContentBlocks(
-    [{ role: 'user', text: 'A', attachments: [imageRef('a', 1000)] }, { role: 'user', text: 'B', attachments: [imageRef('b', 1000)] }],
-    current,
-  )
-  assert.equal(plan.keptImages, HISTORY_IMAGE_MAX, '含当前轮共 2 张')
-  assert.equal(plan.blocks[0][0].type, 'text', '历史里最老那张让位给当前轮')
-  assert.equal(plan.blocks[1][0].type, 'image')
-}
-
-// ───────────────── 文件：不吃图片预算，但限条数 ─────────────────
-
-{
-  const turns = Array.from({ length: HISTORY_FILE_MAX + 2 }, (_, i) => ({ role: 'user', text: `t${i}`, attachments: [fileRef(`f${i}`, `f${i}.pdf`)] }))
-  const plan = historyContentBlocks(turns)
-  assert.equal(plan.keptFiles, HISTORY_FILE_MAX)
-  assert.equal(plan.omittedFiles, 2)
-  assert.equal(plan.blocks[0][0].type, 'text', '最早的文件降级成文字')
-  assert.match(textOf(plan.blocks[0]), /不再重复给出它的只读路径/, '文件降级要说清"要内容就让用户重发"')
-  assert.equal(plan.blocks[turns.length - 1][0].type, 'file', '最新的文件仍是真引用（模型能按路径读）')
-}
-
-{
-  // 图片额度被占满不影响文件：两者是两套额度
-  const plan = historyContentBlocks([
-    { role: 'user', text: 'A', attachments: [imageRef('a', 1000), fileRef('f', '报表.pdf')] },
-    { role: 'user', text: 'B', attachments: [imageRef('b', 1000)] },
-    { role: 'user', text: 'C', attachments: [imageRef('c', 1000)] },
-  ])
-  assert.equal(plan.keptFiles, 1, '文件不受图片预算影响')
-  assert.equal(plan.keptImages, 2)
+  const turns = Array.from({ length: 12 }, (_, i) => ({ role: 'user', text: `t${i}`,
+    attachments: [imageRef(`i${i}`, 5 * 1024 * 1024), fileRef(`f${i}`, 'same-name.pdf')] }))
+  const first = historyContentBlocks(turns)
+  const later = historyContentBlocks([...turns, { role: 'user', text: 'new', attachments: [imageRef('new', 1000)] }])
+  assert.equal(first.keptImages, 12)
+  assert.equal(first.keptFiles, 12)
+  assert.equal(first.omittedImages + first.omittedFiles, 0)
+  assert.deepEqual(later.blocks.slice(0, 12), first.blocks, 'new attachments must not rewrite old occurrences')
+  assert.equal(historyContentBlocks(turns, [imageRef('current', 1000)]).keptImages, 13)
 }
 
 // ───────────────── 顺序与退化：没有附件时逐字节等于从前 ─────────────────
@@ -152,7 +92,7 @@ assert.equal(many[0].ref.attachmentId, 'sha256:4', '超限时丢最早的那几�
   assert.match(text, /810x180px/)
   assert.match(text, /46019 bytes/)
   assert.match(text, /sha256:aaaaaaaa/, '给短哈希，模型/日志里能对上是哪一张')
-  assert.match(text, /重新附上/, '要给出路，不能只说"没有"')
+  assert.match(text, /重新读取原图/, '要给出路，不能只说"没有"')
   assert.match(omittedFileText({ attachmentId: 'sha256:bb', name: '报表.pdf' }), /报表\.pdf/)
 }
 

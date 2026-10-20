@@ -268,39 +268,23 @@ export async function run(env) {
 
 
   {
-    // ④ 追问时的实际历史：更早的整页折叠、最近一轮保持原样、且不重折
-    const before = env.hook.foldStats().folds
+    // Sending new turns must not rewrite an older webpage into a different representation.
+    const page = '```html\n<!doctype html><html><body>稳定的原始页面</body></html>\n```'
     const n0 = env.sent.length
-    env.hook.ask('网页版')                                  // 产生一轮"整页 HTML"回答
-    for (let i = 0; i < 120 && env.sent.length === n0; i += 1) await env.sleep(20)
-    for (let i = 0; i < 200 && env.hook.turns().some((t) => t.streaming === true); i += 1) await env.sleep(20)
-    const turnsAfterFirst = env.hook.foldStats().turns.length
-    env.hook.ask('再问一句')                                // 第二轮：历史里应出现折叠后的第一轮
-    for (let i = 0; i < 120 && env.sent.length === n0 + 1; i += 1) await env.sleep(20)
-    const payload = env.sent[env.sent.length - 1] || {}
-    const hist = payload.history || []
-    // 判据要精确：把围栏（```…```）里的代码样例排除掉之后再找标签 ——
-    // 代码样例里的 <div> 是**内容**，本来就该保留；真正不该出现的，是围栏之外的整页标记。
-    const outsideFences = (text) => String(text).replace(/```[\s\S]*?```/g, '')
-    const rawPageLeft = (text) => /<[a-z][a-z0-9]*[\s>/]/i.test(outsideFences(text))
-    const pageTurn = hist.filter((h) => rawPageLeft(String(h.text)))
-    const foldedTurn = hist.filter((h) => /^#|\n\|/m.test(String(h.text)))
-    env.assert(
-      '历史里带整页 HTML 的轮次已被折叠（围栏之外不再有标签）',
-      pageTurn.length === 0,
-      JSON.stringify(pageTurn.map((h) => outsideFences(String(h.text)).slice(0, 60))),
-    )
-    env.assert('折叠后的历史仍是结构化 Markdown', foldedTurn.length >= 1, JSON.stringify(foldedTurn.map((h) => String(h.text).slice(0, 40))))
-    env.assert('最近一轮保持原样（可继续改版式）', hist.length >= 2 && /版式摘要/.test(String(hist[hist.length - 1].text)) === false, JSON.stringify(hist.map((h) => String(h.text).slice(0, 24))))
-    const foldsAfterFirst = env.hook.foldStats().folds
-    for (let i = 0; i < 200 && env.hook.turns().some((t) => t.streaming === true); i += 1) await env.sleep(20)
-    env.hook.ask('第三轮')                                  // 第二轮：第一轮已缓存，不该重折
-    for (let i = 0; i < 120 && env.sent.length === n0 + 2; i += 1) await env.sleep(20)
-    env.assert('已经折过的轮次不再重折（有缓存）', env.hook.foldStats().folds === foldsAfterFirst, `${foldsAfterFirst} → ${env.hook.foldStats().folds}`)
-    const cache = env.hook.foldStats().turns.filter((t) => t.folded !== null)
-    env.assert('折叠结果缓存在那一轮上', cache.length >= 1 && cache[0].folded > 0, JSON.stringify(cache))
-    for (let i = 0; i < 200 && env.hook.turns().some((t) => t.streaming === true); i += 1) await env.sleep(20)
+    globalThis.__askExtra = { delta: page }
+    env.hook.ask('网页版')
+    for (let i = 0; i < 200 && (env.sent.length === n0 || env.hook.turns().some(t => t.streaming)); i++) await env.sleep(20)
+    globalThis.__askExtra = null
+    env.hook.ask('再问一句')
+    for (let i = 0; i < 200 && (env.sent.length === n0 + 1 || env.hook.turns().some(t => t.streaming)); i++) await env.sleep(20)
+    const hist = env.sent.at(-1).history
+    env.assert('模型历史保留网页原始代码', hist.some(t => t.role === 'assistant' && t.text === page))
+    env.hook.ask('第三轮')
+    for (let i = 0; i < 200 && (env.sent.length === n0 + 2 || env.hook.turns().some(t => t.streaming)); i++) await env.sleep(20)
+    const later = env.sent.at(-1).history
+    env.assert('追加新问答不会改写此前发送的历史前缀', JSON.stringify(later.slice(0, hist.length)) === JSON.stringify(hist))
   }
+
 
 
   // ───────────────────────── 网页模式开关（复杂问题默认用网页回答） ─────────────────────────
@@ -407,8 +391,9 @@ export async function run(env) {
       }
       return node
     }
-    const framesInChat = () => Array.from(env.walk(env.chatLog)).filter((n) => n.className === 'dsh-sel-previewframe').length
-    const codeInChat = () => Array.from(env.walk(env.chatLog)).filter((n) => n.className === 'dsh-sel-pre').length
+    const currentBubble = () => env.chatLog.children[env.chatLog.children.length - 1]
+    const framesInChat = () => Array.from(env.walk(currentBubble())).filter((n) => n.className === 'dsh-sel-previewframe').length
+    const codeInChat = () => Array.from(env.walk(currentBubble())).filter((n) => n.className === 'dsh-sel-pre').length
     const stillStreaming = () => env.hook.turns().some((t) => t.streaming === true)
 
     framesCreated = 0 // 只统计这一条回答
@@ -432,7 +417,7 @@ export async function run(env) {
       const users = bubbles.filter((n) => /dsh-sel-bubble-user/.test(String(n.className)))
       env.assert('助手消息不再用气泡样式（整宽，和主会话一致）', bots.length >= 1 && users.length >= 1, JSON.stringify(bubbles.map((n) => n.className)))
     }
-    const frames = Array.from(env.walk(env.chatLog)).filter((n) => n.className === 'dsh-sel-previewframe')
+    const frames = Array.from(env.walk(currentBubble())).filter((n) => n.className === 'dsh-sel-previewframe')
     env.assert(
       '最终 iframe 装的是完整 HTML',
       frames.length === 1 && String(frames[0].getAttribute('srcdoc')).indexOf('分块渲染') >= 0,
@@ -588,12 +573,12 @@ export async function run(env) {
   const askPayload = env.sent[env.sent.length - 1]
 
   env.assert(
-    '种子轮仍作为历史发给模型（role=assistant）',
-    (askPayload.history || []).some((t) => t.role === 'assistant' && t.text.indexOf('前情') >= 0),
+    '解读前情作为固定背景单独发给模型',
+    typeof askPayload.initialExplanation === 'string' && askPayload.initialExplanation.includes('前情'),
     JSON.stringify((askPayload.history || []).map((t) => t.role)),
   )
 
-  env.assert('追问请求带 question 与 history', !!askPayload.question && Array.isArray(askPayload.history) && askPayload.history.length >= 1, JSON.stringify({ q: askPayload.question, h: askPayload.history && askPayload.history.length }))
+  env.assert('追问请求带 question 与 history', !!askPayload.question && Array.isArray(askPayload.history) && !!askPayload.initialExplanation, JSON.stringify({ q: askPayload.question, h: askPayload.history && askPayload.history.length }))
 
   env.assert('追问携带当前思考强度，不强制刷新缓存', askPayload.refresh === undefined && askPayload.effort === 'high', JSON.stringify({refresh: askPayload.refresh, effort: askPayload.effort}))
 
@@ -611,7 +596,7 @@ export async function run(env) {
 
   const secondPayload = env.sent[env.sent.length - 1]
 
-  env.assert('第二轮追问的历史含上一轮问答', (secondPayload.history || []).length >= 3, JSON.stringify((secondPayload.history || []).map((t) => t.role)))
+  env.assert('第二轮追问的历史含上一轮问答', (secondPayload.history || []).length === 2 && secondPayload.history[0].role === 'user' && secondPayload.history[1].role === 'assistant', JSON.stringify((secondPayload.history || []).map((t) => t.role)))
 
 
   // ───────────────────────── 旧标题兼容（## 语境含义 → 详解节） ─────────────────────────

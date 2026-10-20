@@ -11,6 +11,8 @@ import { sendJson, readBody } from './http.js'
 import type { AnalyzeBody } from './types.js'
 import { readHistoryAttachments } from './history-attachments.js'
 import type { HistoryAttachment } from './history-attachments.js'
+import { readContextState } from '../chat-context.js'
+import type { ContextState } from '../chat-context.js'
 
 // ───────────────────────── 小窗对话历史（A′） ─────────────────────────
 //
@@ -18,12 +20,13 @@ import type { HistoryAttachment } from './history-attachments.js'
 // 部署**没有删除会话的接口**——一个高频功能每次划词建一个会话，只会堆积成
 // 一堆删不掉的死会话。所以这里把"整段对话"存在插件自己的目录里：
 //   · 一个条目 = 一次划词解读（含它自己的全部追问轮次）
-//   · 只留最近 `historyMaxEntries` 个条目（LRU），升格过的不参与淘汰
+//   · 只留最近 `historyMaxEntries` 个条目（LRU），包括已升格的条目
 //   · 重划同一个词 → 直接回放，不调模型
 
 interface HistoryTurn {
   role: string
   text: string
+  contextExcluded?: boolean
   /**
    * 这一轮带的附件（只有 user 轮会有）：`[{ kind, ref }]`，ref 是附件服务的持久引用。
    *
@@ -43,6 +46,7 @@ interface HistoryInput {
   label?: unknown
   parts?: { translation?: unknown; detail?: unknown }
   /** 轮次（含每轮的附件引用）：形状由 readTurns 统一收敛，这里一律宽松收。 */
+  contextState?: unknown
   turns?: unknown
   toolDigest?: unknown
   pinned?: unknown
@@ -65,8 +69,10 @@ interface HistoryEntry {
   label: string
   at: number
   parts: { translation: string; detail: string }
+  contextState?: ContextState
   turns: HistoryTurn[]
   toolDigest: string
+  /** 兼容旧格式的已升格标记，仅用于展示，不影响历史淘汰。 */
   pinned: boolean
   /**
    * 这段对话**没有解读**（见 HistoryInput.skipped）。
@@ -287,24 +293,59 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
   const clampText = (value: unknown, max: number): string => (typeof value === 'string' ? value.slice(0, max) : '')
 
   /**
-   * 收敛一段轮次：只留 role / text / attachments，最多 60 轮。
+   * 收敛全部已接收的轮次：只留 role / text / attachments，不按条数丢弃对话。
    *
    * 载入与保存**共用同一份**（以前是两段一模一样的 map，加字段时最容易只改一处 ——
    * 那会变成"存得下、读不回"这种极难发现的错）。
    */
   const readTurns = (raw: unknown): HistoryTurn[] => {
     if (!Array.isArray(raw)) return []
-    return raw.slice(0, 60).map((turn) => {
-      const item = (turn ?? {}) as { role?: unknown; text?: unknown; attachments?: unknown }
-      // 附件走和 analyze 同一个收敛器：白名单字段 + 单轮条数上限，
+    return raw.map((turn) => {
+      const item = (turn ?? {}) as { role?: unknown; text?: unknown; attachments?: unknown; contextExcluded?: unknown }
+      // 附件走和 analyze 同一个字段白名单；上传数量由上传入口限制，
       // 于是"历史文件被手改过"也不会把脏东西带进模型请求
       const attachments = readHistoryAttachments(item.attachments)
       return {
         role: item.role === 'assistant' ? 'assistant' : 'user',
-        text: clampText(item.text, 20000),
+        text: typeof item.text === 'string' ? item.text : '',
+        ...(item.contextExcluded === true ? { contextExcluded: true } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
       }
     })
+  }
+
+  /** 保存、读盘和撤销删除共用字段白名单与长度限制。 */
+  function normalizeHistoryEntry(input: HistoryInput, key: string, at: number): HistoryEntry {
+    return {
+      key,
+      text: clampText(input.text, 20000),
+      context: clampText(input.context, 20000),
+      label: clampText(input.label, 60),
+      at,
+      parts: {
+        translation: clampText(input.parts?.translation, 20000),
+        detail: clampText(input.parts?.detail, 20000),
+      },
+      turns: readTurns(input.turns),
+      ...(readContextState(input.contextState) ? { contextState: readContextState(input.contextState)! } : {}),
+      toolDigest: clampText(input.toolDigest, 2000),
+      pinned: input.pinned === true,
+      // 缺少 skipped 的旧条目继续保持未知状态。
+      ...(typeof input.skipped === 'boolean' ? { skipped: input.skipped } : {}),
+    }
+  }
+
+  /** 恢复只接受完整快照；校验通过后仍须归一化，不能直接信任客户端字段。 */
+  function readSnapshot(raw: unknown): HistoryEntry | null {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+    const entry = raw as Partial<HistoryEntry>
+    if (typeof entry.key !== 'string' || !entry.key || entry.key.length > 200
+      || typeof entry.text !== 'string' || typeof entry.context !== 'string'
+      || typeof entry.label !== 'string' || typeof entry.toolDigest !== 'string'
+      || typeof entry.at !== 'number' || !Number.isFinite(entry.at)
+      || typeof entry.pinned !== 'boolean' || !Array.isArray(entry.turns)
+      || typeof entry.parts?.translation !== 'string' || typeof entry.parts?.detail !== 'string') return null
+    return normalizeHistoryEntry(entry, entry.key, entry.at)
   }
 
   async function loadHistory(): Promise<void> {
@@ -318,25 +359,12 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
       for (const item of list) {
         const entry = item as Partial<HistoryEntry>
         if (typeof entry?.key !== 'string' || entry.key.length === 0) continue
-        history.set(entry.key, {
-          key: entry.key,
-          // 按可设置的最高选区长度保留，调低当前限制也不截断已有历史。
-          text: clampText(entry.text, 20000),
-          context: clampText(entry.context, 20000),
-          label: clampText(entry.label, 60),
-          at: typeof entry.at === 'number' ? entry.at : Date.now(),
-          parts: {
-            translation: clampText(entry.parts?.translation, 20000),
-            detail: clampText(entry.parts?.detail, 20000),
-          },
-          turns: readTurns(entry.turns),
-          toolDigest: clampText(entry.toolDigest, 2000),
-          pinned: entry.pinned === true,
-          // 只搬运，不解释：老条目没有这个键就让它继续没有。
-          // 改写成 false 等于替客户端断言"这条跑过解读"，而事实是"不知道"。
-          ...(typeof entry.skipped === 'boolean' ? { skipped: entry.skipped } : {}),
-        })
+        history.set(entry.key, normalizeHistoryEntry(entry, entry.key,
+          typeof entry.at === 'number' && Number.isFinite(entry.at) ? entry.at : Date.now()))
       }
+      const loadedSize = history.size
+      trimHistory()
+      if (history.size !== loadedSize) scheduleHistoryWrite()
       ctx.logger?.info?.(`[${name}] 小窗历史已载入 ${String(history.size)} 条（${historyFile()}）`)
     } catch (error) {
       const code = (error as { code?: string })?.code
@@ -363,51 +391,40 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
     historyTimer.unref?.()
   }
 
-  /** 存一条对话（整段覆盖），并按 LRU 淘汰超出上限的条目（升格过的不淘汰）。 */
+  /** 存一条对话（整段覆盖），所有条目统一按更新时间淘汰。 */
   function saveHistoryEntry(input: HistoryInput): number {
     if (config.historyMaxEntries <= 0) return history.size
     const key = clampText(input.key, 200)
     if (!key) return history.size
     const previous = history.get(key)
-    const entry: HistoryEntry = {
-      key,
-      text: clampText(input.text, 20000),
-      context: clampText(input.context, 20000),
-      label: clampText(input.label, 60),
-      at: Date.now(),
-      parts: {
-        translation: clampText(input.parts?.translation, 20000),
-        detail: clampText(input.parts?.detail, 20000),
-      },
-      turns: readTurns(input.turns),
-      toolDigest: clampText(input.toolDigest, 2000),
-      pinned: input.pinned === true || previous?.pinned === true,
-      // 客户端现在每次整段保存都会带上这个值（true/false），照它写；
-      // **没带**时（老客户端 / 老脚本）保留原来的"没有这个键"，不要补一个 false ——
-      // 补 false 就是在替客户端断言"这条跑过解读"，而它其实只是没上报。
-      ...(typeof input.skipped === 'boolean'
-        ? { skipped: input.skipped }
-        : previous && typeof previous.skipped === 'boolean'
-          ? { skipped: previous.skipped }
-          : {}),
+    const entry = normalizeHistoryEntry(input, key, Date.now())
+    entry.pinned ||= previous?.pinned === true
+    if (typeof input.skipped !== 'boolean' && typeof previous?.skipped === 'boolean') {
+      entry.skipped = previous.skipped
     }
     history.delete(key)
     history.set(key, entry)
-    // LRU：超出上限时丢最久没用过的（Map 的插入顺序就是使用顺序）
+    trimHistory()
+    scheduleHistoryWrite()
+    return history.size
+  }
+
+  function trimHistory(): void {
+    // 0 只关闭新历史保存，已有条目和撤销删除仍保留。
+    if (config.historyMaxEntries <= 0) return
     while (history.size > config.historyMaxEntries) {
       let victim: string | undefined
-      for (const candidate of history.keys()) {
-        const item = history.get(candidate)
-        if (item && !item.pinned) {
+      let oldestAt = Infinity
+      // 磁盘和恢复快照的插入顺序不代表年龄，始终按时间淘汰。
+      for (const [candidate, item] of history) {
+        if (item.at < oldestAt) {
           victim = candidate
-          break
+          oldestAt = item.at
         }
       }
       if (victim === undefined) break
       history.delete(victim)
     }
-    scheduleHistoryWrite()
-    return history.size
   }
 
   const historyMeta = (entry: HistoryEntry): Record<string, unknown> => ({
@@ -461,18 +478,14 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
           sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' })
           return
         }
-        const entry = (body as { entry?: HistoryEntry }).entry
-        if (!entry || typeof entry.key !== 'string' || !entry.key) {
-          sendJson(res, 400, { ok: false, error: '缺少 entry' })
+        const entry = readSnapshot((body as { entry?: unknown } | null)?.entry)
+        if (!entry) {
+          sendJson(res, 400, { ok: false, error: 'entry 不是完整的历史快照' })
           return
         }
         history.delete(entry.key)
-        // 快照来自客户端（DELETE 的返回），字段理论上齐全；缺 skipped 就让它继续缺着，
-        // 别在这里补一个 false —— 那会把"不知道"变成"明确跑过解读"。
-        history.set(entry.key, {
-          ...entry,
-          ...(typeof entry.skipped === 'boolean' ? { skipped: entry.skipped } : {}),
-        })
+        history.set(entry.key, entry)
+        trimHistory()
         scheduleHistoryWrite()
         sendJson(res, 200, { ok: true, size: history.size })
         return
@@ -493,6 +506,7 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
           label: typeof body?.label === 'string' ? body.label : '',
           parts: (body?.parts ?? {}) as { translation?: unknown; detail?: unknown },
           turns: body?.turns,
+          contextState: body?.contextState,
           toolDigest: typeof body?.toolDigest === 'string' ? body.toolDigest : '',
           pinned: body?.pinned === true,
           // 只在客户端**明确上报** true/false 时才带着走；没报就是"不知道"，
@@ -514,5 +528,9 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
       sendJson(res, 500, { ok: false, error: String((error as Error)?.message ?? error) })
     })
   }
-  return { clampText, historyFile, handleHistory, handlePanelSize, handlePillPos }
+  async function readMessage(key: string, index: number): Promise<string | null> {
+    await loadHistory()
+    return history.get(key)?.turns[index]?.text ?? null
+  }
+  return { clampText, historyFile, handleHistory, handlePanelSize, handlePillPos, readMessage }
 }

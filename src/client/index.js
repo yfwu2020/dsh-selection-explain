@@ -19,6 +19,7 @@ import { createHistoryController } from './history.js'
 import { createConversationController } from './conversation.js'
 import { createModelsController } from './models.js'
 import { createVoiceController } from './voice.js'
+import { createResultCache, createTimerScope } from './memory.js'
 
 export function apply(ctx) {
 
@@ -135,7 +136,8 @@ export function apply(ctx) {
   }
 
   /** 结果缓存：同选区+上下文第二次点开即秒回。 */
-  var cache = new Map()
+  var cache = createResultCache()
+  var timerScope = createTimerScope()
 
   // —— DOM ——
   var styleEl = el('style')
@@ -761,7 +763,7 @@ export function apply(ctx) {
     get openPanelWith() { return panelController.openPanelWith },
     get clearDocSelection() { return panelController.clearDocSelection },
     get frameTouchedAt() { return previewController.frameTouchedAt },
-    get timers() { return timers },
+    get timerScope() { return timerScope },
     get voice() { return voiceController.voice },
     get addQuote() { return quotesController.addQuote },
     get quoteContextFor() { return quotesController.quoteContextFor },
@@ -771,6 +773,7 @@ export function apply(ctx) {
     get setQuotePop() { return selectionController.setQuotePop },
   })
   var quotesController = createQuotesController({
+    get foldForHistory() { return historyController.foldForHistory },
     get state() { return state },
     get setStatus() { return panelController.setStatus },
     get refreshAskState() { return conversationController.refreshAskState },
@@ -782,7 +785,7 @@ export function apply(ctx) {
     get panel() { return panel },
     get rangeSelection() { return panelController.rangeSelection },
     get currentSessionId() { return panelController.currentSessionId },
-    get timers() { return timers },
+    get timerScope() { return timerScope },
   })
   var previewController = createPreviewController({
     get panel() { return panel },
@@ -792,6 +795,7 @@ export function apply(ctx) {
     get later() { return later },
   })
   var panelController = createPanelController({
+    get timerScope() { return timerScope },
     get panelSessionId() { return panelSessionId },
     set panelSessionId(value) { panelSessionId = value },
     get ctx() { return ctx },
@@ -804,6 +808,8 @@ export function apply(ctx) {
     get clearQuotes() { return quotesController.clearQuotes },
     get clearAttachments() { return attachController.clear },
     get renderTurns() { return historyController.renderTurns },
+    get clearRenderedTurns() { return historyController.clearRenderedTurns },
+    get clearWaiting() { return conversationController.clearWaiting },
     get sendAsk() { return conversationController.sendAsk },
     get restoreFromHistory() { return historyController.restoreFromHistory },
     get runRequest() { return conversationController.runRequest },
@@ -893,6 +899,7 @@ export function apply(ctx) {
     get loadHistoryEntry() { return historyController.loadHistoryEntry },
   })
   var historyController = createHistoryController({
+    set panelSessionId(value) { panelSessionId = value },
     get sentTextOf() { return quotesController.sentTextOf },
     get panel() { return panel },
     get state() { return state },
@@ -903,7 +910,7 @@ export function apply(ctx) {
     get quote() { return quote },
     get applySectionTitle() { return panelController.applySectionTitle },
     get paint() { return panelController.paint },
-    get timers() { return timers },
+    get timerScope() { return timerScope },
     get panelOpen() { return panelOpen },
     set panelOpen(value) { panelOpen = value },
     get historyList() { return historyList },
@@ -948,9 +955,7 @@ export function apply(ctx) {
     get ensureChatFollow() { return historyController.ensureChatFollow },
     get renderTurns() { return historyController.renderTurns },
     get paintPill() { return pillController.paintPill },
-    get timers() { return timers },
-    get FOLD_HISTORY_KEEP_LATEST() { return historyController.FOLD_HISTORY_KEEP_LATEST },
-    get historyTextOf() { return historyController.historyTextOf },
+    get timerScope() { return timerScope },
     get clearTransientNotice() { return historyController.clearTransientNotice },
     get chatLog() { return chatLog },
     get saveHistory() { return historyController.saveHistory },
@@ -1118,8 +1123,6 @@ export function apply(ctx) {
 
   var lastTurnsRenderAt = 0
 
-  var timers = []
-
   /** 贴位置的自适应节奏（见 schedulePillPlacer）。 */
   var PILL_POLL_MIN = 2000
 
@@ -1178,9 +1181,7 @@ export function apply(ctx) {
   var waitList = []
 
   function later(fn, ms) {
-    var id = setTimeout(fn, ms)
-    timers.push(id)
-    return id
+    return timerScope.later(fn, ms)
   }
 
   /**
@@ -1970,6 +1971,10 @@ export function apply(ctx) {
     turns: function () {
       return state.turns.slice()
     },
+    memory: function () {
+      return { cacheEntries: cache.size, cacheTextBytes: cache.textBytes,
+        timers: timerScope.size, previewFrames: Object.keys(previewFrames).length }
+    },
     /** 自检用：当前待发送的引用（引用区里那几张卡片）。 */
     quotes: function () {
       return state.quotes.map(function (quote) {
@@ -2320,6 +2325,7 @@ export function apply(ctx) {
       state.selection = null
       state.bridgeActive = false
       state.parts = { translation: '', detail: '' }
+      state.contextState = null
       state.turns = []
       quotesController.clearQuotes()
       state.raw = ''
@@ -2350,7 +2356,14 @@ export function apply(ctx) {
       console.log('[dsh-selection-explain] 划词解读已就绪（选中文字试试）')
     }
     return function () {
-       offPopEnd()
+      panelOpen = false
+      timerScope.dispose()
+      cache.dispose()
+      voiceCardController.closeVCard(false)
+      attachController.clear()
+      panelController.releaseRenderedContent()
+      if (state.askRequest) state.askRequest.abort()
+      offPopEnd()
       offQuotePopEnd()
       offMouseUp()
       offKeyUp()
@@ -2443,14 +2456,18 @@ export function apply(ctx) {
         }
       })
       previewController.bridged.clear()
+      previewController.frameTouchedAt.clear()
       state.turns = []
       state.quotes = []
+      state.selection = null
+      state.quoteSelection = null
+      state.payload = null
+      state.parts = { translation: '', detail: '' }
+      state.raw = ''
       if (state.request) state.request.abort()
-      for (var i = 0; i < timers.length; i++) clearTimeout(timers[i])
-      // 静置计时器是裸 setTimeout（不进 timers 数组，见 schedulePillIdle），单独清
+      // 胶囊的原生计时器不在 timerScope 中，单独清理。
       if (pillIdleId) clearTimeout(pillIdleId)
-    if (pillController.pillStarTimer) clearTimeout(pillController.pillStarTimer)
-      cache.clear()
+      if (pillController.pillStarTimer) clearTimeout(pillController.pillStarTimer)
       if (layer.parentNode) layer.parentNode.removeChild(layer)
       if (button.parentNode) button.parentNode.removeChild(button)
       if (quoteButton.parentNode) quoteButton.parentNode.removeChild(quoteButton)

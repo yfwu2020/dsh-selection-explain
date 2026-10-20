@@ -1,7 +1,7 @@
 import { normalizeSpace, collectContext } from './context.js'
 import { PANEL_SIZE, PANEL_GROW_MS, PANEL_GROW_EASE } from './constants.js'
 import { listen, el, formatDuration, clamp } from './dom.js'
-import { splitSections, stripEchoPrefix, renderRich } from './render.js'
+import { splitSections, stripEchoPrefix, renderRich, releasePreviewFrames } from './render.js'
 
 /** panel state and operations; dependencies are supplied as live node/callback accessors. */
 export function createPanelController(env) {
@@ -18,7 +18,8 @@ export function createPanelController(env) {
    * 还没划过词（panelSessionId 为空，比如启动时的 ping）自然落回当前会话。
    */
   function panelOrCurrentSessionId() {
-    return env.panelSessionId || currentSessionId()
+    return env.state.contextState && typeof env.state.contextState.sessionId === 'string'
+      ? env.state.contextState.sessionId : env.panelSessionId || currentSessionId()
   }
 
   function currentSessionId() {
@@ -174,6 +175,7 @@ export function createPanelController(env) {
     env.state.skipInterpretation = !!(options && options.askFirst)
     // 记下"这次划词发生在哪个会话"——小窗后续所有按会话解析的东西都用它
     env.panelSessionId = currentSessionId()
+    env.state.contextState = null
     env.state.payload = buildPayload(text, context, label)
     env.state.kind = env.state.payload.kind
     env.hideButton()
@@ -590,12 +592,12 @@ export function createPanelController(env) {
     env.panel.style.transition = 'transform ' + PANEL_GROW_MS + 'ms ' + PANEL_GROW_EASE
     env.panel.style.transform = 'none'
     if (env.panelGrowTimer) {
-      clearTimeout(env.panelGrowTimer)
+      env.timerScope.clear(env.panelGrowTimer)
       env.panelGrowTimer = null
     }
     var settle = function () {
       if (env.panelGrowTimer) {
-        clearTimeout(env.panelGrowTimer)
+        env.timerScope.clear(env.panelGrowTimer)
         env.panelGrowTimer = null
       }
       if (env.panelGrowHandler) {
@@ -625,7 +627,7 @@ export function createPanelController(env) {
     // 交接动画还没跑完就被关掉：连同它的定时器一起收干净，别把半截 transform 留在面板上
     // （下次开窗量几何会量到它，拖拽改大小也会被它带偏）
     if (env.panelGrowTimer) {
-      clearTimeout(env.panelGrowTimer)
+      env.timerScope.clear(env.panelGrowTimer)
       env.panelGrowTimer = null
     }
     if (env.panelGrowHandler) {
@@ -647,6 +649,11 @@ export function createPanelController(env) {
     if (env.state.request) env.state.aborted = true
     if (env.state.request) env.state.request.abort()
     env.state.request = null
+    if (env.state.askRequest) {
+      env.state.stopped = true
+      env.state.askRequest.abort()
+    }
+    releaseRenderedContent()
     env.paintPill()
     // 小窗收了：抽屉若也关着就把轮询停掉（两处都不需要这个值了）
     env.syncRouteWatch()
@@ -701,7 +708,17 @@ export function createPanelController(env) {
     return what + ' ' + seconds + 's'
   }
 
+  function releaseRenderedContent() {
+    env.clearWaiting()
+    env.clearRenderedTurns()
+    for (var content of [env.translationSection.content, env.detailSection.content]) {
+      releasePreviewFrames(content)
+      content.textContent = ''
+    }
+  }
+
   function paint() {
+    if (!env.panelOpen) { releaseRenderedContent(); env.paintPill(); return }
     var streaming = env.state.phase === 'loading' || env.state.phase === 'streaming'
     var stage = env.state.stage
     var selected = env.state.payload && env.state.payload.text ? env.state.payload.text : env.state.selection ? env.state.selection.text : ''
@@ -968,6 +985,7 @@ export function createPanelController(env) {
     env.panel.style.top = Math.round(top) + 'px'
   }
   return {
+    releaseRenderedContent,
     openForSelection,
     currentSessionId,
     loadPanelSize,

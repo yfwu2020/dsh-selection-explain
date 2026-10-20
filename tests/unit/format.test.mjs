@@ -86,6 +86,10 @@ try {
   const plain = events.filter(event => event.type === 'user/message').map(event => event.data).pop()
   assert.deepEqual(plain.content, [{type: 'text', text: 'question'}], '没有附件时 content 与从前完全一致')
 
+  events.length = 0
+  await promote({ ...payload, turns: Array.from({ length: 30 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', text: 'original-turn-' + i })) })
+  const fullHistory = JSON.stringify(events)
+  assert.ok(fullHistory.includes('original-turn-0') && fullHistory.includes('original-turn-29'), '升格也应保留超过20条的完整原始对话')
   assert.equal((await promote({})).error, '缺少 text（选中文字）')
   console.log('PASS promotion writes compatible snapshot, turn/step history, attachment blocks and packed fallback')
 } finally {server.closeAllConnections(); await new Promise(done => server.close(done))}

@@ -20,6 +20,10 @@ import { resolve } from 'node:path'
 import { looksLikeReasoningRequired, looksLikeUnsupportedTier, EFFORT_LABEL } from './effort.js'
 import { historyContentBlocks, looksLikeAttachmentFailure, readHistoryAttachments } from './history-attachments.js'
 import type { HistoryContentPlan } from './history-attachments.js'
+import { contextSource, EMPTY_DIGEST, estimateTextTokens, readContextState } from '../chat-context.js'
+import type { ChatTurn, ContextState } from '../chat-context.js'
+import { resolveChatCapacity, fitBackground, planChatContext, estimateRequestTokens } from './chat-context.js'
+import { readMaterialCatalog, materialIndex, MATERIAL_TOOL, restoreMaterial } from './chat-materials.js'
 
 /** Owns analyze state for one plugin instance. */
 export function createAnalyze(ctx: Context, config: Config, models: ReturnType<typeof createModels>, sessions: ReturnType<typeof createSessions>, historyStore: ReturnType<typeof createHistoryStore>) {
@@ -85,11 +89,24 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
     const label = historyStore.clampText(body.label, 80)
     // 页面标题/地址不写进提示词：模型会把它当成「选中文字里的英文」去翻译（实测把标题 DSH 译了一遍）
 
+    const initialExplanation = typeof body.initialExplanation === 'string' ? body.initialExplanation : ''
+    const source = contextSource(sessionIdOf(body), text, typeof body.context === 'string' ? body.context : '', initialExplanation)
+    const restoredState = readContextState(body.contextState)
+    const historyStart = Number.isSafeInteger(body.historyStart) && Number(body.historyStart) >= 0 ? Number(body.historyStart) : 0
+    if (isChatRound && historyStart > 0 && (!restoredState || restoredState.source !== source || restoredState.through !== historyStart)) {
+      sendJson(res, 409, { error: '对话记忆进度与当前来源不一致，请重新打开这段历史后重试' })
+      return
+    }
+    let contextState: ContextState = restoredState && restoredState.source === source && restoredState.through === historyStart
+      ? { ...restoredState, sessionId: sessionIdOf(body) } : { version: 1, sessionId: sessionIdOf(body), source, through: 0, digest: EMPTY_DIGEST, summary: '', background: null }
+    const capacity = isChatRound ? await resolveChatCapacity(ctx, config, route) : null
+
     // 会话背景：从 sessionQuery 读取当前会话的模型界面（live 优先，含持久化会话）
     let background: SessionBackground | null = null
     if (config.sessionContext) {
       const sessionId = sessionIdOf(body)
-      if (sessionId) {
+      if (isChatRound && restoredState && restoredState.source === source) background = contextState.background
+      else if (sessionId) {
         // 背景预算按阶段：首轮只要翻译（8 条够定指代）；详解与追问都是深度交互，吃满 24 条
         const stage = typeof body.stage === 'string' ? body.stage : ''
         const wantsFull = stage === 'detail' || typeof body.question === 'string'
@@ -100,6 +117,9 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
         })
       }
     }
+
+    if (isChatRound && capacity && !restoredState) background = fitBackground(background, Math.max(128, capacity.budget * 0.2))
+    if (isChatRound) contextState = { ...contextState, background }
 
     // 顺序即缓存策略：前缀必须“只增不变”才能复用 ——
     //   ① 会话背景（同一会话内基本不变）→ ② 固定说明 → ③ 动态尾部（选中文字/局部片段）
@@ -133,7 +153,16 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
     // 这一轮的附件（追问）：/api/attach 存好之后的持久引用。形状在这里**收敛一次**，
     // 历史那条路用的也是同一个收敛器（见 history-attachments.ts）。
     const currentAttachments = readHistoryAttachments(body.attachments)
-    const rawHistory = Array.isArray(body.history) ? body.history : []
+    const rawHistory: ChatTurn[] = (Array.isArray(body.history) ? body.history : []).map(raw => {
+      const item = (raw || {}) as { role?: unknown; text?: unknown; attachments?: unknown }
+      const attachments = readHistoryAttachments(item.attachments)
+      return { role: item.role === 'assistant' ? 'assistant' : 'user', text: typeof item.text === 'string' ? item.text : '',
+        ...(attachments.length ? { attachments } : {}) }
+    })
+    let selectedHistory = rawHistory
+    const catalog = readMaterialCatalog([...(Array.isArray(body.materials) ? body.materials : []),
+      ...rawHistory.flatMap((t, i) => (t.attachments || []).map(a => ({ ...a, turn: historyStart + i }))),
+      ...currentAttachments.map(a => ({ ...a, turn: historyStart + rawHistory.length }))])
     // 预算规划的结果（图片几张回带、几张降级），只用于上报与诊断
     let historyImages = { kept: 0, omitted: 0, files: 0 }
     // 历史里有没有真带过附件：决定"附件读不回来"时值不值得降级重试一次
@@ -150,7 +179,7 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
      */
     function planHistory(): HistoryContentPlan {
       if (!isChat) return { blocks: [], kept: [], keptImages: 0, omittedImages: 0, keptFiles: 0, omittedFiles: 0 }
-      const window = rawHistory.slice(-20)
+      const window = selectedHistory
       const turns = historyDropped
         ? window.map((turn) => {
             const item = (turn ?? {}) as { role?: unknown; text?: unknown }
@@ -166,7 +195,7 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
     function buildHistoryMessages(): Message[] {
       const out: Message[] = []
       if (!isChat) return out
-      const window = rawHistory.slice(-20)
+      const window = selectedHistory
       const plan = planHistory()
       window.forEach((turn, index) => {
         const item = turn as { role?: unknown; attachments?: unknown }
@@ -197,7 +226,7 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
       if (!store || typeof store.fileHostPath !== 'function') return paths
       const refs = []
       for (const item of currentAttachments) if (item.kind === 'file') refs.push(item.ref)
-      for (const item of planHistory().kept) if (item.kind === 'file') refs.push(item.ref)
+      for (const item of catalog) if (item.kind === 'file') refs.push(item.ref)
       for (const ref of refs) {
         try {
           const hostPath = store.fileHostPath(ref)
@@ -314,6 +343,10 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
       }
     }
 
+    if (isChat && config.tools && config.maxToolRounds > 0 && (rawHistory.length > 0 || catalog.length > 0 || contextState.through > 0)) {
+      toolSchemas.push(MATERIAL_TOOL)
+    }
+
     // 文件类工具的边界：默认只允许会话工作目录；'*' = 不限制；配置了具体目录就用它。
     // 拿不到工作目录时**不设限**（否则新会话里 read 直接全废），但会打日志说明。
     const wantsFsTools = toolSchemas.some((schema) => FS_TOOL_NAMES.includes(schema.name))
@@ -378,11 +411,7 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
     // 所以改成**先把可读范围说全**（项目 + 本次附带的文件），再说"除此之外会被拒"。
     let attachedPaths = collectAttachedPaths()
     const fileRule = wantsFsTools
-      ? attachedPaths.size > 0
-        ? `\n\n【文件访问】你可以用 read/grep/glob 读文件。**可读范围 = 当前项目（${readRoot || '不限'}）加上用户这次附带的文件**（它们的只读副本在附件仓里，路径就在消息里给出）。除此之外的路径会被拒绝。` +
-          `\n  · 附带的文件**直接 read 那个路径**就行 —— 不要还没试就断定"项目外读不了"，也不要反复换 grep/glob 重试；` +
-          `\n  · 引用文件内容时只取必要的一两行，不要整段粘贴。`
-        : `\n\n【文件访问】你可以用 read/grep/glob 查看当前项目里的文件（范围：${readRoot || '不限'}）。超出该范围的路径会被拒绝；引用文件内容时只取必要的一两行，不要整段粘贴。`
+      ? `\n\n【文件访问】你可以用read/grep/glob读取当前项目（${readRoot || '不限'}）和本小窗已提供的文件附件。附件路径以经过验证的文件引用或selection_material返回为准。需要旧文件时先用selection_material取回路径，再按问题读取必要部分；上传成功不等于格式可解析，不能读取时明确说明。除此之外的路径会被拒绝。`
       : ''
     const fetchRule = fetchBlockedSample
       ? `\n\n【抓取网页不可用】本机域名解析到保留地址段（${fetchBlockedSample}），网页抓取会被安全策略拒绝：只做联网搜索，**不要尝试抓取具体网址**（省掉一次注定失败的往返）。`
@@ -465,6 +494,41 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
         : {}),
     })
     let chars = 0
+    let contextEstimate = 0
+    if (isChat && capacity) {
+      try {
+        const fixedTokens = 256 + estimateTextTokens(systemPrompt + userText + initialExplanation + question)
+          + estimateTextTokens(JSON.stringify(toolSchemas))
+          + estimateTextTokens(materialIndex(catalog, historyStart + rawHistory.length))
+          + estimateTextTokens(typeof body.toolDigest === 'string' ? body.toolDigest.slice(0, 2000) : '')
+          + currentAttachments.reduce((n, a) => n + capacity.attachmentPrice(a), 0)
+        const planned = await planChatContext(ctx, route, capacity, { state: contextState, history: rawHistory, fixedTokens, signal: controller.signal, effort: sentEffort })
+        contextState = planned.state
+        selectedHistory = planned.history
+        contextEstimate = planned.estimatedTokens
+        sse(res, { type: 'context-state', state: contextState,
+          budget: capacity.budget, estimatedTokens: contextEstimate, modelWindow: capacity.modelWindow,
+          compacted: planned.compacted, retainedMessages: selectedHistory.length })
+      } catch (error) {
+        sse(res, { type: 'error', code: 'context-rejected', message: String((error as Error)?.message || error) })
+        finished = true
+        clearTimeout(timer)
+        res.end()
+        return
+      }
+    }
+    const memoryMessages: Message[] = isChat ? [
+      ...(initialExplanation ? [createAssistantMessage({ source: historySource, content: [{ type: 'text', text: initialExplanation }] })] : []),
+      ...(contextState.summary ? [createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text',
+        text: '【较早对话摘要，可能遗漏细节】\n' + contextState.summary + '\n' + materialIndex(catalog, contextState.through) }] })] : []),
+    ] : []
+    let upstreamStarted = false
+    function checkedMessages(messages: Message[]): Message[] {
+      if (capacity && estimateRequestTokens(messages, capacity, toolSchemas) > capacity.budget) {
+        throw Object.assign(new Error('本轮材料与工具结果超过上下文容量，请缩小问题或引用范围'), { code: 'context-capacity' })
+      }
+      return messages
+    }
     const baseMessage = createUserMessage({
       source: { kind: 'user' },
       content: [{ type: 'text', text: userText }],
@@ -485,13 +549,15 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
     const questionContent: ContentBlock[] =
       currentBlocks.length > 0 ? [...currentBlocks, { type: 'text', text: questionText }] : [{ type: 'text', text: questionText }]
     let openingMessages: Message[] = isChat
-      ? [...buildHistoryMessages(), createUserMessage({ source: { kind: 'user' }, content: questionContent })]
+      ? [...memoryMessages, ...buildHistoryMessages(), createUserMessage({ source: { kind: 'user' }, content: questionContent })]
       : []
     try {
       let errored = false
       let usage: unknown = null
       let answer = ''
       const toolMessages: Message[] = []
+      const recoveredMaterialBlocks: ContentBlock[] = []
+      let toolContextTokens = 0
       let toolCalls = 0
       // 允许的工具轮 + 1 个**收尾轮**：收尾轮不带任何工具。
       // 不加这一轮的话，模型每轮都调工具时循环直接结束，正文是空的——
@@ -540,7 +606,7 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
           // 插件以前没传，结果是所有小窗请求共用静态会话头 —— 而中继是按会话跟踪的（实测长回答被掐）。
           ...(sessionId ? { sessionId: sessionId as never } : {}),
           system: undefined,
-          messages: [
+          messages: checkedMessages([
             // 第二参数（组装这段提示词的插件名）：**新老版本签名不一样，两边都得能编译**——
             //   · npm 上按 peer 范围 `>=0.1.5-rc <2` 解析到的是 0.1.5-rc.3：`(text, plugin)` 两个必填
             //     （CI 就是拿这份类型做构建校验的，少传就 TS2554）；
@@ -554,7 +620,7 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
               name,
             ),
             ...(round === 0 ? [baseMessage, ...openingMessages] : [baseMessage, ...openingMessages, ...toolMessages]),
-          ],
+          ]),
           // 工具**每轮都在请求里**（照主会话的做法）：收尾轮以前故意不带工具"逼结论"，
           // 结果模型退到文本层、把工具调用标记写进正文（实测 wrapUp 轮 raw=726 → emitted=0）。
           // 主会话从不摘工具，模型也就从不写这种标记 —— 这里与它保持一致。
@@ -564,6 +630,7 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
           ...(roundEffort ? { reasoningEffort: ReasoningEffortId(roundEffort) } : {}),
           signal: controller.signal,
         })
+        upstreamStarted = true
         const assembler = new BlockAssembler()
         // 本轮吐出的正文字数：这一轮如果最后是要调工具，那这些字其实是"过程旁白"
         // （"我还得再搜一次""先看看拿到的标题"这类），要被撤回，不能当成答案留在小窗里
@@ -645,7 +712,7 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
           if (roundText.length === 0 && historyHadAttachments && !historyDropped && looksLikeAttachmentFailure(errorMessage, errorCode)) {
             historyDropped = true
             historyImages = { kept: 0, omitted: 0, files: 0 }
-            openingMessages = [...buildHistoryMessages(), createUserMessage({ source: { kind: 'user' }, content: questionContent })]
+            openingMessages = [...memoryMessages, ...buildHistoryMessages(), createUserMessage({ source: { kind: 'user' }, content: questionContent })]
             // 历史附件被丢掉了 → 名单跟着缩小（只放"还看得见的"那些）
             attachedPaths = collectAttachedPaths()
             errored = false
@@ -746,6 +813,8 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
             source: { provider: route.provider, model: route.model },
           }),
         )
+        const restoredBlocks: ContentBlock[] = []
+        toolContextTokens += estimateTextTokens(JSON.stringify(blocks))
         for (const call of calls) {
           if (call.type !== 'tool-call') continue
           toolCalls += 1
@@ -763,7 +832,15 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
           // 只认 path 的话 read 的 file_path 会是 undefined → 边界检查被静默绕过（实测踩过）。
           const rawPath = (parsed as { file_path?: unknown; path?: unknown })?.file_path ?? (parsed as { path?: unknown })?.path
           const wantPath = typeof rawPath === 'string' ? rawPath : ''
-          const execution =
+          let restored: Awaited<ReturnType<typeof restoreMaterial>> | undefined
+          if (call.name === MATERIAL_TOOL.name && toolSchemas.some(schema => schema.name === call.name)) {
+            restored = await restoreMaterial(ctx, catalog, parsed, { through: contextState.through, key: typeof body.key === 'string' ? body.key : '',
+              maxChars: config.toolResultMaxChars, readMessage: historyStore.readMessage })
+            if (restored.restored && capacity && capacity.attachmentPrice(restored.restored) + contextEstimate + toolContextTokens > capacity.budget * 0.95) {
+              restored = { content: [{ type: 'text', text: '这份材料超过本轮剩余容量，请减少本轮材料后重新查看。' }], isError: true }
+            }
+          }
+          const execution = restored || (
             !toolSchemas.some((schema) => schema.name === call.name)
               ? { content: [{ type: 'text' as const, text: `（调用已拒绝：${call.name} 不在本次允许的工具中）` }], isError: true }
               : FS_TOOL_NAMES.includes(call.name) && !isReadAllowed(readRoot, wantPath, attachedPaths)
@@ -776,7 +853,19 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
                   ],
                   isError: true,
                 }
-              : await runTool(ctx, call.name, parsed, controller.signal, config.toolResultMaxChars, agent)
+              : await runTool(ctx, call.name, parsed, controller.signal, config.toolResultMaxChars, agent))
+          toolContextTokens += estimateTextTokens(JSON.stringify(execution.content))
+          if (restored?.restored) {
+            const item = restored.restored
+            restoredBlocks.push(item.kind === 'image' ? { type: 'image', attachment: item.ref as never } : { type: 'file', attachment: item.ref as never })
+            if (capacity) toolContextTokens += capacity.attachmentPrice(item)
+            if (item.kind === 'file') {
+              const store = ctx.get('attachments') as { fileHostPath?: (ref: unknown) => string | undefined } | undefined
+              const path = store?.fileHostPath?.(item.ref)
+              if (path) attachedPaths.add(resolve(path))
+            }
+            sse(res, { type: 'material-restored', attachment: item })
+          }
           // 结果也回传：小窗里能看见"查了什么、命中什么、链接是什么"，否则工具是个黑盒
           const digest = digestToolResult(execution.content)
           sse(res, {
@@ -796,6 +885,8 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
           // 结论轮要用：把"查了什么 + 拿到了什么"写成纯文本，避免重放工具调用链
           toolDigestLines.push(`· ${call.name}（${label2 || '查询'}）：${digest.preview}`)
         }
+        recoveredMaterialBlocks.push(...restoredBlocks)
+        if (restoredBlocks.length > 0) toolMessages.push(createUserMessage({ source: { kind: 'user' }, content: restoredBlocks }))
       }
       if (!errored && answer.trim().length === 0 && toolCalls > 0 && triedEfforts.size === 1) {
         // 收尾轮常常"只吐一段工具调用、不写正文"（实测「今天的新闻」一个字都没有）。
@@ -804,15 +895,13 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
         conclusionInfo.tried = true
         sse(res, { type: 'notice', code: 'conclusion-retry', text: '查询已完成，正在整理结论…' })
         const conclusionUser = [
+          '【补充结论】',
           // ⚠️ **必须带上用户这一轮问的是什么**：这一段是最终正文的来源，而它以前只有
           // 「选区块 + 检索资料 + 请给出最终答案」—— 模型看不到问题，就只能顺着选中文字写。
           // 实测症状：问"搜索今天的AI新闻。"，正文却在解释选区那个词（如 diagLog / exit）。
           // 特别是收尾轮也带上工具之后（照主会话的做法），正文**每次都**由这里产出，
           // 缺了问题就等于每次都答非所问。
           question ? `【用户这一轮的问题】（这就是你要回答的对象）\n${question}` : '',
-          '',
-          '【选中文字】（只是背景资料：问题需要它时才引用，不要拿它当回答的对象）',
-          userText,
           '',
           '【已经查到的资料】',
           ...toolDigestLines.slice(0, 12),
@@ -841,11 +930,11 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
               // 以前这一轮不带工具，模型要调工具时只能退回文本层 —— 那正是正文里出现
               // DSML / ds_safety_tool_call 标记的唯一来源。带上之后它走协议层，正文就是正文。
               ...(toolSchemas.length > 0 ? { tools: toolSchemas } : {}),
-              messages: [
-                // 同上：多传的插件名在老版本运行时会被忽略，新版本类型上却是必填
+              messages: checkedMessages([
                 systemMessageOf(systemPrompt, name),
-                createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: conclusionUser }] }),
-              ],
+                baseMessage, ...openingMessages,
+                createUserMessage({ source: { kind: 'user' }, content: [...recoveredMaterialBlocks, { type: 'text', text: conclusionUser }] }),
+              ]),
               ...(config.temperature >= 0 ? { temperature: config.temperature } : {}),
               ...(config.maxTokens > 0 ? { maxTokens: config.maxTokens } : {}),
               ...(attemptEffort ? { reasoningEffort: ReasoningEffortId(attemptEffort) } : {}),
@@ -871,7 +960,12 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
                 }
               }
             }
-            for (const tail of [thinkAgain.flush()]) if (tail.think) sse(res, { type: 'thought', text: tail.think })
+            const tail = thinkAgain.flush()
+            if (tail.think) sse(res, { type: 'thought', text: tail.think })
+            if (tail.text) {
+              chars += tail.text.length; answer += tail.text; conclusionInfo.chars += tail.text.length
+              sse(res, { type: 'delta', text: tail.text })
+            }
             // 结论轮也可能把"英文核对过程"写进正文：一律按泄漏裁一次
             const leaked = splitLeakedReasoning(answer)
             if (leaked.prefix) {
@@ -881,6 +975,7 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
               sse(res, { type: 'notice', code: 'reasoning-leak', text: '已去掉模型写进正文的核对过程' })
             }
           } catch (error) {
+            if ((error as { code?: string })?.code === 'context-capacity') throw error
             conclusionInfo.error = String((error as Error)?.message ?? error)
             ctx.logger?.warn?.(`[${name}] 结论轮失败：${conclusionInfo.error}`)
           }
@@ -920,6 +1015,7 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
       const aborted = err?.name === 'AbortError'
       sse(res, {
         type: 'error',
+        ...(!upstreamStarted && (err as { code?: string })?.code === 'context-capacity' ? { code: 'context-rejected' } : {}),
         message: aborted ? `调用超时或已取消（${config.timeoutMs}ms）` : String(err?.message ?? err),
       })
     } finally {

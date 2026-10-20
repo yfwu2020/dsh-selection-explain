@@ -1,40 +1,9 @@
-/**
- * 小窗历史里的附件：**持久化的引用**怎么进模型请求，以及图片预算怎么降级。
- *
- * 为什么要单独一个模块：这段逻辑全是**纯函数**（形状收敛 / 预算规划 / 内容块重建），
- * 它决定了"第 N 轮还能不能看见第 1 轮那张图"，是最容易写错、又最难人工发现的地方 ——
- * 单独放出来才测得动（见 tests/unit/history-attachments.test.mjs）。
- *
- * ── 三条设计约束 ──
- *
- * ① **只回传引用，不回传字节**。历史里存的是 `/api/attach` 给的持久引用
- *    （`{attachmentId:'sha256:…', name, bytes, mediaType, width, height}`），
- *    和主会话往会话事件里写的是同一套形状。字节只在附件服务里存一份。
- *
- * ② **图片有预算，超了退化成一行文字**。小窗直接调 `ctx.llm.stream()`，不走 agent loop，
- *    所以吃不到 `dsh-compaction-image-offload`（它挂在 `agent/request-error` 这个
- *    agent-loop 才派发的 waterfall 上）。历史里的图要是不管，每多问一轮就重发一遍，
- *    token 会一路涨上去 —— 所以这里自己卡预算：**从最近往前数**，新图优先，
- *    超出的老图换成一行为模型可读的说明（照 dsh-llm 那句 offloaded 措辞的风格写，
- *    模型在别处见过同款说法）。
- *
- * ③ **文件不占图片预算**。文件本来就不进请求体：dsh-llm 会把它投影成
- *    "名字 + 字节数 + 只读路径"一行文字，模型需要时用文件工具按路径去读。
- *    这行的成本很低，而且"能读回来"正是持久化它的全部意义 —— 所以文件只要限个条数就行。
+/** Durable attachment validation and stable block reconstruction.
+ * The context planner owns the token budget and compaction boundary. Every
+ * image/file in its selected segment stays unchanged until that boundary moves.
+ * Binary data lives in the host attachment library; history stores only refs.
  */
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-
-/** 历史里最多回带几张**图片**（当前这一轮的附件也算在这个额度里）。 */
-export const HISTORY_IMAGE_MAX = 2
-
-/** 历史回带图片的总字节上限（规范化后的字节，取自引用里的 bytes）。 */
-export const HISTORY_IMAGE_BYTES = 4 * 1024 * 1024
-
-/** 历史里最多回带几个**文件**引用（每个只投影成一行路径文字）。 */
-export const HISTORY_FILE_MAX = 8
-
-/** 单轮最多认几件附件（客户端被改坏、或有人手写请求时的护栏）。 */
-export const HISTORY_ATTACHMENTS_PER_TURN_MAX = 10
 
 /** 附件引用里我们**只**认这几个字段 —— 其余一律丢掉。 */
 export interface AttachmentRefLike {
@@ -119,7 +88,7 @@ export function readHistoryAttachments(raw: unknown): HistoryAttachment[] {
     const parsed = readHistoryAttachment(item)
     if (parsed) out.push(parsed)
   }
-  return out.length > HISTORY_ATTACHMENTS_PER_TURN_MAX ? out.slice(-HISTORY_ATTACHMENTS_PER_TURN_MAX) : out
+  return out
 }
 
 /**
@@ -132,25 +101,19 @@ export function omittedImageText(ref: AttachmentRefLike): string {
   const identity = ref.name === undefined ? String(ref.attachmentId) : `"${ref.name}" (${ref.attachmentId})`
   const size = ref.bytes === undefined ? '' : `, ${ref.bytes} bytes`
   const pixels = ref.width === undefined || ref.height === undefined ? '' : `, ${ref.width}x${ref.height}px`
-  return `[图片已省略以适配请求的图片预算：${identity} (sha256:${digestOf(ref)}${pixels}${size})。原图不再随本轮请求发送；如果还需要看图上的内容，请让用户重新附上这一张。]`
+  return `[图片已省略以适配请求的图片预算：${identity} (sha256:${digestOf(ref)}${pixels}${size})。原图不再随本轮请求发送；需要细节时应通过附件引用重新读取原图；只有原图丢失时才请用户补传。]`
 }
 
 /** 文件引用被条数上限挤掉时的那行文字。 */
 export function omittedFileText(ref: AttachmentRefLike): string {
   const name = ref.name === undefined ? String(ref.attachmentId) : ref.name
-  return `[文件「${name}」较早，本轮不再重复给出它的只读路径；如果还需要它的内容，请让用户重新附上这个文件。]`
+  return `[文件「${name}」较早，本轮不再重复给出它的只读路径；需要时通过附件引用重新取得文件路径；只有文件丢失时才请用户补传。]`
 }
 
 /**
- * 把客户端传来的历史轮次重建成**每轮一份内容块**，并按预算决定图片是回带还是降级。
- *
- * @param turns - 客户端给的历史（`[{role, text, attachments?}]`），顺序 = 从旧到新。
- * @param current - **当前这一轮**的附件；它已经占了额度（用户刚附上的图必须发出去，
- *                  但总张数仍要封顶，否则"历史 2 张 + 本轮 1 张"会逐轮往上叠）。
- * @returns 与 `turns` 等长（下标对齐）的内容块，外加几个计数。
- *
- * 返回 `[]` 表示"这一轮没有可进模型的内容"（既没文字也没附件）—— 调用方据此跳过它，
- * 与从前的 `if (!text) continue` 等价。
+ * Rebuild every selected historical attachment in request order.
+ * Capacity planning happens before this function; current attachments are
+ * counted for diagnostics and never cause older occurrences to be rewritten.
  */
 export function historyContentBlocks(turns: readonly unknown[], current: readonly HistoryAttachment[] = []): HistoryContentPlan {
   const parsed = turns.map((turn) => {
@@ -161,42 +124,18 @@ export function historyContentBlocks(turns: readonly unknown[], current: readonl
     }
   })
 
-  // ── 预算：从**最近往前**数，新图优先 ──
-  const currentImages = current.filter((item) => item.kind === 'image')
-  let keptImages = 0
-  let usedBytes = 0
-  for (const item of currentImages) {
-    keptImages += 1
-    usedBytes += typeof item.ref.bytes === 'number' ? item.ref.bytes : 0
-  }
-  let keptFiles = current.filter((item) => item.kind === 'file').length
-  // 下标对：`轮次下标:附件下标` —— 决定某一处是回带还是降级
+  // The context planner selects a stable segment. Keep every occurrence in it:
+  // changing old images whenever a new one arrives invalidates the cached prefix.
+  let keptImages = current.filter(item => item.kind === 'image').length
+  let keptFiles = current.filter(item => item.kind === 'file').length
   const kept = new Set<string>()
   let omittedImages = 0
   let omittedFiles = 0
-  for (let turnIndex = parsed.length - 1; turnIndex >= 0; turnIndex -= 1) {
-    const attachments = parsed[turnIndex].attachments
-    for (let itemIndex = attachments.length - 1; itemIndex >= 0; itemIndex -= 1) {
-      const item = attachments[itemIndex]
-      if (item.kind === 'file') {
-        if (keptFiles >= HISTORY_FILE_MAX) {
-          omittedFiles += 1
-          continue
-        }
-        keptFiles += 1
-        kept.add(`${turnIndex}:${itemIndex}`)
-        continue
-      }
-      const size = typeof item.ref.bytes === 'number' ? item.ref.bytes : 0
-      if (keptImages >= HISTORY_IMAGE_MAX || usedBytes + size > HISTORY_IMAGE_BYTES) {
-        omittedImages += 1
-        continue
-      }
-      keptImages += 1
-      usedBytes += size
-      kept.add(`${turnIndex}:${itemIndex}`)
-    }
-  }
+  parsed.forEach((turn, ti) => turn.attachments.forEach((item, ai) => {
+    kept.add(`${ti}:${ai}`)
+    if (item.kind === 'image') keptImages++
+    else keptFiles++
+  }))
 
   // ── 重建：附件排在正文**前面**（和当前这一轮一致：先给材料，再读问题）──
   const keptList: HistoryAttachment[] = []

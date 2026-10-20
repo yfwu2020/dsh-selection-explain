@@ -1,7 +1,8 @@
 import type { ServerResponse, IncomingMessage } from 'node:http'
+import { CHAT_REQUEST_BYTES } from '../chat-context.js'
 
 /** 单次请求体上限（字节）。 */
-export const BODY_LIMIT = 512 * 1024
+export const BODY_LIMIT = CHAT_REQUEST_BYTES
 
 /**
  * 附件上传的请求体上限（字节）。

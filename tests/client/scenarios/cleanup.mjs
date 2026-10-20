@@ -7,14 +7,6 @@ import { fileURLToPath } from 'node:url'
 export async function run(env) {
 
 
-  for (const dispose of env.disposers.reverse()) {
-    try {
-      dispose()
-    } catch (error) {
-      console.log('cleanup 抛错:', error && error.message)
-    }
-  }
-
   // ────────── 拖拽上限 = 视口高度 − 8，不是"上次关闭小窗之前的高度" ──────────
   // 踩过的坑：开窗时把"记住的高度"写成 max-height 当天花板，而拖拽只写 height、不抬天花板 →
   // 拖大的部分被那条旧天花板直接截掉。取证：maxHeight 仍停在开窗时的那条 300px。
@@ -68,6 +60,9 @@ export async function run(env) {
   }
 
 
+  const hook = env.hook
+  for (const dispose of env.disposers.reverse()) dispose()
+  env.assert('卸载后缓存、计时器和预览登记全部释放', Object.values(hook.memory()).every(value => value === 0), JSON.stringify(hook.memory()))
   env.assert('清理后自有根摘除，保留宿主 DOM', env.floatingLayer.parentNode === null && env.mount.children.length === 0 && env.body.children.indexOf(env.container) >= 0)
 
   env.assert('清理后划词桥自己建的预览 blob 被回收', env.bridgeOwnedBlob !== '' && !env.blobStore.has(env.bridgeOwnedBlob), env.bridgeOwnedBlob)

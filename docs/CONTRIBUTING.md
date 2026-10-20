@@ -20,6 +20,8 @@ npm run test:browser
 
 这些命令同样先构建。`tests/client/run.mjs` 中的场景共享一个界面生命周期，必须由隔离宿主入口 `tests/integration/client.test.mjs` 按顺序运行，不能单独加载一个中间场景。默认测试使用临时数据目录和模型/识别夹具，不连接用户正在使用的 DSH。
 
+内存与上下文进度场景独立于其他中间场景，可在构建后用 `SEL_CLIENT_SCENARIO=memory node tests/integration/client.test.mjs` 单独验证长对话的按需渲染、关闭与重开；默认测试也包含此场景；`SEL_CLIENT_SCENARIO=context node tests/integration/client.test.mjs` 单独验证进度落盘、重开、原文尾部发送和附件索引。
+
 浏览器测试需要 Chrome/Chromium；可通过 `CHROME` 指定可执行文件。开发机没有浏览器时会明确跳过；CI 设置 `REQUIRE_BROWSER=1`，缺少浏览器会失败。原生探针测试在 macOS 上执行，其余平台明确跳过。
 
 默认语音浏览器测试使用带静音间隔的合成音频，验证真实录音、编码、停顿和输入框编排。需要验证实际宿主的识别服务时单独运行：

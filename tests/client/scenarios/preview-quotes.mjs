@@ -291,8 +291,8 @@ export async function run(env) {
       await env.sleep(10)
       const longQuote = env.hook.quotes().pop()
       env.assert(
-        '超长引用按单段上限截断，并在状态里说明',
-        !!longQuote && longQuote.text.length >= 3000 && longQuote.text.length <= 3001 && env.hook.state().status.indexOf('已截断') > 0,
+        '超长引用保留完整选区，不静默截断',
+        !!longQuote && longQuote.text.length === 4200 && env.hook.state().status.indexOf('已截断') < 0,
         `${longQuote && longQuote.text.length} · ${env.hook.state().status}`,
       )
       const chipList = Array.from(env.walk(quotesBox)).filter((n) => n.className === 'dsh-sel-quotechip-x')
@@ -382,11 +382,11 @@ export async function run(env) {
       String(quotePayload.question).replace(/\n/g, '⏎'),
     )
     env.assert(
-      '只给会话里的引用问 host（小窗里的那几段自己就有上下文，不多打一次请求）',
-      env.quoteContextCalls.length === callsBefore + 1 &&
+      '引用时已获取会话快照，发送不重新获取',
+      env.quoteContextCalls.length === callsBefore && callsBefore > 0 &&
         env.quoteContextCalls[env.quoteContextCalls.length - 1].text === '主界面上的这一段' &&
         env.quoteContextCalls[env.quoteContextCalls.length - 1].sessionId === 'session-stub-1',
-      JSON.stringify(env.quoteContextCalls.slice(callsBefore)),
+      JSON.stringify(env.quoteContextCalls.slice(-1)),
     )
     env.assert(
       '拼好的消息里带上【引用处上下文】，被引用的部分用【】标出',
