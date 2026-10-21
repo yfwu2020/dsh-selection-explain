@@ -13,7 +13,7 @@ import { createHistoryStore } from './history-store.js'
 import { createRoutes } from './routes.js'
 import { createPromote } from './promote.js'
 import { createAttach } from './attach.js'
-import { handleShotStart, handleShotPending, handleShotImage, handleShotStatus } from './shot.js'
+import { handleShotStart, handleShotPending, handleShotImage, handleShotStatus, handleShotHello } from './shot.js'
 
 export function apply(ctx: Context, rawConfig: Config): void {
   const config = resolveConfig(rawConfig)
@@ -114,6 +114,16 @@ export function apply(ctx: Context, rawConfig: Config): void {
         handler: (req, res) => handleShotImage(req, res),
       }),
     `${name}: shot image route`,
+  )
+
+  ctx.effect(
+    () =>
+      ctx.webServer.register({
+        kind: 'exact',
+        path: `${API_PREFIX}/shot/hello`,
+        handler: handleShotHello,
+      }),
+    `${name}: shot hello route`,
   )
 
   ctx.effect(

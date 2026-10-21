@@ -78,7 +78,9 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": [],
+      "inject": [
+        "@deepseek-ai/dsh-client-shortcuts"
+      ],
       "platform": "web"
     }
   },

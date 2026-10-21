@@ -34,6 +34,16 @@ export var ATTACH = '/selection-explain/api/attach'
  */
 export var ATTACHMENT = '/selection-explain/api/attachment'
 
+/**
+ * 截图提问（DSH 快捷键 ⌘⇧X 触发）：
+ *   · SHOT_START   POST 起一次截图（host 弹系统十字准星）
+ *   · SHOT_PENDING GET  长轮询，等这次截图的结果
+ *   · SHOT_IMAGE   GET  取整窗图（按字节回，不进 JSON）
+ */
+export var SHOT_START = '/selection-explain/api/shot/start'
+export var SHOT_PENDING = '/selection-explain/api/shot/pending'
+export var SHOT_IMAGE = '/selection-explain/api/shot/image'
+
 /** 一次最多带几件（与 host 的 ATTACH_MAX_ITEMS 一致；超了 host 也会拒）。 */
 export var ATTACH_MAX_ITEMS = 10
 

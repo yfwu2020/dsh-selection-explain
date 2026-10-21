@@ -12,6 +12,7 @@ import { createSelectionController } from './selection.js'
 import { createVoiceCardController } from './voice-card.js'
 import { createQuotesController } from './quotes.js'
 import { createAttachController } from './attach.js'
+import { createShotController } from './shot.js'
 import { createPreviewController } from './preview.js'
 import { createPanelController } from './panel.js'
 import { createPillController } from './pill.js'
@@ -751,6 +752,8 @@ export function apply(ctx) {
     get quoteButton() { return quoteButton },
   })
   var voiceCardController = createVoiceCardController({
+    get shotRefAsync() { return shotController.takeRefAsync },
+    get clearShotMarkers() { return shotController.clearMarkers },
     get layer() { return layer },
     get later() { return later },
     get panelOpen() { return panelOpen },
@@ -993,6 +996,22 @@ export function apply(ctx) {
     get attachInput() { return attachInput },
     get setStatus() { return panelController.setStatus },
     get refreshAskState() { return conversationController.refreshAskState },
+  })
+  /**
+   * 截图提问：⌘⇧X 起一次截图，host 截好后这里画红框、上传、放进输入框或卡片。
+   */
+  var shotController = createShotController({
+    get document() { return document },
+    get window() { return typeof window !== 'undefined' ? window : null },
+    get layer() { return layer },
+    get state() { return state },
+    get panelOpen() { return panelOpen },
+    get addFiles() { return attachController.addFiles },
+    get focusAskBox() { return panelController.focusAskBox },
+    get openVCard() { return voiceCardController.openVCard },
+    get vcardOpen() { return function () { return voiceCardController.vcardState.open } },
+    get vcardElement() { return function () { return voiceCardController.vcard } },
+    get closeVCard() { return voiceCardController.closeVCard },
   })
   var modelsController = createModelsController({
     get state() { return state },
@@ -1830,6 +1849,15 @@ export function apply(ctx) {
 
   // —— 调试钩子（自动化验证用） ——
   window.__dshSelectionExplain = {
+    /** 截图提问的状态（调试/自动化）。 */
+    shot: function () {
+      return shotController.state()
+    },
+    /** 手动起一次截图（等同按 ⌘⇧X）。 */
+    shotStart: function () {
+      shotController.capture()
+      return true
+    },
     /**
      * 语音卡（选中文字 + 输入法正在语音输入 → 就地追问）的状态。
      * 给自动化验证用：能不能弹、有没有焦点、几何对不对，全在这里读。
@@ -2350,6 +2378,59 @@ export function apply(ctx) {
     },
   }
 
+  // —— 截图提问的快捷键（DSH 自己的快捷键服务；只在窗口有焦点时响应）——
+  // 默认 ⌘⇧X。注册时 DSH 会做冲突校验，用户也能在设置里改键。
+  // ⚠️ 必须走 inject 声明（见文件末尾 `inject`）：cordis 的服务按插件隔离，
+  // 没声明就用 ctx.get('shortcuts') 取到的是 undefined（实测踩过）。
+  var shortcutsService = ctx.shortcuts
+  var shortcutReport = { loaded: true, shortcuts: !!shortcutsService, registered: false, error: '' }
+  function reportShortcut() {
+    try {
+      fetch('/selection-explain/api/shot/hello', { method: 'POST', body: JSON.stringify(shortcutReport) }).catch(function () {})
+    } catch (error) {
+      /* 没有 fetch 的环境跳过 */
+    }
+  }
+  reportShortcut()
+  if (shortcutsService && typeof shortcutsService.register === 'function') {
+    ctx.effect(function () {
+      try {
+        var off = shortcutsService.register({
+        id: 'selection-explain.screenshot',
+        label: function () {
+          return '截图提问'
+        },
+        // 键位是**物理键 + 修饰键**的结构（不是 "Mod+Shift+X" 这种字符串）：
+        // code 必须是 KeyA-Z / Digit0-9 / F1-24 这类物理 code，modifiers 是 meta/control/alt/shift/primary
+        // （primary 在 macOS 上是 ⌘、Windows 上是 Ctrl）。
+        defaults: {
+          'desktop:macos': { code: 'KeyX', modifiers: ['meta', 'shift'] },
+          'web:macos': { code: 'KeyX', modifiers: ['meta', 'shift'] },
+          'desktop:windows': { code: 'KeyX', modifiers: ['primary', 'shift'] },
+          'web:windows': { code: 'KeyX', modifiers: ['primary', 'shift'] },
+        },
+        resolve: function () {
+          return {
+            status: 'handled',
+            run: function () {
+              shotController.capture()
+            },
+          }
+        },
+        })
+        shortcutReport.registered = true
+        reportShortcut()
+        return off
+      } catch (error) {
+        shortcutReport.error = String((error && error.message) || error)
+        reportShortcut()
+        return function () {}
+      }
+    }, 'selection-explain: screenshot shortcut')
+    // 长轮询一直挂着等结果（host 那边框选完成才会回）
+    shotController.start()
+  }
+
   // —— 可逆清理 ——
   ctx.effect(function () {
     if (typeof console !== 'undefined' && console.log) {
@@ -2361,6 +2442,8 @@ export function apply(ctx) {
       cache.dispose()
       voiceCardController.closeVCard(false)
       attachController.clear()
+      shotController.stop()
+      shotController.clearMarkers()
       panelController.releaseRenderedContent()
       if (state.askRequest) state.askRequest.abort()
       offPopEnd()
@@ -2482,4 +2565,4 @@ export function apply(ctx) {
     }
   }, '@yfwu2020/dsh-selection-explain: 划词解读 UI')
 }
-export const inject = ['slots']
+export const inject = ['slots', 'shortcuts']

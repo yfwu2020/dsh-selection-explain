@@ -12,7 +12,7 @@ import type { Message, ToolSchema, ContentBlock } from '@deepseek-ai/dsh-llm'
 import { createAssistantMessage, createUserMessage, ReasoningEffortId, BlockAssembler, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { name } from './constants.js'
 import { resolveToolNames, webFetchUsable, FS_TOOL_NAMES, describeToolCall, isReadAllowed, runTool, digestToolResult } from './tools.js'
-import { CHAT_SYSTEM_PROMPT, DETAIL_PROMPT, CODE_PROMPT, TRANSLATION_PROMPT } from '../prompts.js'
+import { CHAT_SYSTEM_PROMPT, DETAIL_PROMPT, CODE_PROMPT, TRANSLATION_PROMPT, SHOT_PROMPT } from '../prompts.js'
 import { loadDesignSkill } from './design-skill.js'
 import { systemMessageOf } from './messages.js'
 import { createThinkFilter, splitLeakedReasoning, looksLikeLeakedReasoning } from './filters.js'
@@ -135,7 +135,11 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
         '',
       )
     }
-    const userText = [
+    const isShotMode = body.kind === 'shot'
+    // 截图提问：**没有选中文字**，这轮的文字就是用户说的那句话，正文不该套"选中文字"模板
+    const userText = isShotMode
+      ? text
+      : [
       ...stablePrefix,
       '【选中文字】',
       text,
@@ -363,7 +367,11 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
     const stage = typeof body.stage === 'string' ? body.stage : ''
     // 选中文字是代码：首轮走「注释」提示词（代码块 + 逐句注释 + 小结）
     const isCode = body.kind === 'code'
-    const basePrompt = isChat
+    // 截图提问是**独立模式**：没有选中文字，只有一张图 + 一个问题，不能用"追问"那套提示词
+    const isShot = body.kind === 'shot'
+    const basePrompt = isShot
+      ? SHOT_PROMPT
+      : isChat
       ? CHAT_SYSTEM_PROMPT
       : stage === 'detail'
         ? DETAIL_PROMPT
@@ -529,9 +537,22 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
       }
       return messages
     }
+    // ⚠️ 截图模式：图必须**在这一条消息里**。
+    // 原先只有 isChat(追问) 才拼 openingMessages，截图走的是 baseMessage 纯文本那条 ——
+    // 结果图根本没进请求，模型只会说"我没收到截图"（实测踩到）。
+    const shotImageBlocks: ContentBlock[] = isShotMode
+      ? currentAttachments.map((item) =>
+          item.kind === 'image'
+            ? ({ type: 'image', attachment: item.ref as never } as ContentBlock)
+            : ({ type: 'file', attachment: item.ref as never } as ContentBlock),
+        )
+      : []
     const baseMessage = createUserMessage({
       source: { kind: 'user' },
-      content: [{ type: 'text', text: userText }],
+      content:
+        shotImageBlocks.length > 0
+          ? [...shotImageBlocks, { type: 'text', text: userText }]
+          : [{ type: 'text', text: userText }],
     })
     // 上一轮查过的东西一并带上：否则追问会反复重查同样的内容（一次工具往返 20~34s）
     const toolDigest = typeof body.toolDigest === 'string' ? body.toolDigest.trim().slice(0, 2000) : ''

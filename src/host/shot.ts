@@ -60,6 +60,8 @@ export interface ShotPending {
   pad: { x: number; y: number }
   /** 所属窗口的名字（调试用）。 */
   owner: string
+  /** 整窗截图是否已经做好（`/shot/image` 会等它；客户端拿到事件就能先画框）。 */
+  ready: boolean
 }
 
 interface ShotState {
@@ -92,6 +94,8 @@ const waiters: Array<(shot: ShotPending | null) => void> = []
 
 let seq = 0
 let probeChecked = false
+/** 框选期间预热的窗口列表：松手时就不用再等这 74ms。 */
+let prefetchedWindows: WinInfo[] | null = null
 
 function tmpDir(): string {
   return join(tmpdir(), 'dsh-selection-explain')
@@ -206,7 +210,16 @@ function pickWindow(wins: WinInfo[], rect: ShotRect): WinInfo | null {
   return candidates[0] || null
 }
 
-/** 收尾：从区域图推出整窗图与相对位置，塞进 pending 并叫醒客户端。 */
+/**
+ * 收尾：**先截图，后出 UI**。
+ *
+ * ⚠️ 顺序不能反：UI 一旦画出来，`screencapture -l` 就会把它截进图里（框、卡片都算页面内容）。
+ * 所以松手后先把整窗图拿到（~250ms），再发事件让客户端画东西。
+ *
+ * 时间线（实测）：
+ *   xattr 读矩形 19ms → 整窗截图 223ms → 算 pad → 发事件（客户端 0 延迟出框）
+ * 窗口列表（74ms）在**框选期间**就预热好了，不占这段。
+ */
 async function finish(regionFile: string): Promise<void> {
   const rect = await rectFromXattr(regionFile)
   if (!rect) {
@@ -214,60 +227,51 @@ async function finish(regionFile: string): Promise<void> {
     state.capturing = false
     return
   }
-  const wins = await listWindows()
-  const win = pickWindow(wins, rect)
-  const dir = tmpDir()
-  const imagePath = join(dir, 'window.png')
-
-  let windowRect: ShotRect = rect
-  let scale = 1
-  let owner = ''
-  let pad = { x: 0, y: 0 }
-  let imgW = 0
-  let imgH = 0
-
-  if (win) {
-    // 整窗截图（-o 不要阴影：要的是窗口内容，红框才能和窗口坐标一一对应）
-    await run(CAPTURE, ['-l', String(win.id), '-x', '-o', imagePath])
-    const size = await pngSize(imagePath)
-    const expectW = Math.round(win.w * 2)
-    const expectH = Math.round(win.h * 2)
-    const matched = size && Math.abs(size.w - expectW) <= 4 && Math.abs(size.h - expectH) <= 4
-    if (size) {
-      // `screencapture -l` 会把窗口阴影一起截进来（-o 也不一定去得干净）：
-      // 尺寸比窗口大出来的那一圈，就是阴影留白 —— 必须算进去，否则红框整体偏移。
-      scale = size.w / win.w
-      windowRect = { x: win.x, y: win.y, width: win.w, height: win.h }
-      owner = win.owner
-      imgW = size.w
-      imgH = size.h
-      pad = {
-        x: Math.max(0, Math.round((size.w - win.w * scale) / 2)),
-        y: Math.max(0, Math.round((size.h - win.h * scale) / 2)),
-      }
-      if (!matched) state.lastError = `shadow-pad ${pad.x},${pad.y}`
-    }
-  }
-
-  if (!owner) {
-    // 没找到窗口：退化成"选区本身"这张图（不假装有上下文）
-    await run('/bin/cp', [regionFile, imagePath])
-    const size = await pngSize(imagePath)
-    scale = size && rect.width > 0 ? size.w / rect.width : 2
-    windowRect = rect
-    imgW = size ? size.w : 0
-    imgH = size ? size.h : 0
-    pad = { x: 0, y: 0 }
-    state.lastError = state.lastError || 'no-window'
-  }
 
   seq += 1
   state.total += 1
-  state.pending = {
+  const dir = tmpDir()
+  const imagePath = join(dir, 'window.png')
+
+  let windowRect = rect
+  let scale = 2
+  let owner = ''
+  let pad = { x: 0, y: 0 }
+
+  try {
+    const wins = prefetchedWindows || (await listWindows())
+    const win = pickWindow(wins, rect)
+    if (win) {
+      await run(CAPTURE, ['-l', String(win.id), '-x', '-o', imagePath])
+      const size = await pngSize(imagePath)
+      if (size) {
+        scale = size.w / win.w
+        windowRect = { x: win.x, y: win.y, width: win.w, height: win.h }
+        owner = win.owner
+        // `screencapture -l` 会连窗口阴影一起截进来（-o 去不干净）：多出来的那一圈就是留白
+        pad = {
+          x: Math.max(0, Math.round((size.w - win.w * scale) / 2)),
+          y: Math.max(0, Math.round((size.h - win.h * scale) / 2)),
+        }
+      }
+    }
+    if (!owner) {
+      // 没找到窗口：退化成"选区本身"那张图（不假装有上下文）
+      await run('/bin/cp', [regionFile, imagePath])
+      const size = await pngSize(imagePath)
+      scale = size && rect.width > 0 ? size.w / rect.width : 2
+      windowRect = rect
+      pad = { x: 0, y: 0 }
+      state.lastError = 'no-window'
+    }
+  } catch (error) {
+    state.lastError = `finish-failed: ${String((error as Error)?.message ?? error)}`
+  }
+
+  const shot: ShotPending = {
     id: `shot-${seq}`,
     at: Date.now(),
     imagePath,
-    // 选区在**图像像素**里的位置：客户端拿到就能直接 strokeRect
     rect: {
       x: Math.round(pad.x + (rect.x - windowRect.x) * scale),
       y: Math.round(pad.y + (rect.y - windowRect.y) * scale),
@@ -279,12 +283,14 @@ async function finish(regionFile: string): Promise<void> {
     selectionRect: rect,
     scale,
     owner,
+    ready: true,
   }
-  state.lastShot = state.pending
+  state.pending = shot
+  state.lastShot = shot
   state.capturing = false
   while (waiters.length > 0) {
     const fn = waiters.shift()
-    if (fn) fn(state.pending)
+    if (fn) fn(shot)
   }
 }
 
@@ -297,6 +303,14 @@ async function startInteractive(): Promise<boolean> {
   await mkdir(dir, { recursive: true })
   const regionFile = join(dir, 'region.png')
   await rm(regionFile, { force: true }).catch(() => {})
+
+  // 和框选并行：用户拖框那一两秒里，窗口列表早就拿好了
+  prefetchedWindows = null
+  void listWindows()
+    .then((wins) => {
+      prefetchedWindows = wins
+    })
+    .catch(() => {})
 
   const child = spawn(CAPTURE, ['-i', '-x', regionFile], { stdio: 'ignore' })
   const timer = setTimeout(() => {
@@ -414,6 +428,16 @@ export async function handleShotImage(req: IncomingMessage, res: ServerResponse)
     res.end('shot-not-found')
     return
   }
+  // 整窗截图是后台做的：这里最多等 4 秒，还没好就 404 让客户端重试
+  const deadline = Date.now() + 4000
+  while (!shot.ready && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  if (!shot.ready) {
+    res.statusCode = 404
+    res.end('not-ready')
+    return
+  }
   try {
     const buf = await readFile(shot.imagePath)
     res.statusCode = 200
@@ -424,6 +448,22 @@ export async function handleShotImage(req: IncomingMessage, res: ServerResponse)
     res.statusCode = 500
     res.end('read-failed')
   }
+}
+
+/** 客户端加载时回报的自检结果（开发期用，只存内存）。 */
+export let clientHello: unknown = null
+
+export function handleShotHello(req: IncomingMessage, res: ServerResponse): void {
+  const chunks: Buffer[] = []
+  req.on('data', (c: Buffer) => chunks.push(c))
+  req.on('end', () => {
+    try {
+      clientHello = JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null')
+    } catch {
+      clientHello = { parseError: true }
+    }
+    sendJson(res, 200, { ok: true })
+  })
 }
 
 export function shotStatus(): { available: boolean; reason: string; capturing: boolean; total: number; lastError: string } {
@@ -439,5 +479,14 @@ export function shotStatus(): { available: boolean; reason: string; capturing: b
 /** `GET /api/shot/status` —— 调试/自检。 */
 export async function handleShotStatus(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   await probeAvailable()
-  sendJson(res, 200, { ok: true, status: shotStatus() })
+  const last = state.lastShot
+  sendJson(res, 200, {
+    ok: true,
+    status: shotStatus(),
+    clientHello,
+    // 只读观察点：不清 pending，用来量"事件发出 → 整窗图做好"这一段
+    lastShot: last
+      ? { id: last.id, ready: last.ready, ageMs: Date.now() - last.at, owner: last.owner, rect: last.rect, pad: last.pad, scale: last.scale }
+      : null,
+  })
 }

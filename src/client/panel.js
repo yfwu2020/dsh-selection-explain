@@ -167,7 +167,51 @@ export function createPanelController(env) {
    * 打开面板的公共路径：真实选区与自检钩子**共用**这一条，
    * 否则钩子会绕过缓存（缓存行为只能靠人工点选才能验证）。
    */
+  /**
+   * 截图提问开小窗（独立模式）。
+   *
+   * 和"划词解读"的区别：**没有选中文字**、不请求解读、没有翻译/详解两节 ——
+   * 用户说的那句话就是第一句提问，那张（已经画好红框的）截图随消息一起发。
+   */
+  function openPanelForShot(anchor, options) {
+    env.panelSessionId = currentSessionId()
+    env.state.contextState = null
+    env.state.skipInterpretation = true
+    // 正文就是用户那句话：/analyze 要求 text 非空，而截图这条路本来就没有"选中文字"
+    env.state.payload = buildPayload(String(options.askFirst || ''), '', '截图')
+    env.state.payload.kind = 'shot'
+    env.state.kind = 'shot'
+    env.hideButton()
+    showPanel(anchor)
+    env.quote.textContent = '截图 · 已带上整窗截图'
+    env.clearQuotes()
+    env.clearAttachments()
+    env.state.turns = []
+    env.state.parts = { translation: '', detail: '' }
+    env.state.stage = ''
+    env.state.raw = ''
+    env.state.phase = 'done'
+    env.state.chars = 0
+    env.state.error = ''
+    env.state.fromCache = false
+    env.state.sharedCache = false
+    env.state.elapsed = 0
+    env.state.toolBusy = false
+    env.state.cacheState = ''
+    env.state.toolDigest = ''
+    env.renderTurns()
+    paint()
+    var refs = options.shotRef ? [{ kind: 'image', ref: options.shotRef }] : []
+    var note = options.shotRef ? '【本条消息带了附件】截图（图片）' : ''
+    env.sendAsk(options.askFirst, null, refs, note)
+  }
+
   function openPanelWithInner(text, context, label, anchor, keyContext, options) {
+    // 截图提问：没有文字可解读，走"图 + 一句话"那条
+    if (options && options.shotRef !== undefined) {
+      openPanelForShot(anchor, options)
+      return
+    }
     // 这段对话有没有解读：「从语音卡直接进追问」那条路没有（paint() 靠它决定不画翻译节、
     // 并让追问输入框直接可见）。它不是"只在这一次开窗时有效"的临时标记 ——
     // 历史回放 / 本地缓存命中会按条目里存的 skipped 复原它（见 history.js 的

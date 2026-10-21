@@ -59,7 +59,9 @@ export function createVoiceCardController(env) {
    * focusAskBox 会被反复执行，输入法的输入上下文也会被反复重绑）。
    * 与 vcardState.suppress 同一套思路：录音**停止**时复位（见 micTick 的 !matchingIme 分支）。
    */
-  var quoteVoiceHandled = false
+  var quoteVoiceHandled
+  /** 这张卡打开之后，麦克风有没有真的被用过（决定能不能"说完自动发送"）。 */
+  var voiceSeenSinceOpen = false
 
   /** 选中提示：下划线层 / 牵引线 / 牵引线起点的小圆点（懒建）。 */
   var selMark = null
@@ -337,13 +339,16 @@ export function createVoiceCardController(env) {
     //   · 本文档里的选区 → 有 Range（几何 / 选中提示都按它算）；
     //   · 侧边栏网页（不透明源 iframe）→ 父页面**拿不到那个 Range**，只有桥换算好的
     //     视口矩形（state.selection.rect）和桥采好的上下文 —— 见 vcardGeometry / sendVCard。
-    if (!env.state.selection.range && env.state.selection.source !== 'iframe') return
+    // shot：截图这条路没有 Range（选区在屏幕坐标里），锚点是换算好的页面矩形
+    if (!env.state.selection.range && env.state.selection.source !== 'iframe' && env.state.selection.source !== 'shot') return
     // 页面没焦点 / 用户正在别处打字：不抢 —— 抢了就是把人家别处的听写拽过来
-    if (!hasFocusEvidence(env.state.selection)) return
-    if (env.isTypingTarget(document.activeElement)) return
+    // shot：窗口本来就可能没焦点（用户在别的 App 里框完图）；截图这个动作本身就是意图证据
+    if (env.state.selection.source !== 'shot' && !hasFocusEvidence(env.state.selection)) return
+    if (env.state.selection.source !== 'shot' && env.isTypingTarget(document.activeElement)) return
     ensureVCard()
     // 上一轮的关机动画可能还没收尾（用户马上又划了新文字、又开麦）：先收干净再开
     if (vcardState.closing || vcardState.crtTimer) finishCrtOff()
+    voiceSeenSinceOpen = false
     vcardState.range = env.state.selection.range || null
     vcardState.anchorRect = env.state.selection.rect || null
     var geo = vcardGeometry()
@@ -416,7 +421,13 @@ export function createVoiceCardController(env) {
     //   · 「空录音时收起」开着（默认）→ 「正在关闭…」：这张卡马上要被收掉，
     //     如实说它正在走（而不是"直接打字也行…"那种假邀请）；
     //   · 两个收尾开关都关着（卡会留着）→ 才给"直接打字也行…"这句邀请。
-    vcardBox.placeholder = on ? '正在听…' : env.settingsLive.voiceCancelOnSilence !== false ? '正在关闭…' : '直接打字也行…'
+    vcardBox.placeholder = on
+      ? '正在听…'
+      : isShotSelection()
+        ? '就这张截图提问…'
+        : env.settingsLive.voiceCancelOnSilence !== false
+          ? '正在关闭…'
+          : '直接打字也行…'
   }
 
   function focusVCard() {
@@ -760,14 +771,27 @@ export function createVoiceCardController(env) {
   }
 
   /** 文字定稿后，才真正执行收尾（发送 / 取消 / 什么都不做）。 */
+  /** 这张卡是截图（⌘⇧X）叫起来的吗。 */
+  function isShotSelection() {
+    var sel = env.state && env.state.selection
+    return !!(sel && sel.source === 'shot')
+  }
+
   function finishVoiceSettle(text) {
     if (!vcardState.open) return
     var spoken = String(text || '').trim()
-    if (spoken && env.settingsLive.voiceAutoSend !== false) {
+    // 自动发送的前提是"这段字是语音说出来的"：纯手打的字不替用户按发送键
+    if (spoken && voiceSeenSinceOpen && env.settingsLive.voiceAutoSend !== false) {
       sendVCard()
       return
     }
     if (!spoken && env.settingsLive.voiceCancelOnSilence !== false) {
+      // 截图提问的卡：用户可能还没开口，不能按"静音"自动关 ——
+      // 用户定的规则是只由 Esc / 点空白取消（见 shot.js 的 bindCancel）。
+      if (isShotSelection()) {
+        markVCardListening(false)
+        return
+      }
       closeVCard(true)
       return
     }
@@ -806,6 +830,8 @@ export function createVoiceCardController(env) {
 
   function closeVCard(animate) {
     if (!vcardState.open) return
+    // 截图卡关掉时，屏幕上那个框/缩略图也要一起消失
+    if (isShotSelection() && env.clearShotMarkers) env.clearShotMarkers()
     vcardState.open = false
     // 取消的那一刻就把空框的占位换成「正在关闭…」：卡正在塌缩，空框里挂着"直接打字也行…"
     // 是句假话。已经打出来的字**不动** —— 它就是那个塌缩动画要收掉的东西。
@@ -853,6 +879,22 @@ export function createVoiceCardController(env) {
     }
     // 侧边栏网页那条路没有 Range（不透明源帧的选区拿不出来），上下文 / 标签直接用
     // 帧内桥采好带过来的那份 —— 与 openForSelection 的 iframe 分支同一条规则。
+    if (selection.source === 'shot') {
+      vcardHandoff = vcardRect()
+      closeVCard()
+      var shotRect = selection.rect
+      // 红框图是后台画的（见 shot.js）：这里等它上传完再开小窗，
+      // 等待的是**已经画好、正在上传**的那张，通常几百毫秒。
+      var openShotPanel = function (ref) {
+        env.openPanelWith('', '', '截图', shotRect, '', { askFirst: asked, shotRef: ref })
+        if (env.clearShotMarkers) env.clearShotMarkers()
+        env.state.selection = null
+        env.state.bridgeActive = false
+      }
+      if (env.shotRefAsync) env.shotRefAsync().then(openShotPanel)
+      else openShotPanel(selection.ref || null)
+      return
+    }
     var contextInfo =
       selection.source === 'iframe' || !selection.range
         ? {
@@ -976,6 +1018,7 @@ export function createVoiceCardController(env) {
             return
           }
           if (vcardState.suppress) return
+          voiceSeenSinceOpen = true
           // 又开始录了：上一次的"等定稿"作废
           stopVoiceSettle()
           if (!vcardState.open) openVCard()
@@ -1039,7 +1082,7 @@ export function createVoiceCardController(env) {
     var selection = env.state.quoteSelection
     if (!env.panelOpen || !selection) return
     if (!hasFocusEvidence(selection)) return
-    if (env.isTypingTarget(document.activeElement)) return
+    if (env.state.selection.source !== 'shot' && env.isTypingTarget(document.activeElement)) return
     if (env.voice && env.voice.phase !== 'idle') return
     // 与点浮标同一条路：上下文在这一刻才采（"引用当时在哪一段对话里"最有用的就是它）
     env.addQuote(selection.text, selection.label, env.quoteContextFor(selection))

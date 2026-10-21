@@ -783,6 +783,22 @@ export var CSS = [
   '.dsh-sel-uline{position:fixed;height:2px;border-radius:1px;pointer-events:none}',
   // 牵引线是 **SVG 贝塞尔**（原来是一根 2px 竖条 → 控制点和端点同 x，退化成直线，
   // 用户一眼看出"这不是贝塞尔"）。现在两端各给一个反向的横向控制量，做出可见的 S 形。
+  // ── 截图提问：选框（选区落在窗口内时）/ 贴边缩略图（落在窗口外时）──
+  '.dsh-sel-shotframe{position:fixed;z-index:2147482997;display:none;pointer-events:none;',
+  'border:2px solid var(--sel-a1,#0d9488);border-radius:3px;',
+  'box-shadow:0 0 0 1px rgba(255,255,255,.85),0 0 0 4px color-mix(in srgb,var(--sel-a1,#0d9488) 14%,transparent)}',
+  '.dsh-sel-shotframe[data-show="1"]{display:block}',
+  '.dsh-sel-shotframe-tag{position:absolute;left:-2px;bottom:-19px;padding:1px 6px;border-radius:5px;',
+  'background:var(--sel-fill,#0f766e);color:var(--sel-fill-fg,#fff);font-size:10px;line-height:1.6;white-space:nowrap}',
+  '.dsh-sel-shotchip{position:fixed;z-index:2147482997;display:none;align-items:center;gap:7px;box-sizing:border-box;',
+  'padding:5px 9px 5px 5px;border-radius:11px;background:var(--dsw-alias-bg-base,#fff);',
+  'border:.5px solid var(--dsw-alias-border-l3,rgba(140,140,140,.35));box-shadow:0 8px 22px rgba(0,0,0,.24)}',
+  '.dsh-sel-shotchip[data-show="1"]{display:flex}',
+  '.dsh-sel-shotchip img{display:block;width:56px;height:32px;object-fit:cover;border-radius:6px;',
+  'border:1.5px solid #e5484d;flex:0 0 auto;background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.14))}',
+  '.dsh-sel-shotchip-tx{display:flex;flex-direction:column;font-size:10.5px;line-height:1.35;white-space:nowrap;',
+  'color:var(--dsw-alias-label-secondary,rgba(90,90,90,.9))}',
+  '.dsh-sel-shotchip-tx b{font-size:10.5px;font-weight:600;color:var(--dsw-alias-label-primary,inherit)}',
   '.dsh-sel-thread{position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;',
   'z-index:2147482998;overflow:visible;display:none;opacity:0;transition:opacity .14s ease}',
   '.dsh-sel-thread path{fill:none;stroke-width:1.6;stroke-dasharray:4 4;',
