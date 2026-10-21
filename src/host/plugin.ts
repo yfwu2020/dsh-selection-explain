@@ -13,7 +13,7 @@ import { createHistoryStore } from './history-store.js'
 import { createRoutes } from './routes.js'
 import { createPromote } from './promote.js'
 import { createAttach } from './attach.js'
-import { handleShotStart, handleShotPending, handleShotImage, handleShotStatus, handleShotHello } from './shot.js'
+import { handleShotStart, handleShotPending, handleShotImage, handleShotStatus, handleShotHello, stopShot } from './shot.js'
 
 export function apply(ctx: Context, rawConfig: Config): void {
   const config = resolveConfig(rawConfig)
@@ -115,6 +115,11 @@ export function apply(ctx: Context, rawConfig: Config): void {
       }),
     `${name}: shot image route`,
   )
+
+  // 截图是临时的：卸载时把临时图删掉
+  ctx.effect(() => () => {
+    void stopShot()
+  }, `${name}: shot temp cleanup`)
 
   ctx.effect(
     () =>

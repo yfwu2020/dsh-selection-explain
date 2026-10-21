@@ -135,6 +135,8 @@ export function createShotController(env) {
   var frameEl = null
   var chipEl = null
   var chipImg = null
+  /** 缩略图的 objectURL：换图/清理时要 revoke，否则 Blob 一直留着。 */
+  var chipUrl = ''
 
   function doc() {
     return env.document
@@ -196,6 +198,11 @@ export function createShotController(env) {
    */
   function clearAll() {
     hideMarkers()
+    if (chipUrl) {
+      URL.revokeObjectURL(chipUrl)
+      chipUrl = ''
+    }
+    if (chipImg) chipImg.removeAttribute('src')
     current = null
     if (env.state.selection && env.state.selection.source === 'shot') env.state.selection = null
     if (env.vcardOpen && env.vcardOpen() && env.closeVCard) env.closeVCard()
@@ -246,7 +253,7 @@ export function createShotController(env) {
     if (!shot || shot.id === lastId) return
     lastId = shot.id
     var t0 = Date.now()
-    current = { shot: shot, file: null, ref: null, refReady: null, t0: t0 }
+    current = { shot: shot, file: null, blob: null, ref: null, refReady: null, uploading: null, t0: t0 }
     var step = 'geometry'
     try {
       // ── ① 立刻：算位置 → 画框/缩略图 → 开卡 ──
@@ -285,15 +292,16 @@ export function createShotController(env) {
         })
         .then(function (blob) {
           if (!blob) return null
-          var file = new File([blob], '截图.png', { type: 'image/png' })
-          current.file = file
-          if (chipImg) chipImg.src = URL.createObjectURL(blob)
-          return uploadAnnotated(blob)
-        })
-        .then(function (ref) {
-          current.ref = ref
-          report({ stage: 'bg-done', ms: Date.now() - md0, ref: !!ref })
-          return ref
+          current.blob = blob
+          current.file = new File([blob], '截图.png', { type: 'image/png' })
+          if (chipImg) {
+            // 换图前把上一张的 objectURL 收掉，否则每截一次就多留一个 Blob 在内存里
+            if (chipUrl) URL.revokeObjectURL(chipUrl)
+            chipUrl = URL.createObjectURL(blob)
+            chipImg.src = chipUrl
+          }
+          report({ stage: 'bg-done', ms: Date.now() - md0 })
+          return null
         })
         .catch(function (error) {
           report({ stage: 'bg-fail', ms: Date.now() - md0, error: String((error && error.message) || error) })
@@ -448,13 +456,29 @@ export function createShotController(env) {
     takeFile: function () {
       return current ? current.file : null
     },
-    /** 发送时用：等后台把红框图做好并上传完，返回持久引用。 */
+    /**
+     * 发送时用：等后台把红框图画好，**此刻才上传**并返回持久引用。
+     *
+     * 为什么不在截完就传：附件库（~/.dsh/attachments）是内容寻址、**只增不删**，
+     * 没有 GC。用户按了 Esc / 点空白取消时，我们不该往里面塞一张永远不会被用到的图。
+     */
     takeRefAsync: function () {
       var here = current
       if (!here) return Promise.resolve(null)
       if (here.ref) return Promise.resolve(here.ref)
-      if (current && current.refReady) return current.refReady
-      return Promise.resolve(null)
+      if (here.uploading) return here.uploading
+      if (!here.refReady) return Promise.resolve(null)
+      here.uploading = here.refReady.then(function () {
+        if (here.ref) return here.ref
+        if (!here.blob) return null
+        return uploadAnnotated(here.blob).then(function (ref) {
+          here.ref = ref
+          here.blob = null
+          report({ stage: 'uploaded', ref: !!ref })
+          return ref
+        })
+      })
+      return here.uploading
     },
     takeRef: function () {
       return current ? current.ref : null

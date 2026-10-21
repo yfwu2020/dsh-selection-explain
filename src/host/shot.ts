@@ -480,6 +480,15 @@ export function shotStatus(): { available: boolean; reason: string; capturing: b
   }
 }
 
+/** 插件卸载 / 热重载：把临时目录清掉（截图是临时的，没有留着的理由）。 */
+export async function stopShot(): Promise<void> {
+  try {
+    await rm(tmpDir(), { recursive: true, force: true })
+  } catch {
+    /* 清不掉也不影响功能 */
+  }
+}
+
 /** `GET /api/shot/status` —— 调试/自检。 */
 export async function handleShotStatus(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   await probeAvailable()
