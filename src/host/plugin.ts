@@ -13,6 +13,7 @@ import { createHistoryStore } from './history-store.js'
 import { createRoutes } from './routes.js'
 import { createPromote } from './promote.js'
 import { createAttach } from './attach.js'
+import { handleShotStart, handleShotPending, handleShotImage, handleShotStatus } from './shot.js'
 
 export function apply(ctx: Context, rawConfig: Config): void {
   const config = resolveConfig(rawConfig)
@@ -82,6 +83,47 @@ export function apply(ctx: Context, rawConfig: Config): void {
   ctx.effect(
     () => () => stopMicProbe(),
     `${name}: mic probe process`,
+  )
+
+  // ── 截图提问（DSH 快捷键触发）──
+  ctx.effect(
+    () =>
+      ctx.webServer.register({
+        kind: 'exact',
+        path: `${API_PREFIX}/shot/start`,
+        handler: (req, res) => handleShotStart(req, res),
+      }),
+    `${name}: shot start route`,
+  )
+
+  ctx.effect(
+    () =>
+      ctx.webServer.register({
+        kind: 'exact',
+        path: `${API_PREFIX}/shot/pending`,
+        handler: handleShotPending,
+      }),
+    `${name}: shot pending route`,
+  )
+
+  ctx.effect(
+    () =>
+      ctx.webServer.register({
+        kind: 'exact',
+        path: `${API_PREFIX}/shot/image`,
+        handler: (req, res) => handleShotImage(req, res),
+      }),
+    `${name}: shot image route`,
+  )
+
+  ctx.effect(
+    () =>
+      ctx.webServer.register({
+        kind: 'exact',
+        path: `${API_PREFIX}/shot/status`,
+        handler: (req, res) => handleShotStatus(req, res),
+      }),
+    `${name}: shot status route`,
   )
 
   ctx.effect(

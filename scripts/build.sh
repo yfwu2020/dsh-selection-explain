@@ -183,6 +183,23 @@ if [ "$(uname -s)" = "Darwin" ] && command -v clang >/dev/null 2>&1; then
 else
   echo "build: 跳过原生探针（非 macOS 或没有 clang）—— 麦克风占用检测不可用"
 fi
+# ── ⑥ 窗口列表探针（截图提问要"带出整窗"）──
+# 和 mic-probe 同一套工具链探测；编不出来就让截图功能整体降级。
+if [ "$(uname -s)" = "Darwin" ] && command -v clang >/dev/null 2>&1; then
+  WL_OUT="$ROOT/lib/native/window-list"
+  wl_compile() { "$@" -O2 -framework CoreFoundation -framework CoreGraphics native/window-list.c -o "$WL_OUT" >/dev/null 2>&1; }
+  WL_OK=""
+  if [ -x "${XCODE_CLANG:-}" ] && [ -n "${XCODE_SDK:-}" ] && wl_compile "$XCODE_CLANG" -isysroot "$XCODE_SDK"; then WL_OK="Xcode clang"
+  elif wl_compile clang; then WL_OK="clang"
+  elif wl_compile xcrun clang; then WL_OK="xcrun clang"
+  fi
+  if [ -n "$WL_OK" ]; then
+    echo "=== 原生探针：${WL_OUT}（${WL_OK}）==="
+  else
+    echo "build: 窗口列表探针编译失败 —— 截图提问将不可用（不影响其它功能）" >&2
+  fi
+fi
+
 if [ -n "$PROBE_SAVED" ]; then rm -f "$PROBE_SAVED"; fi
 
 echo "=== 构建完成 ==="
