@@ -242,13 +242,17 @@ async function finish(regionFile: string): Promise<void> {
     const wins = prefetchedWindows || (await listWindows())
     const win = pickWindow(wins, rect)
     if (win) {
-      await run(CAPTURE, ['-l', String(win.id), '-x', '-o', imagePath])
+      // ⚠️ 不要加 `-o`：文档说它"不截窗口阴影"，实测**反过来** ——
+      // 加了是 3840×2224（多 64px 阴影），不加才是 3840×2160（正好窗口的 2 倍）。
+      // 阴影上下不对称，按对半分会让红框整体偏（用户实测：向上偏移）。
+      await run(CAPTURE, ['-l', String(win.id), '-x', imagePath])
       const size = await pngSize(imagePath)
       if (size) {
         scale = size.w / win.w
         windowRect = { x: win.x, y: win.y, width: win.w, height: win.h }
         owner = win.owner
-        // `screencapture -l` 会连窗口阴影一起截进来（-o 去不干净）：多出来的那一圈就是留白
+        // 正常情况 size 应当正好等于窗口的倍数（pad=0）；万一系统还是带了阴影，
+        // 就按"多出来的两半分"兜底 —— 但优先保证不触发这条。
         pad = {
           x: Math.max(0, Math.round((size.w - win.w * scale) / 2)),
           y: Math.max(0, Math.round((size.h - win.h * scale) / 2)),
