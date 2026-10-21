@@ -1,6 +1,6 @@
 import { readContextState } from '../chat-context.js'
 import { isDarkSurface, renderRich, splitSections, releasePreviewFrames } from './render.js'
-import { HISTORY } from './constants.js'
+import { HISTORY, API } from './constants.js'
 import { el, listen } from './dom.js'
 import { attachmentUrl, formatBytes, extensionOf } from './attach.js'
 
@@ -404,6 +404,7 @@ export function createHistoryController(env) {
   function saveHistory(options) {
     var payload = env.state.payload
     if (!payload || !env.state.cacheKey) return
+
     var turns = []
     var exported = env.exportTurns()
     for (var i = 0; i < env.state.turns.length; i += 1) {
@@ -427,36 +428,149 @@ export function createHistoryController(env) {
       } else return
       renderTurns()
     }
+    var savedBody = {
+      key: env.state.cacheKey,
+      text: payload.text,
+      context: payload.context,
+      label: payload.label,
+      parts: env.state.parts,
+      turns: turns,
+      toolDigest: env.state.toolDigest,
+      contextState: env.state.contextState || null,
+      pinned: !!(options && options.pinned),
+      // 这段对话有没有解读，必须跟着条目落盘：回放时靠它决定画不画「翻译」一节。
+      // 不落盘的话，语音卡那条"跳过翻译与详解、直接追问"的对话下次开出来，
+      // 会顶着一张空翻译卡片（"这次没有返回内容"）——用户实测。
+      skipped: env.state.skipInterpretation === true,
+    }
     try {
       fetch(HISTORY, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          key: env.state.cacheKey,
-          text: payload.text,
-          context: payload.context,
-          label: payload.label,
-          parts: env.state.parts,
-          turns: turns,
-          toolDigest: env.state.toolDigest,
-          contextState: env.state.contextState || null,
-          pinned: !!(options && options.pinned),
-          // 这段对话有没有解读，必须跟着条目落盘：回放时靠它决定画不画「翻译」一节。
-          // 不落盘的话，语音卡那条"跳过翻译与详解、直接追问"的对话下次开出来，
-          // 会顶着一张空翻译卡片（"这次没有返回内容"）——用户实测。
-          skipped: env.state.skipInterpretation === true,
-        }),
-      }).then(function (response) {
-        if (!response.ok) throw new Error('HTTP ' + response.status)
-        return response.json()
-      }).then(function (result) {
-        noteSaved(!result || result.ok !== true)
-      }).catch(function () {
-        noteSaved(true)
+        body: JSON.stringify(savedBody),
       })
+        .then(function (response) {
+          if (!response.ok) throw new Error('HTTP ' + response.status)
+          return response.json()
+        })
+        .then(function (result) {
+          var failed = !result || result.ok !== true
+          noteSaved(failed)
+          // 截图提问：落盘成功后再去要一次标题（后台，不阻塞、不影响对话状态）
+          if (!failed && payload.kind === 'shot') requestShotTitle(savedBody, payload.sessionId)
+        })
+        .catch(function () {
+          noteSaved(true)
+        })
     } catch (error) {
       noteSaved(true)
     }
+  }
+
+  /**
+   * 截图提问：回答结束后**单独要一次标题**。
+   *
+   * 为什么不塞在回答里：模型经常不照格式走（实测），而且会把标题混进正文。
+   * 单独问一句它反而稳 —— 而且这条请求的前缀与回答那次完全一致
+   * （同 system、同图、同提问，只在最后追加一句"只输出标题"），图能命中前缀缓存。
+   *
+   * 安全约定：
+   *   · 不碰 state.turns / cacheKey / DOM —— 你后面的提问完全不受影响；
+   *   · 拿到标题后**原样重发**那条历史（只改 label）—— 存储层是按 key 覆盖；
+   *   · 如果这期间你又问了一句（key 或轮数变了）→ **放弃回写**，绝不吞掉你的话。
+   */
+  function requestShotTitle(saved, sessionId) {
+    var userTurn = null
+    var list = saved.turns || []
+    for (var i = 0; i < list.length; i += 1) {
+      if (list[i] && list[i].role === 'user' && list[i].attachments && list[i].attachments.length > 0) {
+        userTurn = list[i]
+        break
+      }
+    }
+    if (!userTurn) return
+    var savedKey = saved.key
+    // ⚠️ 冲突判据要用**同一口径**：`saved.turns` 是过滤掉隐藏轮次后的列表，
+    // 而 `env.state.turns` 包含隐藏轮次 —— 拿两者长度相比，一开始就不相等，
+    // 于是每次都在这里直接 return，标题永远写不回去（实测踩到）。
+    var rawCount = (env.state.turns || []).length
+    fetch(API, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: saved.text,
+        kind: 'shot',
+        titleOnly: true,
+        label: '截图',
+        attachments: userTurn.attachments,
+        // ⚠️ 必须带 sessionId：不带会被上游 400 拒绝（MissingSessionID），
+        // 而 `env.panelSessionId` 在历史模块里并不存在 —— 用的是保存时那份 payload 里的。
+        ...(sessionId ? { sessionId } : {}),
+        // ⚠️ 必须带上面板当前用的模型：不带的话 host 会退回"会话默认模型"，
+        // 那个路由可能不支持图片 → 上游报错 → 正文为空 → 标题永远写不回去（实测踩到）。
+        ...(env.state.modelChoice
+          ? { provider: env.state.modelChoice.provider, model: env.state.modelChoice.model }
+          : {}),
+      }),
+    })
+      .then(function (response) {
+        return response.ok ? response.text() : ''
+      })
+      .then(function (raw) {
+        var title = cleanShotTitle(readSseText(raw))
+        if (!title) return
+        // 冲突检查：这期间你若又问了（换了 key 或轮数变了），放弃回写
+        if (env.state.cacheKey !== savedKey) return
+        if ((env.state.turns || []).length !== rawCount) return
+        return fetch(HISTORY, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(Object.assign({}, saved, { label: '截图 · ' + title })),
+        }).then(function (response) {
+          if (!response.ok) return
+          // 面板顶部那行也换成生成的标题（只换当前这段对话的）
+          if (env.applyShotTitle) env.applyShotTitle(title)
+          // 列表正开着就刷新一下，让新标题立刻可见
+          if (env.historyList && env.historyList.style.display === 'flex') openHistoryList()
+        })
+      })
+      .catch(function () {
+        /* 拿不到标题就算了：条目保持「截图」，不影响任何东西 */
+      })
+  }
+
+  /** 从 SSE 文本里拼出全部正文。 */
+  function readSseText(raw) {
+    var out = []
+    var lines = String(raw || '').split('\n')
+    for (var i = 0; i < lines.length; i += 1) {
+      var line = lines[i].trim()
+      if (line.indexOf('data:') !== 0) continue
+      var chunk = line.slice(5).trim()
+      if (!chunk || chunk === '[DONE]') continue
+      try {
+        var obj = JSON.parse(chunk)
+        // ⚠️ 只取正文事件：`thought` 是模型的推理流（会混进"让我看看…"这类话），
+        // 拿它当标题就是一整段解释（实测踩到：标题变成了 60 字的说明）。
+        if (obj.type === 'thought') continue
+        if (typeof obj.delta === 'string') out.push(obj.delta)
+        else if (obj.type === 'delta' && typeof obj.text === 'string') out.push(obj.text)
+      } catch (error) {
+        /* 跳过非 JSON 行 */
+      }
+    }
+    return out.join('')
+  }
+
+  /** 标题清洗：去引号/标点/前缀，压平空白，最长 12 字。 */
+  function cleanShotTitle(raw) {
+    var title = String(raw || '').trim()
+    title = title.replace(/^标题[:：]\s*/, '')
+    title = title.replace(/^["'「『【]+|["'」』】]+$/g, '')
+    title = title.replace(/[。！？.!?,，、:：;；…]+$/g, '')
+    title = title.replace(/\s+/g, ' ').trim()
+    if (!title) return ''
+    return title.length > 12 ? title.slice(0, 12) : title
   }
 
   /** 用一条历史（或 host 回放结果）恢复面板。 */
@@ -650,8 +764,11 @@ export function createHistoryController(env) {
   function historyRow(item) {
     var row = el('div', 'dsh-sel-historyrow')
     // 标题独占一行（不再被右边的小字挤掉），空标题也给个交代
-    var title = String(item.text || '').trim()
-    row.appendChild(el('div', 'dsh-sel-historytext', title || '（这次没选中文字）'))
+    // 截图条目：label 形如「截图 · 预算逻辑」—— 用对象名当主标题，问题退成副行
+    var shotMatch = /^截图 · (.+)$/.exec(String(item.label || ''))
+    var main = shotMatch ? shotMatch[1] : String(item.text || '').trim()
+    // 只留标题 + 元信息（轮数/时间）；问题那行不要 —— 用户嫌太啰嗦
+    row.appendChild(el('div', 'dsh-sel-historytext', main || '（这次没选中文字）'))
     // 删除键：stopPropagation 很重要 —— 否则点它会被当成"点这一行去回放"
     var del = el('button', 'dsh-sel-historydel', '✕')
     del.type = 'button'
@@ -663,8 +780,11 @@ export function createHistoryController(env) {
       deleteHistoryEntry(item, row)
     })
     row.appendChild(del)
+    // 截图条目的标题已经在主行了，元信息里只留"截图"两个字，
+    // 否则会显示成「截图 · 人的后脑勺背影 · 1 轮」，标题重复一遍
+    var metaLabel = shotMatch ? '截图' : shortLabel(item.label)
     var meta =
-      (item.label ? shortLabel(item.label) + ' · ' : '') +
+      (metaLabel ? metaLabel + ' · ' : '') +
       (item.turns > 0 ? item.turns + ' 轮 · ' : '') +
       formatWhen(item.at)
     var metaNode = el('div', 'dsh-sel-historymeta')

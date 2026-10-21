@@ -15,6 +15,12 @@ export interface AnalyzeBody {
   stage?: unknown
   /** 'code' | 'text'：选中文字是不是代码（代码走「注释」提示词：代码块 + 逐句注释 + 小结）。 */
   kind?: unknown
+  /**
+   * 截图提问的**第二次调用**：只取标题。
+   * 前缀与回答那次完全一致（system + 图 + 提问），只在最后追加一句"只输出标题"，
+   * 目的是让图那部分命中前缀缓存。
+   */
+  titleOnly?: unknown
   /** 本会话已用过的工具结果摘要（追问时带上，避免重复联网）。 */
   toolDigest?: unknown
   /** 小窗对话历史（A′）：整段对话的持久化条目。 */

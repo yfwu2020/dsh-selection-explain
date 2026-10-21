@@ -12,7 +12,7 @@ import type { Message, ToolSchema, ContentBlock } from '@deepseek-ai/dsh-llm'
 import { createAssistantMessage, createUserMessage, ReasoningEffortId, BlockAssembler, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { name } from './constants.js'
 import { resolveToolNames, webFetchUsable, FS_TOOL_NAMES, describeToolCall, isReadAllowed, runTool, digestToolResult } from './tools.js'
-import { CHAT_SYSTEM_PROMPT, DETAIL_PROMPT, CODE_PROMPT, TRANSLATION_PROMPT, SHOT_PROMPT } from '../prompts.js'
+import { CHAT_SYSTEM_PROMPT, DETAIL_PROMPT, CODE_PROMPT, TRANSLATION_PROMPT, SHOT_PROMPT, SHOT_TITLE_PROMPT } from '../prompts.js'
 import { loadDesignSkill } from './design-skill.js'
 import { systemMessageOf } from './messages.js'
 import { createThinkFilter, splitLeakedReasoning, looksLikeLeakedReasoning } from './filters.js'
@@ -136,6 +136,14 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
       )
     }
     const isShotMode = body.kind === 'shot'
+    /**
+     * 取标题（截图提问的第二次调用）。
+     *
+     * 关键：**前缀必须与回答那次逐字节一致**（同样的 system、同样的图、同样的提问），
+     * 这样图那部分能命中前缀缓存；只在最后追加一句"只输出标题"。
+     * 并且工具轮次强制为 0 —— 这次不该去调工具。
+     */
+    const titleOnly = isShotMode && body.titleOnly === true
     // 截图提问：**没有选中文字**，这轮的文字就是用户说的那句话，正文不该套"选中文字"模板
     const userText = isShotMode
       ? text
@@ -572,6 +580,12 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
     let openingMessages: Message[] = isChat
       ? [...memoryMessages, ...buildHistoryMessages(), createUserMessage({ source: { kind: 'user' }, content: questionContent })]
       : []
+    if (titleOnly) {
+      // 截图：base 那条消息里已经带了图 + 提问，这里只多一句"只输出标题"
+      openingMessages = [
+        createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: SHOT_TITLE_PROMPT }] }),
+      ]
+    }
     try {
       let errored = false
       let usage: unknown = null
@@ -617,9 +631,10 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
       const triedEfforts = new Set<string>(sentEffort ? [sentEffort] : [])
       const firstSentEffort = sentEffort
       let roundEffort = sentEffort
-      for (let round = 0; round <= toolRounds; round += 1) {
+      const effectiveToolRounds = titleOnly ? 0 : toolRounds
+      for (let round = 0; round <= effectiveToolRounds; round += 1) {
         const roundStartedAt = Date.now()
-        const wrapUp = round === toolRounds
+        const wrapUp = round === effectiveToolRounds
         const stream = ctx.llm.stream({
           provider: route.provider,
           model: route.model,

@@ -903,6 +903,7 @@ export function apply(ctx) {
   })
   var historyController = createHistoryController({
     set panelSessionId(value) { panelSessionId = value },
+    get applyShotTitle() { return panelController.applyShotTitle },
     get sentTextOf() { return quotesController.sentTextOf },
     get panel() { return panel },
     get state() { return state },
@@ -1012,6 +1013,7 @@ export function apply(ctx) {
     get vcardOpen() { return function () { return voiceCardController.vcardState.open } },
     get vcardElement() { return function () { return voiceCardController.vcard } },
     get closeVCard() { return voiceCardController.closeVCard },
+    get ensureLayer() { return ensureLayer },
   })
   var modelsController = createModelsController({
     get state() { return state },
@@ -1071,6 +1073,20 @@ export function apply(ctx) {
       if (fullView) layer.setAttribute('data-full-view', '')
       else layer.removeAttribute('data-full-view')
     }
+  }
+
+  /**
+   * 确保浮层还挂在 document.body 上。
+   *
+   * 为什么要这个：layer 是靠 slot(`shell.overlay`) 挂上去的，而 slot 重渲染时
+   * 会把它的子节点（包括我们的 layer）一起摘掉，ref 回调却不会因此再触发一次。
+   * 结果就是：框、卡片全都 append 进一个**已经脱离文档**的节点 —— 表现是
+   * "按了快捷键什么都没出现"，而且 getBoundingClientRect 全是 0（实测踩到）。
+   * 显示任何浮层之前调一下，代价是一次 parentNode 比较。
+   */
+  function ensureLayer() {
+    if (typeof document === 'undefined' || !document.body) return
+    if (layer.parentNode !== document.body) document.body.appendChild(layer)
   }
 
   function mountFloatingLayer(node) {
@@ -2378,6 +2394,51 @@ export function apply(ctx) {
     },
   }
 
+  /**
+   * 全局错误采集（诊断用，只上报不改变任何行为）。
+   *
+   * 为什么需要：页面里的报错只能靠开发者工具看，而"点某个按钮没反应"这类问题
+   * 只能靠猜。这里把 window 的 error / unhandledrejection 报给 host
+   * （/shot/status 的 clientError 字段），一眼就能看到真实堆栈。
+   */
+  ctx.effect(function () {
+    if (typeof window === 'undefined' || !window.addEventListener) return function () {}
+    function send(payload) {
+      try {
+        fetch('/selection-explain/api/shot/hello', {
+          method: 'POST',
+          body: JSON.stringify(Object.assign({ at: Date.now() }, payload)),
+        }).catch(function () {})
+      } catch (error) {
+        /* ignore */
+      }
+    }
+    function onError(event) {
+      var err = event && (event.error || event)
+      send({
+        stage: 'window-error',
+        message: String((err && err.message) || event.message || ''),
+        stack: String((err && err.stack) || '').slice(0, 2000),
+        source: String((event && event.filename) || ''),
+        line: event && event.lineno,
+      })
+    }
+    function onRejection(event) {
+      var reason = event && event.reason
+      send({
+        stage: 'unhandled-rejection',
+        message: String((reason && reason.message) || reason || ''),
+        stack: String((reason && reason.stack) || '').slice(0, 2000),
+      })
+    }
+    window.addEventListener('error', onError)
+    window.addEventListener('unhandledrejection', onRejection)
+    return function () {
+      window.removeEventListener('error', onError)
+      window.removeEventListener('unhandledrejection', onRejection)
+    }
+  }, 'selection-explain: error reporter')
+
   // —— 截图提问的快捷键（DSH 自己的快捷键服务；只在窗口有焦点时响应）——
   // 默认 ⌘⇧X。注册时 DSH 会做冲突校验，用户也能在设置里改键。
   // ⚠️ 必须走 inject 声明（见文件末尾 `inject`）：cordis 的服务按插件隔离，
@@ -2400,6 +2461,9 @@ export function apply(ctx) {
         label: function () {
           return '截图提问'
         },
+        // ⚠️ 必须给数组：设置页渲染列表时会 `[...row.aliases]`，
+        // 留成 undefined 会直接抛 TypeError，整个快捷键弹窗打不开（实测踩到）。
+        aliases: [],
         // 键位是**物理键 + 修饰键**的结构（不是 "Mod+Shift+X" 这种字符串）：
         // code 必须是 KeyA-Z / Digit0-9 / F1-24 这类物理 code，modifiers 是 meta/control/alt/shift/primary
         // （primary 在 macOS 上是 ⌘、Windows 上是 Ctrl）。

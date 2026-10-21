@@ -345,6 +345,7 @@ export function createVoiceCardController(env) {
     // shot：窗口本来就可能没焦点（用户在别的 App 里框完图）；截图这个动作本身就是意图证据
     if (env.state.selection.source !== 'shot' && !hasFocusEvidence(env.state.selection)) return
     if (env.state.selection.source !== 'shot' && env.isTypingTarget(document.activeElement)) return
+    if (env.ensureLayer) env.ensureLayer()
     ensureVCard()
     // 上一轮的关机动画可能还没收尾（用户马上又划了新文字、又开麦）：先收干净再开
     if (vcardState.closing || vcardState.crtTimer) finishCrtOff()

@@ -173,6 +173,17 @@ export function createPanelController(env) {
    * 和"划词解读"的区别：**没有选中文字**、不请求解读、没有翻译/详解两节 ——
    * 用户说的那句话就是第一句提问，那张（已经画好红框的）截图随消息一起发。
    */
+  /**
+   * 把面板顶部那行（quote 条）换成生成的标题。
+   *
+   * 为什么不是一开始就显示标题：标题要等回答结束后再单独问一次模型才有，
+   * 所以面板先显示问题，拿到标题后再替换 —— 只换当前这段对话的。
+   */
+  function applyShotTitle(title) {
+    if (!title || !env.quote) return
+    env.quote.textContent = String(title)
+  }
+
   function openPanelForShot(anchor, options) {
     env.panelSessionId = currentSessionId()
     env.state.contextState = null
@@ -181,6 +192,23 @@ export function createPanelController(env) {
     env.state.payload = buildPayload(String(options.askFirst || ''), '', '截图')
     env.state.payload.kind = 'shot'
     env.state.kind = 'shot'
+    // ⚠️ 必须有 key：`saveHistory` 的第一行是 `if (!payload || !state.cacheKey) return`，
+    // 截图这条路原先提前 return、从没设过 key —— 结果整段对话**一次都没落盘**，
+    // 也就不会出现在"最近"列表里（用户实测）。
+    //
+    // key 的"身份"不能只靠问题：用户完全可能对**不同的截图**问同一句"这是什么？"。
+    // 截图这条路真正指代的东西是**那张图**，所以用它的内容哈希（附件 id）做身份：
+    // 同一张图再问一次 = 更新同一条；不同图永远不会撞。
+    var shotIdentity = ''
+    if (options && options.shotRef && typeof options.shotRef === 'object') {
+      var ref = options.shotRef
+      shotIdentity = String(ref.attachmentId || ref.id || ref.hash || '')
+    }
+    if (!shotIdentity) {
+      // 没拿到引用（上传失败）：退化成一次性 id，宁可多一条也不覆盖别的对话
+      shotIdentity = 'shot-' + Date.now().toString(36)
+    }
+    env.state.cacheKey = cacheKeyOf(String(options.askFirst || ''), 'shot:' + shotIdentity)
     env.hideButton()
     showPanel(anchor)
     env.quote.textContent = '截图 · 已带上整窗截图'
@@ -1029,6 +1057,7 @@ export function createPanelController(env) {
     env.panel.style.top = Math.round(top) + 'px'
   }
   return {
+    applyShotTitle,
     releaseRenderedContent,
     openForSelection,
     currentSessionId,

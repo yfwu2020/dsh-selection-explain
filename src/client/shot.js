@@ -128,6 +128,27 @@ function report(payload) {
 }
 
 export function createShotController(env) {
+  // 实例世代：热重载后可能同时存在多个实例（旧的没被彻底收掉），
+  // 它们都在长轮询 /shot/pending —— 谁抢到谁处理。旧实例的 layer 往往已经
+  // 脱离文档，结果就是"卡片画进了看不见的节点"（时好时坏的那种）。
+  // 所以：只有**最新**那一代允许轮询，老的自己停手。
+  var host = (env.window || (typeof window !== 'undefined' ? window : null)) || {}
+  var myEpoch = 0
+  try {
+    host.__dshSelShotEpoch = (host.__dshSelShotEpoch || 0) + 1
+    myEpoch = host.__dshSelShotEpoch
+  } catch (error) {
+    myEpoch = 1
+  }
+
+  function superseded() {
+    try {
+      return host.__dshSelShotEpoch !== myEpoch
+    } catch (error) {
+      return false
+    }
+  }
+
   var timer = 0
   var busy = false
   var lastId = ''
@@ -257,6 +278,9 @@ export function createShotController(env) {
     var step = 'geometry'
     try {
       // ── ① 立刻：算位置 → 画框/缩略图 → 开卡 ──
+      // layer 可能被 slot 重渲染摘掉（见 index.js 的 ensureLayer）：这里先挂回去，
+      // 否则框和卡片会 append 到一个不在文档里的节点上 —— 什么都不显示。
+      if (env.ensureLayer) env.ensureLayer()
       var page = pageRectOf(shot.selectionRect, origin())
       var view = viewport()
       var inside = !!(page && insideViewport(page, view))
@@ -344,7 +368,15 @@ export function createShotController(env) {
             var cs = getComputedStyle(card)
             cinfo = { rect: [Math.round(cr.left), Math.round(cr.top), Math.round(cr.width), Math.round(cr.height)], display: cs.display, opacity: cs.opacity, z: cs.zIndex }
           }
-          report({ stage: 'probe', open: env.vcardOpen ? !!env.vcardOpen() : null, card: cinfo, vp: [window.innerWidth, window.innerHeight] })
+          var layerEl = env.layer
+          report({
+            stage: 'probe',
+            open: env.vcardOpen ? !!env.vcardOpen() : null,
+            card: cinfo,
+            layer: layerEl ? { connected: !!layerEl.isConnected, parent: layerEl.parentNode ? (layerEl.parentNode.className || layerEl.parentNode.nodeName) : null } : null,
+            frame: frameEl ? { show: frameEl.getAttribute('data-show'), connected: !!frameEl.isConnected } : null,
+            vp: [window.innerWidth, window.innerHeight],
+          })
         } catch (error) {
           report({ stage: 'probe', error: String((error && error.message) || error) })
         }
@@ -430,8 +462,10 @@ export function createShotController(env) {
   }
 
   function loop() {
+    if (superseded()) return
     timer = setTimeout(function () {
       timer = 0
+      if (superseded()) return
       var d = doc()
       if (d && d.visibilityState === 'hidden') return loop()
       poll().then(loop, loop)

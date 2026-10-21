@@ -518,6 +518,7 @@ export var CSS = [
   'background:var(--sel-warn-bg,rgba(255,166,87,.14));color:var(--sel-warn-fg,#b45309);font-size:11.5px;line-height:1.4}',
   '.dsh-sel-undo button{margin-left:auto;border:0;background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer;text-decoration:underline}',
   '.dsh-sel-historytext{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.dsh-sel-historysub{font-size:10.5px;line-height:1.4;opacity:.62;margin-top:1px;}',
   '.dsh-sel-historymeta{display:flex;align-items:center;gap:6px;font-size:11px;opacity:.5;font-variant-numeric:tabular-nums;min-width:0}',
   '.dsh-sel-historymeta>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
   '.dsh-sel-historymeta .dsh-sel-historypin{opacity:.9}',
