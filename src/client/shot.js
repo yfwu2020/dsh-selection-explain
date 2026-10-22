@@ -312,7 +312,7 @@ export function createShotController(env) {
     if (chipImg) chipImg.removeAttribute('src')
     current = null
     if (env.state.selection && env.state.selection.source === 'shot') env.state.selection = null
-    if (env.vcardOpen && env.vcardOpen() && env.closeVCard) env.closeVCard()
+    if (env.vcardOpen && env.vcardOpen() && env.closeVCard) env.closeVCard(true)
   }
 
   var cancelBound = false
@@ -391,9 +391,13 @@ export function createShotController(env) {
       }
 
       // ── ② 后台：画红框 + 上传，并把 promise 挂在 current 上（发送时 await）──
+      //
+      // ⚠️ 必须**等卡片动画跑完**再开始：整窗图是 3456×2114，解码 + 画布 + 读像素 + 编码 PNG
+      // 都在主线程，一开工就把卡片的展开动画卡住（用户实测"卡片出现很卡"）。
       var md0 = Date.now()
       step = 'annotate'
-      current.refReady = loadImage(SHOT_IMAGE + '?id=' + encodeURIComponent(shot.id))
+      var startWork = function () {
+        return loadImage(SHOT_IMAGE + '?id=' + encodeURIComponent(shot.id))
         .then(function (img) {
           return annotate(img, shot.rect, shot.scale, shot)
         })
@@ -414,6 +418,20 @@ export function createShotController(env) {
           report({ stage: 'bg-fail', ms: Date.now() - md0, error: String((error && error.message) || error) })
           return null
         })
+      }
+      current.refReady = new Promise(function (resolve) {
+        var kick = function () {
+          resolve(startWork())
+        }
+        // 先让卡片把展开动画走完（约 300ms），再用空闲时间做重活
+        if (typeof window !== 'undefined' && window.requestIdleCallback) {
+          setTimeout(function () {
+            window.requestIdleCallback(kick, { timeout: 1200 })
+          }, 350)
+        } else {
+          setTimeout(kick, 350)
+        }
+      })
 
       // ── ③ 小窗开着：图直接进输入框（后台等图做好再塞）──
       if (env.panelOpen) {

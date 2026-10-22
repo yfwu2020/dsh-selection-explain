@@ -321,16 +321,6 @@ async function finish(regionFile: string): Promise<void> {
       // 加了是 3840×2224（多 64px 阴影），不加才是 3840×2160（正好窗口的 2 倍）。
       // 阴影上下不对称，按对半分会让红框整体偏（用户实测：向上偏移）。
       await run(CAPTURE, ['-l', String(win.id), '-x', imagePath])
-      // ⚠️ 截完再取一次列表：窗口可能刚被拖动/缩放，用旧矩形算 scale 会错得很离谱
-      //（实测：旧值 1280×820 vs 实际 1616×945 → scale 2.53 而不是 2.0）。
-      const fresh = await listWindows()
-      const latest = fresh.find((w) => w.id === win.id)
-      if (latest) {
-        win.x = latest.x
-        win.y = latest.y
-        win.w = latest.w
-        win.h = latest.h
-      }
       const size = await pngSize(imagePath)
       if (size) {
         scale = size.w / win.w
