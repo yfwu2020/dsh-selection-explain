@@ -117,9 +117,17 @@ export function createConversationController(env) {
     var asked = String(question || '').trim()
     // ⚠️ 附件现在是"点发送才上传"：先传完再取引用。
     // 好处是叉掉的图根本没落盘；代价是发送时多等上传（通常不到 1 秒）。
+    if (env.attachEnsureUploaded && env.state.uploadingAttachments) return
     if (env.attachEnsureUploaded) {
+      env.state.uploadingAttachments = true
       env.setStatus('正在上传附件…')
-      await env.attachEnsureUploaded()
+      try {
+        await env.attachEnsureUploaded()
+      } finally {
+        env.state.uploadingAttachments = false
+      }
+      // 上传期间用户可能又点了发送 / 已经开始生成了：这一枪就别再发了
+      if (env.state.asking || env.state.phase === 'loading' || env.state.phase === 'streaming') return
     }
     // 引用先取出来：只挂引用、没写问题也允许发（这时用一句兜底提问）
     var quotes = env.state.quotes.slice()
