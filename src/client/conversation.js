@@ -101,7 +101,7 @@ export function createConversationController(env) {
    * 再真正发。取上下文期间用 state.resolvingQuotes 挡住重复发送 ——
    * 那一刻输入框和引用区都已经清空了，再按一次 Enter 会变成"空发一条"。
    */
-  function ask(question) {
+  async function ask(question) {
     var generating = env.state.asking || env.state.phase === 'loading' || env.state.phase === 'streaming'
     if (generating) {
       // 以前这里是静默 return —— 点了没反应，用户不知道在等什么
@@ -115,6 +115,12 @@ export function createConversationController(env) {
       env.cancelVoice({ note: '已停止录音（这条先发出去）' })
     }
     var asked = String(question || '').trim()
+    // ⚠️ 附件现在是"点发送才上传"：先传完再取引用。
+    // 好处是叉掉的图根本没落盘；代价是发送时多等上传（通常不到 1 秒）。
+    if (env.attachEnsureUploaded) {
+      env.setStatus('正在上传附件…')
+      await env.attachEnsureUploaded()
+    }
     // 引用先取出来：只挂引用、没写问题也允许发（这时用一句兜底提问）
     var quotes = env.state.quotes.slice()
     // 附件同理：只挂附件、一个字没写也允许发（附件本身就是内容）

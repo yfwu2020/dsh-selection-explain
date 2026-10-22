@@ -98,6 +98,25 @@ export function createAttachController(env) {
     env.attachNote.setAttribute('data-show', env.state.attachNote ? '1' : '0')
   }
 
+  /**
+   * 发送前把内存里的附件真正上传（返回 Promise，全部结束才 resolve）。
+   * 没带附件、或都已经传过 → 立刻 resolve，正常发送不会多等。
+   */
+  function ensureUploaded() {
+    var pending = items().filter(function (item) {
+      return !item.ref && item.file
+    })
+    if (pending.length === 0) return Promise.resolve()
+    var chain = Promise.resolve()
+    pending.forEach(function (item) {
+      chain = chain.then(function () {
+        item.started = false
+        return upload(item)
+      })
+    })
+    return chain
+  }
+
   /** 还有没有在传的（发送键据此置灰）。 */
   function busy() {
     var list = items()
@@ -193,16 +212,7 @@ export function createAttachController(env) {
     note(rejected.join('；'))
     render()
     env.refreshAskState()
-    // 串行上传：并发几 MB 的 base64 会把主线程和 host 的 sharp 一起顶住
-    var pending = list.filter(function (item) {
-      return item.status === 'uploading' && !item.started
-    })
-    var chain = Promise.resolve()
-    pending.forEach(function (item) {
-      chain = chain.then(function () {
-        return upload(item)
-      })
-    })
+    // 不再自动上传：留在内存里，等用户点发送时统一上传（见 ensureUploaded）。
   }
 
   function createItem(file) {
@@ -216,8 +226,10 @@ export function createAttachController(env) {
       file: file,
       // 缩略图先用本地 object URL 显示（不必等上传完），失败时回落到图标
       url: isImage && typeof URL !== 'undefined' && URL.createObjectURL ? URL.createObjectURL(file) : '',
-      status: 'uploading',
-      started: false,
+      // 'local' = 只在内存里，还没落盘。用户要求：叉掉的不该在附件库留垃圾，
+      // 所以**点发送时才真正上传**（见 ensureUploaded）。
+      status: 'local',
+      started: true,
       ref: null,
       error: '',
     }
@@ -316,10 +328,56 @@ export function createAttachController(env) {
     return button
   }
 
+  /**
+   * 打开灯箱：把附件条里**所有可预览的图片**一起带进去（← / → 可直接翻）。
+   * 单张时灯箱自己会收起翻页键，调用方不用区分。
+   *
+   * 优先用本地 object URL（上传前就能看），没有就回宿主取。
+   */
+  function previewItem(item) {
+    if (!item || item.status === 'error') return
+    var list = items()
+    var images = []
+    var start = 0
+    for (var i = 0; i < list.length; i += 1) {
+      var other = list[i]
+      if (!other || other.kind !== 'image' || other.status === 'error') continue
+      var src = other.url || (other.ref ? attachmentUrl('image', other.ref) : '')
+      if (!src) continue
+      if (other === item) start = images.length
+      images.push({ src: src, name: other.name })
+    }
+    if (images.length === 0 || typeof env.previewImage !== 'function') return
+    env.previewImage({ images: images, index: start })
+  }
+
   function thumbNode(item) {
     var node = el('span', 'dsh-sel-thumb')
     node.setAttribute('data-state', item.status)
-    node.title = item.name
+    // 上传中/已完成的图片都可以点开预览：本地 object URL 在上传完成前就有，
+    // 所以"刚粘进来、还没传完"也能先看清楚，不必等。
+    // 失败态（error）不挂预览：那一格的主操作是「重试」，先看清楚一张传不上去的图没有意义。
+    var previewable = item.status !== 'error' && !!(item.url || item.ref)
+    if (previewable) {
+      node.setAttribute('data-preview', '1')
+      node.setAttribute('role', 'button')
+      node.tabIndex = 0
+      node.title = item.name + '（点击预览）'
+      node.setAttribute('aria-label', '预览图片 ' + item.name)
+      // ✕ 移除键自己 stopPropagation，所以这里只接"点缩略图本体"。
+      listen(node, 'click', function () {
+        previewItem(item)
+      })
+      // 键盘：缩略图是 role=button，Enter / 空格要和鼠标点击一致。
+      listen(node, 'keydown', function (event) {
+        if (event.target !== node) return // 焦点在里面的 ✕ 上时不算
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        previewItem(item)
+      })
+    } else {
+      node.title = item.name
+    }
     if (item.url) {
       var img = document.createElement('img')
       img.src = item.url
@@ -479,6 +537,7 @@ export function createAttachController(env) {
     retry,
     render,
     busy,
+    ensureUploaded,
     payload,
     describe,
     note,

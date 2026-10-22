@@ -12,6 +12,7 @@ import { createSelectionController } from './selection.js'
 import { createVoiceCardController } from './voice-card.js'
 import { createQuotesController } from './quotes.js'
 import { createAttachController } from './attach.js'
+import { createLightboxController } from './lightbox.js'
 import { createShotController } from './shot.js'
 import { createPreviewController } from './preview.js'
 import { createPanelController } from './panel.js'
@@ -797,6 +798,13 @@ export function apply(ctx) {
     get hideButton() { return selectionController.hideButton },
     get later() { return later },
   })
+  /**
+   * 图片预览（灯箱）：输入框上方的待发送缩略图与已发出气泡里的图片共用这一个入口。
+   * 挂在 layer 上、铺满整窗 —— 面板只有 540px 宽，塞回面板里预览等于没放大。
+   */
+  var lightboxController = createLightboxController({
+    get layer() { return layer },
+  })
   var panelController = createPanelController({
     get timerScope() { return timerScope },
     get panelSessionId() { return panelSessionId },
@@ -839,6 +847,7 @@ export function apply(ctx) {
     get later() { return later },
     get closeModelMenu() { return modelsController.closeModelMenu },
     get closeSettings() { return settingsController.closeSettings },
+    get closeLightbox() { return lightboxController.close },
     get hideHistoryList() { return historyController.hideHistoryList },
     get cancelVoice() { return voiceController.cancelVoice },
     get visibleRaw() { return historyController.visibleRaw },
@@ -906,6 +915,7 @@ export function apply(ctx) {
     get applyShotTitle() { return panelController.applyShotTitle },
     get sentTextOf() { return quotesController.sentTextOf },
     get panel() { return panel },
+    get previewImage() { return lightboxController.open },
     get state() { return state },
     get exportTurns() { return quotesController.exportTurns },
     get clearQuotes() { return quotesController.clearQuotes },
@@ -995,6 +1005,7 @@ export function apply(ctx) {
     get attachBox() { return attachBox },
     get attachNote() { return attachNote },
     get attachInput() { return attachInput },
+    get previewImage() { return lightboxController.open },
     get setStatus() { return panelController.setStatus },
     get refreshAskState() { return conversationController.refreshAskState },
   })
@@ -1008,6 +1019,7 @@ export function apply(ctx) {
     get state() { return state },
     get panelOpen() { return panelOpen },
     get addFiles() { return attachController.addFiles },
+    get attachEnsureUploaded() { return attachController.ensureUploaded },
     get focusAskBox() { return panelController.focusAskBox },
     get openVCard() { return voiceCardController.openVCard },
     get vcardOpen() { return function () { return voiceCardController.vcardState.open } },
@@ -2505,6 +2517,7 @@ export function apply(ctx) {
       timerScope.dispose()
       cache.dispose()
       voiceCardController.closeVCard(false)
+      lightboxController.dispose()
       attachController.clear()
       shotController.stop()
       shotController.clearMarkers()
