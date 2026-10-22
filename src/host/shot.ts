@@ -637,7 +637,7 @@ export async function handleShotStatus(_req: IncomingMessage, res: ServerRespons
     clientReports,
     // 只读观察点：不清 pending，用来量"事件发出 → 整窗图做好"这一段
     lastShot: last
-      ? { id: last.id, ready: last.ready, ageMs: Date.now() - last.at, owner: last.owner, rect: last.rect, pad: last.pad, scale: last.scale, selectionRect: last.selectionRect, selfWindow: last.selfWindow, hint: last.hint }
+      ? { id: last.id, ready: last.ready, ageMs: Date.now() - last.at, owner: last.owner, rect: last.rect, pad: last.pad, scale: last.scale, selectionRect: last.selectionRect, windowRect: last.windowRect, selfWindow: last.selfWindow, hint: last.hint }
       : null,
   })
 }

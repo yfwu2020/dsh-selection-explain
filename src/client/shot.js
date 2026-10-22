@@ -126,8 +126,61 @@ export function chipRectFor(edge, anchorRect, viewport, size) {
   return { left: left, top: top, width: w, height: h }
 }
 
+/**
+ * 找出截图里"窗口内容"的矩形（像素）。
+ *
+ * 为什么需要：`screencapture -l` 会把窗口**阴影**一起截进来，而阴影是**透明**的、
+ * 而且**上下不对称**（实测：上 76px、下 148px）。按"多出来的对半分"去补，
+ * 红框就会整体偏移（左偏 112、上偏 28），窗口越大偏得越多 —— 用户报的"飘"就是这个。
+ *
+ * 内容区是不透明的，所以扫四条边找到第一个不透明像素，就得到精确的内容矩形。
+ */
+function findContentBox(g, width, height) {
+  var probe = Math.min(400, width, height)
+  function hasOpaque(data, count, stride, offset) {
+    for (var i = 0; i < count; i += 1) {
+      if (data[i * stride + offset + 3] > 250) return true
+    }
+    return false
+  }
+  var box = { left: 0, top: 0, right: width, bottom: height }
+  // 上边
+  var strip = g.getImageData(0, 0, width, probe)
+  for (var y = 0; y < probe; y += 1) {
+    if (hasOpaque(strip.data.subarray(y * width * 4), width, 4, 0)) {
+      box.top = y
+      break
+    }
+  }
+  // 下边
+  strip = g.getImageData(0, Math.max(0, height - probe), width, probe)
+  for (var y2 = probe - 1; y2 >= 0; y2 -= 1) {
+    if (hasOpaque(strip.data.subarray(y2 * width * 4), width, 4, 0)) {
+      box.bottom = Math.max(0, height - probe) + y2 + 1
+      break
+    }
+  }
+  // 左边 / 右边
+  strip = g.getImageData(0, 0, probe, height)
+  for (var x = 0; x < probe; x += 1) {
+    if (hasOpaque(strip.data.subarray(x * 4), height, probe * 4, 0)) {
+      box.left = x
+      break
+    }
+  }
+  strip = g.getImageData(Math.max(0, width - probe), 0, probe, height)
+  for (var x2 = probe - 1; x2 >= 0; x2 -= 1) {
+    if (hasOpaque(strip.data.subarray(x2 * 4), height, probe * 4, 0)) {
+      box.right = Math.max(0, width - probe) + x2 + 1
+      break
+    }
+  }
+  if (box.right - box.left < 16 || box.bottom - box.top < 16) return null
+  return box
+}
+
 /** 把整窗图 + 红框画成一张 PNG（Blob）。 */
-export function annotate(image, rect, scale) {
+export function annotate(image, rect, scale, shot) {
   var iw = image.naturalWidth || image.width
   var ih = image.naturalHeight || image.height
   // 附件服务最终会把长边压到 2048 —— 我们直接按这个尺寸画，省掉几倍的无用编码。
@@ -137,6 +190,27 @@ export function annotate(image, rect, scale) {
   canvas.height = Math.max(1, Math.round(ih * k))
   var g = canvas.getContext('2d')
   g.drawImage(image, 0, 0, canvas.width, canvas.height)
+  // ⚠️ 用图的透明通道量出真实内容区，再按内容区重算红框 —— 阴影是不透明的假内容，不能算进去
+  var content = null
+  try {
+    content = findContentBox(g, canvas.width, canvas.height)
+  } catch (error) {
+    content = null
+  }
+  if (content && shot && shot.windowRect && shot.selectionRect) {
+    var win = shot.windowRect
+    var sel = shot.selectionRect
+    var realScale = (content.right - content.left) / win.width
+    if (realScale > 0.2 && realScale < 5) {
+      rect = {
+        x: content.left + (sel.x - win.x) * realScale,
+        y: content.top + (sel.y - win.y) * realScale,
+        width: sel.width * realScale,
+        height: sel.height * realScale,
+      }
+      scale = realScale
+    }
+  }
   // 选区同样按比例缩放（rect 是原图像素坐标）
   rect = { x: rect.x * k, y: rect.y * k, width: rect.width * k, height: rect.height * k }
   // 按输出像素排：整窗 2 倍图压到 2048 后，2px 只剩 1 像素多，太容易糊掉
@@ -366,7 +440,7 @@ export function createShotController(env) {
       step = 'annotate'
       current.refReady = loadImage(SHOT_IMAGE + '?id=' + encodeURIComponent(shot.id))
         .then(function (img) {
-          return annotate(img, shot.rect, shot.scale)
+          return annotate(img, shot.rect, shot.scale, shot)
         })
         .then(function (blob) {
           if (!blob) return null
