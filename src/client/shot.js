@@ -367,8 +367,13 @@ export function createShotController(env) {
       var page = pageRectOf(shot.selectionRect, origin())
       var view = viewport()
       var inside = !!(page && insideViewport(page, view))
-      var anchor
-      if (inside) {
+      var anchor = null
+      // 小窗开着时：这次只是"把图塞进当前输入框"，页面上**不出现任何框/缩略图/卡片**，
+      // 也不改顶部那行、不带任何提示词（用户明确要求：跟"开窗那次截图"是两种模式）。
+      if (env.panelOpen) {
+        if (frameEl) frameEl.setAttribute('data-show', '0')
+        if (chipEl) chipEl.setAttribute('data-show', '0')
+      } else if (inside) {
         var frame = ensureFrame()
         frame.style.left = Math.round(page.left) + 'px'
         frame.style.top = Math.round(page.top) + 'px'
@@ -423,7 +428,12 @@ export function createShotController(env) {
         var kick = function () {
           resolve(startWork())
         }
-        // 先让卡片把展开动画走完（约 300ms），再用空闲时间做重活
+        // 小窗开着时没有卡片动画要保护 → 立刻开工（图早日进输入框）
+        if (env.panelOpen) {
+          kick()
+          return
+        }
+        // 否则先让卡片把展开动画走完（约 300ms），再用空闲时间做重活
         if (typeof window !== 'undefined' && window.requestIdleCallback) {
           setTimeout(function () {
             window.requestIdleCallback(kick, { timeout: 1200 })
