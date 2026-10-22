@@ -1861,7 +1861,8 @@ async function main() {
       !!attachBox && attachBox.getAttribute('data-show') === '0' && attachBox.children.length === 0,
       attachBox ? attachBox.getAttribute('data-show') + '/' + attachBox.children.length : '未找到')
 
-    // 真造两个 File 塞进 <input type=file>（Chrome 支持直接赋 files）
+    // 真造三个 File 塞进 <input type=file>（Chrome 支持直接赋 files）
+    // 两张图是为了验"多图时左右切换"——一张不够摆出翻页。
     var fileInput = document.querySelector('.dsh-sel-ask input[type=file]')
     check('有隐藏的文件选择器（图片与文件一起选）',
       !!fileInput && fileInput.multiple === true && !fileInput.getAttribute('accept'),
@@ -1871,16 +1872,19 @@ async function main() {
     var dt = new DataTransfer()
     dt.items.add(new File([new Uint8Array([37, 80, 68, 70])], '季度报表.pdf', { type: 'application/pdf' }))
     dt.items.add(new File([new Uint8Array([137, 80, 78, 71])], '截图.png', { type: 'image/png' }))
+    dt.items.add(new File([new Uint8Array([137, 80, 78, 72])], '第二张.png', { type: 'image/png' }))
     fileInput.files = dt.files
     fileInput.dispatchEvent(new Event('change', { bubbles: true }))
 
     check('上传中发送键置灰（不让残缺材料发出去）', sendBtn.disabled === true, String(sendBtn.disabled))
-    await waitFor(function () { return attachBox.children.length === 2 }, 3000)
-    check('两件附件都上了附件条', attachBox.children.length === 2, String(attachBox.children.length))
+    await waitFor(function () { return attachBox.children.length === 3 }, 3000)
+    check('三件附件都上了附件条', attachBox.children.length === 3, String(attachBox.children.length))
     check('附件条展开了', attachBox.getAttribute('data-show') === '1', attachBox.getAttribute('data-show'))
     check('图片是缩略图（里面是 img）、文件是文件卡',
-      attachBox.children[0].className.indexOf('dsh-sel-fcard') >= 0 && attachBox.children[1].className.indexOf('dsh-sel-thumb') >= 0,
-      attachBox.children[0].className + ' / ' + attachBox.children[1].className)
+      attachBox.children[0].className.indexOf('dsh-sel-fcard') >= 0 &&
+        attachBox.children[1].className.indexOf('dsh-sel-thumb') >= 0 &&
+        attachBox.children[2].className.indexOf('dsh-sel-thumb') >= 0,
+      attachBox.children[0].className + ' / ' + attachBox.children[1].className + ' / ' + attachBox.children[2].className)
 
     await waitFor(function () { return sendBtn.disabled === false }, 3000)
     check('上传完成后发送键恢复可点', sendBtn.disabled === false, String(sendBtn.disabled))
@@ -1888,13 +1892,68 @@ async function main() {
     check('文件卡显示名字与类型·大小',
       attachBox.children[0].textContent.indexOf('季度报表.pdf') >= 0 && /PDF/.test(attachBox.children[0].textContent),
       attachBox.children[0].textContent)
-    check('每件各发一次请求（逐件上传，失败不牵连别件）', window.__attachHits.length === 2, String(window.__attachHits.length))
+    check('每件各发一次请求（逐件上传，失败不牵连别件）', window.__attachHits.length === 3, String(window.__attachHits.length))
     check('请求里带的是 base64（不带 data: 前缀）',
       window.__attachHits.every(function (hit) { return typeof hit.items[0].data === 'string' && hit.items[0].data.indexOf('data:') !== 0 && hit.items[0].data.length > 0 }),
       window.__attachHits.map(function (hit) { return String(hit.items[0].data).slice(0, 12) }).join(' | '))
     check('图片那件声明了 mediaType（附件服务要拿它跟字节比对）',
       window.__attachHits.some(function (hit) { return hit.items[0].kind === 'image' && hit.items[0].mediaType === 'image/png' }),
       JSON.stringify(window.__attachHits.map(function (hit) { return hit.items[0].mediaType })))
+
+    // ── 图片预览：输入框上方的待发送缩略图，点一下要在**本窗口**里放大 ──
+    // 用户报的就是这条：小窗里加的图（还没发的、已经发出去的）都点不开。
+    var thumb = attachBox.children[1]
+    var thumb2 = attachBox.children[2]
+    check('待发送缩略图标成可预览（放大镜光标 + 可 Tab 到）',
+      !!thumb && thumb.getAttribute('data-preview') === '1' && thumb.getAttribute('role') === 'button' && thumb.tabIndex === 0 &&
+        !!thumb2 && thumb2.getAttribute('data-preview') === '1',
+      thumb ? thumb.getAttribute('data-preview') + '/' + thumb.getAttribute('role') + '/' + thumb.tabIndex : '未找到')
+    thumb.click()
+    await waitFor(function () { return document.querySelector('.dsh-sel-lightbox[data-open="1"]') !== null }, 1500)
+    var lightbox = document.querySelector('.dsh-sel-lightbox')
+    check('点缩略图打开灯箱（同一扇窗，不是新标签）',
+      !!lightbox && lightbox.getAttribute('data-open') === '1',
+      lightbox ? lightbox.getAttribute('data-open') : '未找到')
+    var lightboxImg = lightbox && lightbox.querySelector('.dsh-sel-lightbox-img')
+    check('灯箱里是这张图（上传前用本地 blob 先看，不必等传完）',
+      !!lightboxImg && String(lightboxImg.getAttribute('src') || '').indexOf('blob:') === 0,
+      lightboxImg ? String(lightboxImg.getAttribute('src')).slice(0, 40) : '未找到')
+    check('灯箱显示文件名与关闭提示',
+      !!lightbox && lightbox.textContent.indexOf('截图.png') >= 0 && lightbox.textContent.indexOf('Esc') >= 0,
+      lightbox ? lightbox.textContent : '')
+    var lightboxCount = lightbox.querySelector('.dsh-sel-lightbox-count')
+    check('多图时有计数（1 / 2），第一张的「上一张」是灰的',
+      !!lightboxCount && lightboxCount.textContent === '1 / 2' &&
+        lightbox.querySelector('.dsh-sel-lightbox-nav[data-dir="prev"]').disabled === true &&
+        lightbox.querySelector('.dsh-sel-lightbox-nav[data-dir="next"]').disabled === false,
+      lightboxCount ? lightboxCount.textContent : '未找到')
+    // 右侧按钮 → 第二张；本地 blob 地址必须换掉（不是同一张图重画）
+    var firstSrc = lightboxImg.getAttribute('src')
+    lightbox.querySelector('.dsh-sel-lightbox-nav[data-dir="next"]').click()
+    await waitFor(function () { return lightbox.querySelector('.dsh-sel-lightbox-count').textContent === '2 / 2' }, 1000)
+    check('点右箭头切到下一张（名字与 blob 都跟着换）',
+      lightbox.querySelector('.dsh-sel-lightbox-name').textContent === '第二张.png' &&
+        lightboxImg.getAttribute('src') !== firstSrc,
+      lightbox.querySelector('.dsh-sel-lightbox-name').textContent + ' / ' + String(lightboxImg.getAttribute('src')).slice(0, 24))
+    check('最后一张的「下一张」是灰的、「上一张」可点',
+      lightbox.querySelector('.dsh-sel-lightbox-nav[data-dir="next"]').disabled === true &&
+        lightbox.querySelector('.dsh-sel-lightbox-nav[data-dir="prev"]').disabled === false,
+      '')
+    // ← 键 → 回到第一张（方向键只在多图时接管）
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }))
+    await waitFor(function () { return lightbox.querySelector('.dsh-sel-lightbox-count').textContent === '1 / 2' }, 1000)
+    check('← 键切回上一张',
+      lightbox.querySelector('.dsh-sel-lightbox-name').textContent === '截图.png' &&
+        lightboxImg.getAttribute('src') === firstSrc,
+      lightbox.querySelector('.dsh-sel-lightbox-name').textContent)
+    lightbox.click() // 点空白处
+    await waitFor(function () {
+      var box = document.querySelector('.dsh-sel-lightbox')
+      return !box || box.getAttribute('data-open') === '0'
+    }, 1500)
+    check('点空白处收起灯箱',
+      document.querySelector('.dsh-sel-lightbox').getAttribute('data-open') === '0',
+      document.querySelector('.dsh-sel-lightbox').getAttribute('data-open'))
 
     // 发送：附件引用必须进这一轮追问的载荷，而且**不带 base64**
     window.__askBodies = []
@@ -1904,8 +1963,8 @@ async function main() {
     sendBtn.click()
     await waitFor(function () { return window.__askBodies.length > 0 }, 3000)
     var ask = window.__askBodies[0] || {}
-    check('追问载荷带上了两件附件引用',
-      Array.isArray(ask.attachments) && ask.attachments.length === 2 && ask.attachments.every(function (a) { return a.ref && a.ref.attachmentId }),
+    check('追问载荷带上了三件附件引用',
+      Array.isArray(ask.attachments) && ask.attachments.length === 3 && ask.attachments.every(function (a) { return a.ref && a.ref.attachmentId }),
       JSON.stringify(ask.attachments))
     check('载荷里没有 base64（只回传引用）',
       JSON.stringify(ask.attachments).indexOf('data') < 0 && JSON.stringify(ask).length < 2000,
@@ -1922,14 +1981,15 @@ async function main() {
     // 注意图片是走**回放路由**取的（本地 object URL 在发送那一刻就释放了）。
     await waitFor(function () { return document.querySelector('.dsh-sel-bqattach') !== null }, 2000)
     var strip = document.querySelector('.dsh-sel-bqattach')
-    check('发出去的消息气泡里有附件条', !!strip && strip.children.length === 2, strip ? String(strip.children.length) : '未找到')
+    check('发出去的消息气泡里有附件条', !!strip && strip.children.length === 3, strip ? String(strip.children.length) : '未找到')
     var bqImg = document.querySelector('.dsh-sel-bqimg')
     // 注意 img.src 拿到的是**绝对** URL（浏览器解析过），所以用 includes 而不是 startsWith
     check('图片渲染成缩略图，且指向回放路由（不是本地 blob —— 那个地址发送时就释放了）',
       !!bqImg && String(bqImg.getAttribute('src')).includes('/selection-explain/api/attachment') &&
         String(bqImg.getAttribute('src')).includes('kind=image') && String(bqImg.getAttribute('src')).indexOf('blob:') !== 0,
       bqImg ? String(bqImg.getAttribute('src')).slice(0, 90) : '未找到')
-    check('缩略图是懒加载、点了能看原图', !!bqImg && bqImg.getAttribute('loading') === 'lazy' && bqImg.parentNode.tagName === 'A' && bqImg.parentNode.target === '_blank', '')
+    check('缩略图是懒加载；外层仍是链接（⌘/中键 / 右键还能走新标签）',
+      !!bqImg && bqImg.getAttribute('loading') === 'lazy' && bqImg.parentNode.tagName === 'A' && bqImg.parentNode.target === '_blank', '')
     // 真去取一次字节：naturalWidth > 0 = 图**解码成功**（只看 src 证明不了它真能显示）
     await waitFor(function () { return bqImg && bqImg.complete && bqImg.naturalWidth > 0 }, 3000)
     check('缩略图真的从回放路由取到并解码了（不是破图）',
@@ -1942,6 +2002,67 @@ async function main() {
       Math.abs(shownRatio - naturalRatio) / naturalRatio < 0.06,
       '显示 ' + Math.round(bqRect.width) + 'x' + Math.round(bqRect.height) + ' (' + shownRatio.toFixed(2) + ':1) vs 原始 ' + naturalRatio.toFixed(2) + ':1')
     check('缩略图高度不超过 180px（不许把气泡撑爆）', bqRect.height <= 181, Math.round(bqRect.height) + 'px')
+
+    // ── 已发出的图片：普通左键同样在本窗口预览（不是新标签）──
+    bqImg.click()
+    await waitFor(function () { return document.querySelector('.dsh-sel-lightbox[data-open="1"]') !== null }, 1500)
+    var sentLightbox = document.querySelector('.dsh-sel-lightbox')
+    var sentLightboxImg = sentLightbox && sentLightbox.querySelector('.dsh-sel-lightbox-img')
+    check('点气泡里的图片也打开灯箱',
+      !!sentLightbox && sentLightbox.getAttribute('data-open') === '1',
+      sentLightbox ? sentLightbox.getAttribute('data-open') : '未找到')
+    check('灯箱取的是回放路由那张图（不是气泡里的缩略尺寸）',
+      !!sentLightboxImg && String(sentLightboxImg.getAttribute('src')).includes('/selection-explain/api/attachment') &&
+        String(sentLightboxImg.getAttribute('src')).includes('kind=image'),
+      sentLightboxImg ? String(sentLightboxImg.getAttribute('src')).slice(0, 90) : '未找到')
+    check('灯箱打开时声明为模态浮层（读屏与 Esc 层级都用它）',
+      sentLightbox.getAttribute('aria-modal') === 'true',
+      sentLightbox.getAttribute('aria-modal'))
+    // 会话里的两张图也要能左右翻（这轮消息里就有两张）
+    var sentCount = sentLightbox.querySelector('.dsh-sel-lightbox-count')
+    check('会话里多张图时带翻页计数（1 / 2）',
+      !!sentCount && sentCount.textContent === '1 / 2',
+      sentCount ? sentCount.textContent : '未找到')
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }))
+    await waitFor(function () { return sentLightbox.querySelector('.dsh-sel-lightbox-count').textContent === '2 / 2' }, 1000)
+    check('→ 键切到会话里的下一张',
+      sentLightbox.querySelector('.dsh-sel-lightbox-count').textContent === '2 / 2',
+      sentLightbox.querySelector('.dsh-sel-lightbox-count').textContent)
+    // 到头不循环：再按一次仍是最后一张（不会莫名跳回第一张）
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }))
+    await sleep(80)
+    check('最后一张再按 → 不循环回第一张',
+      sentLightbox.querySelector('.dsh-sel-lightbox-count').textContent === '2 / 2',
+      sentLightbox.querySelector('.dsh-sel-lightbox-count').textContent)
+    // Esc 只退最内层：灯箱关掉，小窗必须还在
+    var escLightbox = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    document.dispatchEvent(escLightbox)
+    await waitFor(function () { return document.querySelector('.dsh-sel-lightbox').getAttribute('data-open') === '0' }, 1500)
+    check('Esc 只关灯箱，不会顺手把小窗也关了',
+      document.querySelector('.dsh-sel-lightbox').getAttribute('data-open') === '0' &&
+        getComputedStyle(document.querySelector('.dsh-sel-panel')).display !== 'none',
+      'lightbox=' + document.querySelector('.dsh-sel-lightbox').getAttribute('data-open') +
+        ' panel=' + getComputedStyle(document.querySelector('.dsh-sel-panel')).display +
+        ' prevented=' + escLightbox.defaultPrevented)
+    // 关着的灯箱不能继续以 aria-modal 出现：宿主的 Esc 是"有官方模态就让它先退"，
+    // 留一个隐藏的 aria-modal 会让小窗从此关不掉（点 ✕ 之外所有 Esc 都被吞）。
+    check('灯箱关掉后不再占着"模态浮层"这个身份',
+      document.querySelector('[role="dialog"][aria-modal="true"]') === null,
+      String(document.querySelector('[role="dialog"][aria-modal="true"]')))
+
+    // 点第二张图 → 应该从第 2 张开始（下标跟着点击的那张走）；✕ 也能关
+    var bqImgs = document.querySelectorAll('.dsh-sel-bqimg')
+    if (bqImgs[1]) bqImgs[1].click()
+    await waitFor(function () { return document.querySelector('.dsh-sel-lightbox[data-open="1"]') !== null }, 1500)
+    check('点第二张图打开时直接停在第 2 张（不总是从第一张开始）',
+      document.querySelector('.dsh-sel-lightbox-count').textContent === '2 / 2',
+      document.querySelector('.dsh-sel-lightbox-count').textContent)
+    document.querySelector('.dsh-sel-lightbox-x').click()
+    await waitFor(function () { return document.querySelector('.dsh-sel-lightbox').getAttribute('data-open') === '0' }, 1500)
+    check('右上角 ✕ 也能关掉灯箱',
+      document.querySelector('.dsh-sel-lightbox').getAttribute('data-open') === '0',
+      document.querySelector('.dsh-sel-lightbox').getAttribute('data-open'))
+
     var bqFile = document.querySelector('.dsh-sel-bqfile')
     check('文件渲染成一张可下载的卡（扩展名 + 名字 + 大小）',
       !!bqFile && /PDF/.test(bqFile.textContent) && /季度报表\.pdf/.test(bqFile.textContent) && /B/.test(bqFile.textContent) && String(bqFile.getAttribute('href')).indexOf('download=1') > 0,
@@ -1961,7 +2082,7 @@ async function main() {
     var secondAsk = window.__askBodies[0] || {}
     var carried = (secondAsk.history || []).filter(function (turn) { return turn.attachments && turn.attachments.length > 0 })
     check('第二轮把上一轮的附件引用带进了历史（跨轮次仍看得见那张图）',
-      carried.length === 1 && carried[0].attachments.length === 2,
+      carried.length === 1 && carried[0].attachments.length === 3,
       JSON.stringify(secondAsk.history || []).slice(0, 220))
     check('历史里的附件只有引用、没有 base64',
       JSON.stringify(secondAsk.history || []).indexOf('data:') < 0 && JSON.stringify(secondAsk.history || []).length < 3000,
@@ -2107,7 +2228,7 @@ async function main() {
   // 可选截图模式（?shot=attach）：把"小窗 composer 带附件"的**真实渲染**摆出来。
   // 用服务端的一张真 PNG（/thumb.png）当被选中的图片 —— 假字节画不出缩略图，
   // 截出来会是一张破图，那就没法核对了。
-  if (location.search.indexOf('shot=attach') >= 0 || location.search.indexOf('shot=drop') >= 0 || location.search.indexOf('shot=bubble') >= 0) {
+  if (location.search.indexOf('shot=attach') >= 0 || location.search.indexOf('shot=drop') >= 0 || location.search.indexOf('shot=bubble') >= 0 || location.search.indexOf('shot=preview') >= 0) {
     freezeMotion()
     if (panelIsOpen()) hook.close()
     await sleep(150)
@@ -2117,26 +2238,37 @@ async function main() {
     var shotBox = document.querySelector('.dsh-sel-attach')
     window.__attachFail = null
     var pngBytes = new Uint8Array(await (await fetch('/thumb.png')).arrayBuffer())
+    var png2Bytes = new Uint8Array(await (await fetch('/thumb2.png')).arrayBuffer())
     var shotDt = new DataTransfer()
     shotDt.items.add(new File([new Uint8Array([37, 80, 68, 70, 45, 49, 46, 52])], '季度报表.pdf', { type: 'application/pdf' }))
     shotDt.items.add(new File([pngBytes], '截图.png', { type: 'image/png' }))
+    shotDt.items.add(new File([png2Bytes], '第二张.png', { type: 'image/png' }))
     shotDt.items.add(new File([new Uint8Array([123, 34, 97, 34, 58, 49, 125])], 'config.json', { type: 'application/json' }))
     shotInput.files = shotDt.files
     shotInput.dispatchEvent(new Event('change', { bubbles: true }))
     await waitFor(function () {
-      return shotBox.children.length === 3 && Array.prototype.every.call(shotBox.children, function (c) { return c.getAttribute('data-state') === 'done' })
+      return shotBox.children.length === 4 && Array.prototype.every.call(shotBox.children, function (c) { return c.getAttribute('data-state') === 'done' })
     }, 6000)
     document.querySelector('.dsh-sel-askbox').value = '这个报表里哪个季度掉得最多？'
     // 让面板落在窗口里、别贴着边缘（截图好看一点，也不影响任何判定）
     var shotPanel = document.querySelector('.dsh-sel-panel')
     if (shotPanel) { shotPanel.style.left = '24px'; shotPanel.style.top = '18px' }
-    // ?shot=bubble / ?shot=drop 都先发一条带附件的消息，好让气泡里有东西可看
-    if (location.search.indexOf('shot=bubble') >= 0) {
+    // ?shot=bubble / ?shot=drop / ?shot=preview 都先发一条带附件的消息，好让气泡里有东西可看
+    if (location.search.indexOf('shot=bubble') >= 0 || location.search.indexOf('shot=preview') >= 0) {
       var shotAsk = document.querySelector('.dsh-sel-askbox')
       shotAsk.value = '这个图片上是什么呀？'
       shotAsk.dispatchEvent(new Event('input', { bubbles: true }))
       document.querySelector('.dsh-sel-asksend').click()
       await waitFor(function () { return document.querySelector('.dsh-sel-bqimg') !== null }, 8000)
+      await sleep(400)
+    }
+    // ?shot=preview：把灯箱打开 —— 这是"点一下预览"那张真实渲染。
+    // 点第二张：截图里能看到计数 2 / 2 与两侧翻页键（第一张时"上一张"是灰的，信息少一半）。
+    if (location.search.indexOf('shot=preview') >= 0) {
+      var shotBqImgs = document.querySelectorAll('.dsh-sel-bqimg')
+      var shotBqImg = shotBqImgs[1] || shotBqImgs[0]
+      if (shotBqImg) shotBqImg.click()
+      await waitFor(function () { return document.querySelector('.dsh-sel-lightbox[data-open="1"]') !== null }, 3000)
       await sleep(400)
     }
     // ?shot=drop：额外把拖放遮罩点亮（那层只有拖拽时才出现，不摆出来就永远没被看过）
@@ -2184,14 +2316,28 @@ const server = createServer((req, res) => {
   // 回放路由：<img src> 是**浏览器自己**发起的资源请求，走不到 window.fetch 的桩，
   // 所以必须在真服务器上有一条。用真 PNG 回，缩略图才画得出来（假字节 = 破图）。
   if (url === '/selection-explain/api/attachment') {
+    // 回放路由按引用里的文件名给不同的真图：多图预览截图里才看得出"确实换了张图"。
+    var refName = ''
+    try {
+      var raw = new URL(req.url, 'http://x').searchParams.get('ref') || ''
+      refName = JSON.parse(Buffer.from(raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')).name || ''
+    } catch (error) {
+      refName = ''
+    }
     res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' })
-    res.end(readFileSync(resolve(ROOT, 'assets', 'voice.png')))
+    res.end(readFileSync(resolve(ROOT, 'assets', refName === '第二张.png' ? 'translation.png' : 'voice.png')))
     return
   }
   // ?shot=attach 用的真图片：缩略图要能画出东西，截出来才可核对
   if (url === '/thumb.png') {
     res.writeHead(200, { 'content-type': 'image/png' })
     res.end(readFileSync(resolve(ROOT, 'assets', 'voice.png')))
+    return
+  }
+  // 第二张用一张别的真图：多图预览截图里能看出"确实换了一张"，不是同一张重画
+  if (url === '/thumb2.png') {
+    res.writeHead(200, { 'content-type': 'image/png' })
+    res.end(readFileSync(resolve(ROOT, 'assets', 'translation.png')))
     return
   }
   if (url === '/' || url === '/smoke.html') {
@@ -2316,6 +2462,22 @@ try {
     console.log(`=== 截图（消息气泡里的附件 · 真实渲染）：${shotPath} ===`)
   } catch (error) {
     console.log('（气泡截图跳过：' + ((error && error.message) || String(error)) + '）')
+  }
+
+  // 截图（可选）：图片预览灯箱（点气泡里的缩略图之后）
+  try {
+    const shotPath = resolve(ROOT, 'docs', 'attach-preview-real.png')
+    await new Promise((done) => {
+      execFile(
+        chrome,
+        ['--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--window-size=900,680', '--virtual-time-budget=25000', `--screenshot=${shotPath}`, `http://127.0.0.1:${port}/smoke.html?shot=preview`],
+        { encoding: 'utf8', timeout: 90000 },
+        () => done(),
+      )
+    })
+    console.log(`=== 截图（图片预览灯箱 · 真实渲染）：${shotPath} ===`)
+  } catch (error) {
+    console.log('（预览截图跳过：' + ((error && error.message) || String(error)) + '）')
   }
 
   // 截图（可选）：拖放遮罩（拖文件到小窗上时铺的那一层）

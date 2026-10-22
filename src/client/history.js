@@ -1324,13 +1324,47 @@ export function createHistoryController(env) {
     return strip
   }
 
+  /**
+   * 当前消息区里的图片组（按 DOM 顺序 = 从上到下的阅读顺序）。
+   *
+   * 预览时左右翻的就是这一组：用户看到的是"会话里有这些图"，不是"这条消息里有这些图"。
+   * 只算真正渲染出来的缩略图 —— 引用失效被换成说明文字的那些已经不在列表里了。
+   * 返回 { images, index }；index 是点击的这一张在该组里的位置。
+   */
+  function bubbleGallery(anchor) {
+    var log = env.chatLog
+    var links = log && typeof log.querySelectorAll === 'function' ? log.querySelectorAll('.dsh-sel-bqimgwrap') : []
+    var images = []
+    var index = 0
+    for (var i = 0; i < links.length; i += 1) {
+      var wrap = links[i]
+      var thumb = wrap.querySelector ? wrap.querySelector('img') : null
+      var src = String(wrap.getAttribute('href') || (thumb && thumb.getAttribute('src')) || '')
+      if (!src) continue
+      if (wrap === anchor) index = images.length
+      images.push({ src: src, name: (thumb && thumb.alt) || '图片' })
+    }
+    if (images.length === 0 && anchor) images.push({ src: anchor.href, name: '图片' })
+    return { images: images, index: index }
+  }
+
   function attachmentImage(ref) {
     var link = document.createElement('a')
     link.className = 'dsh-sel-bqimgwrap'
     link.href = attachmentUrl('image', ref)
     link.target = '_blank'
     link.rel = 'noreferrer noopener'
-    link.title = '点击查看原图' + (ref.name ? '：' + ref.name : '')
+    link.title = '点击预览' + (ref.name ? '：' + ref.name : '')
+    // 普通左键 → 在当前窗口里开灯箱；⌘/Ctrl/Shift/中键仍按链接语义走（新标签）。
+    // 桌面壳里 target=_blank 常常打不开新标签（或把用户带离这轮对话），
+    // 所以"看清楚这张图"这条主动作不能依赖它。
+    // 同一次预览带上**当前消息区里所有图片**，← / → 就能接着翻。
+    listen(link, 'click', function (event) {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+      if (typeof env.previewImage !== 'function') return
+      event.preventDefault()
+      env.previewImage(bubbleGallery(link))
+    })
     var img = document.createElement('img')
     img.className = 'dsh-sel-bqimg'
     img.src = link.href

@@ -90,6 +90,9 @@ interface HistoryEntry {
 /** Owns history-store state for one plugin instance. */
 export function createHistoryStore(ctx: Context, config: Config, models: ReturnType<typeof createModels>, settingsStore: ReturnType<typeof createSettingsStore>) {
 
+  // Bind this instance once: a pending write must not follow later environment changes.
+  const dataDir = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain')
+
   const history = new Map<string, HistoryEntry>()
 
   let historyLoaded = false
@@ -97,7 +100,7 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
   let historyTimer: ReturnType<typeof setTimeout> | null = null
 
   const historyFile = (): string =>
-    join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain', 'history.json')
+    join(dataDir, 'history.json')
 
   /**
    * 悬浮胶囊"拖到别处"后的位置（用户要求记住，存 host 上 —— 不用 localStorage）。
@@ -105,7 +108,7 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
    * 吸附回右下角（anchor）时会清掉 —— 那是默认位置，不需要记。
    */
   const pillPosFile = (): string =>
-    join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain', 'pill.json')
+    join(dataDir, 'pill.json')
 
   let pillPos: { right: number; y: number } | null = null
 
@@ -140,7 +143,7 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
       pillPosTimer = null
       void (async () => {
         try {
-          await mkdir(join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain'), { recursive: true })
+          await mkdir(dataDir, { recursive: true })
           await writeFile(pillPosFile(), JSON.stringify({ version: 1, position: pillPos }, null, 0), 'utf8')
         } catch (error) {
           ctx.logger?.warn?.(`[${name}] 写入胶囊位置失败：${String((error as Error)?.message ?? error)}`)
@@ -159,7 +162,7 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
    * 尺寸则是用户明确调过的东西，值得跨开窗保留。
    */
   const panelSizeFile = (): string =>
-    join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain', 'panel.json')
+    join(dataDir, 'panel.json')
 
   let panelSize: { w: number; h: number } | null = null
 
@@ -200,7 +203,7 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
       panelSizeTimer = null
       void (async () => {
         try {
-          await mkdir(join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain'), { recursive: true })
+          await mkdir(dataDir, { recursive: true })
           await writeFile(panelSizeFile(), JSON.stringify({ version: 1, size: panelSize }, null, 0), 'utf8')
         } catch (error) {
           ctx.logger?.warn?.(`[${name}] 写入小窗尺寸失败：${String((error as Error)?.message ?? error)}`)
@@ -381,7 +384,7 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
       const entries = [...history.values()].sort((a, b) => b.at - a.at)
       void (async () => {
         try {
-          await mkdir(join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'selection-explain'), { recursive: true })
+          await mkdir(dataDir, { recursive: true })
           await writeFile(historyFile(), JSON.stringify({ version: 1, entries }, null, 0), 'utf8')
         } catch (error) {
           ctx.logger?.warn?.(`[${name}] 写入小窗历史失败：${String((error as Error)?.message ?? error)}`)

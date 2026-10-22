@@ -63,6 +63,41 @@ async function fixture(t, entries = [], options = {}) {
   }
 }
 
+test('pending history writes stay in their original home after the environment changes', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-history-origin-'))
+  const other = await mkdtemp(join(tmpdir(), 'dsh-history-protected-'))
+  const previous = process.env.DSH_HOME
+  const original = JSON.stringify({ version: 1, entries: [snapshot('keep-original', 1)] })
+  let server
+  try {
+    await mkdir(join(other, 'selection-explain'))
+    await writeFile(join(other, 'selection-explain', 'history.json'), original)
+    process.env.DSH_HOME = home
+    const store = createHistoryStore({ logger: { info() {}, warn() {} } }, resolveConfig({}),
+      { loadLeaky: async () => {} }, { loadSettings: async () => {} })
+    server = createServer((req, res) => store.handleHistory(req, res))
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    const response = await fetch('http://127.0.0.1:' + server.address().port, {
+      method: 'POST', body: JSON.stringify({ key: 'fixture-only', text: 'fixture' }),
+    })
+    assert.equal(response.status, 200)
+    await response.text()
+    process.env.DSH_HOME = other
+    await sleep(1100)
+    assert.equal(await readFile(join(other, 'selection-explain', 'history.json'), 'utf8'), original,
+      'a delayed test write must never overwrite a different home')
+    const saved = JSON.parse(await readFile(join(home, 'selection-explain', 'history.json'), 'utf8'))
+    assert.deepEqual(saved.entries.map(entry => entry.key), ['fixture-only'])
+  } finally {
+    if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) }
+    await sleep(1000)
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+    await rm(home, { recursive: true, force: true })
+    await rm(other, { recursive: true, force: true })
+  }
+})
+
 test('after restart, eviction removes the oldest entry even when it was promoted', async t => {
   const { api } = await fixture(t, [
     snapshot('newest', 3), snapshot('middle', 2), snapshot('oldest', 1),

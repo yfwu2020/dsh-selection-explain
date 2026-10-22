@@ -707,6 +707,9 @@ export function createPanelController(env) {
 
   function closePanel() {
     env.closeModelMenu()
+    // 灯箱挂在 layer 上（不是面板里），面板收起时它不会跟着消失 —— 单独收掉，
+    // 否则小窗关了、一整屏暗色预览还盖在页面上。
+    if (typeof env.closeLightbox === 'function') env.closeLightbox()
     // 小窗关掉时设置抽屉也一起收：否则下次开窗会直接停在设置页上
     // （用户上次是在关窗前改的设置，回来想看的是解读，不是设置）。
     // closeSettings 顺手把还没落盘的改动补发掉，不会"关掉就走"丢改动。

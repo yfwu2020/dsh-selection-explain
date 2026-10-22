@@ -42,7 +42,7 @@ try {
   server.closeAllConnections()
   await new Promise(resolve => server.close(resolve))
   // Allow the plugin's debounced writes to complete before removing the fixture.
-  await new Promise(resolve => setTimeout(resolve, 500))
+  await new Promise(resolve => setTimeout(resolve, 1000))
   if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous
   await rm(temp, {recursive: true, force: true})
 }

@@ -1,4 +1,4 @@
-import { FONT, Z_BTN, PILL_BALL_SIZE, PILL_MORPH } from './constants.js'
+import { FONT, Z_BTN, Z_PANEL, PILL_BALL_SIZE, PILL_MORPH } from './constants.js'
 
 // ────────────────────────────── 样式 ──────────────────────────────
 
@@ -287,6 +287,10 @@ export var CSS = [
   'display:grid;place-items:center;color:var(--dsw-alias-label-secondary,inherit)}',
   '.dsh-sel-thumb img{width:100%;height:100%;object-fit:cover;display:block}',
   '.dsh-sel-thumb svg{width:15px;height:15px;opacity:.55}',
+  // 可预览的缩略图：放大镜光标 + 键盘焦点环（它是 role=button，能 Tab 到）
+  '.dsh-sel-thumb[data-preview="1"]{cursor:zoom-in}',
+  '.dsh-sel-thumb[data-preview="1"]:focus-visible{outline:2px solid var(--sel-a1,#0d9488);outline-offset:1px}',
+  '.dsh-sel-thumb[data-preview="1"]:hover img{filter:brightness(1.06)}',
   '.dsh-sel-thumb[data-state="error"]{border-color:color-mix(in srgb,var(--sel-bad,#e5534b) 70%,transparent)}',
   '.dsh-sel-thumb[data-state="error"] svg{opacity:.9;color:var(--sel-bad,#e5534b)}',
   // 转圈 + 不定态进度条：fetch 拿不到上传进度，所以**不假装知道百分比**
@@ -364,6 +368,51 @@ export var CSS = [
   'border-radius:5px;line-height:15px;background:var(--sel-fill,#0f766e);color:var(--sel-fill-fg,#fff)}',
   '.dsh-sel-bqfilename{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:190px}',
   '.dsh-sel-bqfilemeta{flex:0 0 auto;font-size:10.5px;opacity:.6}',
+
+  // ── 图片预览（灯箱）──
+  // 挂在 layer 上、铺满整扇窗口：小窗只有 540 宽，把截图塞回小窗里预览等于没放大。
+  // 层级压过面板与语音卡；pointer-events 必须显式打开 —— layer 自己是穿透的，
+  // 不写这一行的话灯箱看得见却点不着。
+  '.dsh-sel-lightbox{position:fixed;inset:0;z-index:' + String(Z_PANEL + 2) + ';display:none;flex-direction:column;',
+  'align-items:center;justify-content:center;padding:48px 32px 34px;box-sizing:border-box;',
+  'background:rgba(9,11,13,.8);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);',
+  'pointer-events:auto;-webkit-app-region:no-drag;color:#fff;font:400 12.5px/1.5 ' + FONT + '}',
+  '.dsh-sel-lightbox[data-open="1"]{display:flex;animation:dsh-sel-lightfade .12s ease}',
+  '@keyframes dsh-sel-lightfade{from{opacity:0}to{opacity:1}}',
+  // 顶栏：文件名（左，过长省略）+ 关闭键（右）。用 absolute 让它压在图片上方，
+  // 不用再给图片让出一条高度 —— 纵向空间本来就紧张。
+  '.dsh-sel-lightbox-bar{position:absolute;top:0;left:0;right:0;height:44px;display:flex;align-items:center;gap:12px;',
+  'padding:0 14px 0 20px;box-sizing:border-box;background:linear-gradient(rgba(0,0,0,.5),transparent)}',
+  '.dsh-sel-lightbox-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
+  'font-size:12.5px;opacity:.9}',
+  // 计数（3 / 7）：只在多图时出现，等宽数字 —— 翻页时数字不跟着左右抖。
+  '.dsh-sel-lightbox-count{flex:0 0 auto;font-size:11.5px;opacity:.62;font-variant-numeric:tabular-nums;letter-spacing:.3px}',
+  '.dsh-sel-lightbox[data-gallery="0"] .dsh-sel-lightbox-count{display:none}',
+  '.dsh-sel-lightbox-x{flex:0 0 auto;width:28px;height:28px;padding:0;border:0;border-radius:14px;cursor:pointer;',
+  'display:grid;place-items:center;background:rgba(255,255,255,.12);color:#fff;font:inherit;opacity:.9}',
+  '.dsh-sel-lightbox-x:hover{background:rgba(255,255,255,.22);opacity:1}',
+  '.dsh-sel-lightbox-x svg{width:14px;height:14px;display:block}',
+  '.dsh-sel-lightbox-x:focus-visible{outline:2px solid #fff;outline-offset:2px}',
+  // 左右翻页：贴两侧垂直居中，和 ✕ 同一套半透明白底。
+  // 「到头」用 disabled 表示（22% 不透明）—— 小窗/窗口里没有滑动手势，全靠这两个键 + 方向键。
+  '.dsh-sel-lightbox-nav{position:absolute;top:50%;margin-top:-20px;width:40px;height:40px;padding:0;border:0;border-radius:20px;',
+  'display:grid;place-items:center;cursor:pointer;background:rgba(255,255,255,.12);color:#fff;opacity:.9;',
+  'box-shadow:0 4px 16px rgba(0,0,0,.3);transition:background .12s ease,opacity .12s ease}',
+  '.dsh-sel-lightbox-nav:hover:not(:disabled){background:rgba(255,255,255,.24);opacity:1}',
+  '.dsh-sel-lightbox-nav:focus-visible{outline:2px solid #fff;outline-offset:2px}',
+  '.dsh-sel-lightbox-nav:disabled{opacity:.22;cursor:default}',
+  '.dsh-sel-lightbox-nav[data-dir="prev"]{left:12px}',
+  '.dsh-sel-lightbox-nav[data-dir="next"]{right:12px}',
+  '.dsh-sel-lightbox[data-gallery="0"] .dsh-sel-lightbox-nav{display:none}',
+  // 舞台：占满可用高度，图 contain 到最大；点击图片本身不算"点空白"，不会误关。
+  '.dsh-sel-lightbox-stage{flex:1 1 auto;width:100%;min-height:0;display:flex;align-items:center;justify-content:center}',
+  '.dsh-sel-lightbox-img{display:block;max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;',
+  'border-radius:10px;background:rgba(255,255,255,.04);box-shadow:0 24px 64px rgba(0,0,0,.55);cursor:default}',
+  '.dsh-sel-lightbox[data-error="1"] .dsh-sel-lightbox-img{display:none}',
+  '.dsh-sel-lightbox-fail{display:none;margin:0;font-size:12.5px;opacity:.72}',
+  '.dsh-sel-lightbox[data-error="1"] .dsh-sel-lightbox-fail{display:block}',
+  '.dsh-sel-lightbox-hint{margin:0;font-size:11px;opacity:.5}',
+  '@media (prefers-reduced-motion:reduce){.dsh-sel-lightbox[data-open="1"]{animation:none}}',
 
   // 「引用整条」：贴在助手气泡末尾，**平时不出现**（正文优先），鼠标移到这条消息上才浮出来。
   // 键盘 Tab 也能到（:focus-visible 同样点亮），触屏上另有浮标那条路。
