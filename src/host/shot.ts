@@ -4,23 +4,29 @@
  * 触发方式：**DSH 自己的快捷键**（客户端 `ctx.shortcuts` 注册 ⌘⇧X）打一个 `POST /shot/start`。
  * 所以这里不监听任何东西 —— 没有目录监视、没有系统通知、没有轮询文件。
  *
- * 一次截图的生命周期：
- *   ① `screencapture -i -x <region>`：系统十字准星，用户框完**命令即退出** —— 这就是精确的完成信号；
+ * 一次截图的生命周期（按取景范围分流）：
+ *   ① `screencapture -i -x <region>`：系统十字准星，用户框完**命令即退出** —— 精确的完成信号；
  *   ② 从这张图的扩展属性里读框的矩形（`kMDItemScreenCaptureGlobalRect`，全局点坐标）；
- *   ③ 查窗口列表，找到"你框的那块属于哪个窗口"，整窗截下来（`screencapture -l <id> -o`）；
- *   ④ 算出选区在**窗口图**里的相对位置，交给客户端去画红框（画图交给浏览器 canvas，
- *      host 不需要任何图像库）。
+ *   ③ 按设置里的 `scope` 决定最终发给模型的图：
+ *        selection → region 文件本身就是最终图（零额外截图）
+ *        margin    → 选区向四周外扩 N pt，裁到选区中心所在的那块屏，再截一次
+ *        window    → 查窗口列表，整窗截下来（`screencapture -l`），客户端量内容区校正红框
+ *        screen    → 选区中心所在的那块屏整屏截下来
+ *   ④ 算出选区在最终图里的相对位置，交给客户端去画红框（画图交给浏览器 canvas，
+ *      host 不需要任何图像库）。仅选区不画框，图就是选区。
  *
- * 为什么整窗：用户要的是"模型既看得到细节，也看得到它在哪个界面里"，而且只要**一张图**。
+ * 为什么红色框在客户端画：附件服务最终会把图规范化（长边 2048）。如果 host 先画再压，
+ * 框线会跟着被缩放；客户端在**原图**上画、再上传，框线粗细和位置都准。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { spawn, execFile } from 'node:child_process'
-import { readFile, mkdir, rm, stat } from 'node:fs/promises'
+import { readFile, mkdir, rm, stat, chmod, readdir } from 'node:fs/promises'
 import { tmpdir, platform } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { sendJson, readBody } from './http.js'
+import type { Config } from './config.js'
 
 /** 截图二进制（系统自带）。 */
 const CAPTURE = '/usr/sbin/screencapture'
@@ -35,6 +41,19 @@ export function resolveWindowProbe(): string {
   return join(here, '..', 'native', 'window-list')
 }
 
+/** 取景范围，从大到小：全屏 → 整窗 → 选区 + 留白 → 仅选区。 */
+export type ShotScope = 'screen' | 'window' | 'margin' | 'selection'
+/** 触发时小窗是开着（直接进输入框）还是没开（弹语音卡）。 */
+export type ShotMode = 'card' | 'panel'
+
+const SHOT_SCOPES: ShotScope[] = ['screen', 'window', 'margin', 'selection']
+
+/** 超出这个尺寸的选区留白没有意义，且会把截图撑得很大。 */
+const MAX_MARGIN_PT = 400
+
+/** 只保留最近几张临时图：客户端取图后就不需要旧文件了，但留几张给重试 / 诊断。 */
+const KEEP_SHOTS = 3
+
 export interface ShotRect {
   x: number
   y: number
@@ -45,11 +64,16 @@ export interface ShotRect {
 export interface ShotPending {
   id: string
   at: number
-  /** 整窗截图的文件名（落在临时目录，随下一次截图覆盖）。 */
+  /** 这次用的取景范围 / 触发模式（客户端据此决定画不画框、走卡片还是附件）。 */
+  scope: ShotScope
+  mode: ShotMode
+  /** 图里要不要画红框（选区之外还有内容时为 true；仅选区恒为 false）。 */
+  frame: boolean
+  /** 最终图的文件名（落在临时目录，按 shot 序号独立命名）。 */
   imagePath: string
   /** 选区在**这张图里**的位置（像素坐标，可以直接拿去画框）。 */
   rect: ShotRect
-  /** 窗口在屏幕上的位置（点）。 */
+  /** 截图覆盖的范围（点）：整窗 / 外扩后的选区 / 整屏；仅选区时就是选区本身。 */
   windowRect: ShotRect
   /** 选区在屏幕上的位置（点）。 */
   selectionRect: ShotRect
@@ -92,13 +116,27 @@ const state: ShotState = {
 /** 长轮询的等待者。 */
 const waiters: Array<(shot: ShotPending | null) => void> = []
 
+/** 每次截图递增；临时文件名与事件 id 都用它，避免第二张图覆盖第一张。 */
 let seq = 0
+
+/** 窗口列表探针是否可用（懒探测一次）。截图范围不依赖它时不会被它拦住。 */
 let probeChecked = false
-/** 框选期间预热的窗口列表：松手时就不用再等这 74ms。 */
+let probeReady = false
+
+/** 框选期间预热的窗口列表 / 显示器列表：松手时就不用再等这几十毫秒。 */
 let prefetchedWindows: WinInfo[] | null = null
+let prefetchedDisplays: DisplayInfo[] | null = null
 
 function tmpDir(): string {
   return join(tmpdir(), 'dsh-selection-explain')
+}
+
+/** 临时目录只给当前用户读写：截图里可能有敏感内容。 */
+async function ensureTmpDir(): Promise<string> {
+  const dir = tmpDir()
+  await mkdir(dir, { recursive: true, mode: 0o700 })
+  await chmod(dir, 0o700).catch(() => {})
+  return dir
 }
 
 function run(cmd: string, args: string[], timeout = 10_000): Promise<string> {
@@ -114,19 +152,25 @@ export function shotSupported(): boolean {
   return platform() === 'darwin'
 }
 
-/** 探针在不在（编不出来就整体降级，不影响其它功能）。 */
+/** 平台可用性（不影响窗口探针的结论）。 */
+function ensureCaptureAvailable(): boolean {
+  const ok = shotSupported()
+  state.available = ok
+  state.reason = ok ? 'ok' : 'not-macos'
+  return ok
+}
+
+/** 探针在不在（编不出来就只在「整窗」这一档降级，不影响选区/留白/全屏）。 */
 async function probeAvailable(): Promise<boolean> {
-  if (probeChecked) return state.available
+  if (probeChecked) return probeReady
   probeChecked = true
   if (!shotSupported()) {
-    state.reason = 'not-macos'
+    probeReady = false
     return false
   }
   const probe = resolveWindowProbe()
-  const ok = await stat(probe).then((s) => s.size > 0).catch(() => false)
-  state.available = ok
-  state.reason = ok ? 'ok' : 'probe-missing'
-  return ok
+  probeReady = await stat(probe).then((s) => s.size > 0).catch(() => false)
+  return probeReady
 }
 
 interface WinInfo {
@@ -139,6 +183,17 @@ interface WinInfo {
   owner: string
 }
 
+interface DisplayInfo {
+  id: number
+  x: number
+  y: number
+  w: number
+  h: number
+  /** `screencapture -D` 的编号（1 = 主显示器）。 */
+  index: number
+  main: boolean
+}
+
 async function listWindows(): Promise<WinInfo[]> {
   const raw = await run(resolveWindowProbe(), [])
   if (!raw.trim()) return []
@@ -148,6 +203,62 @@ async function listWindows(): Promise<WinInfo[]> {
   } catch {
     return []
   }
+}
+
+/** 活跃显示器的全局矩形（点）与像素尺寸。 */
+async function listDisplays(): Promise<DisplayInfo[]> {
+  const raw = await run(resolveWindowProbe(), ['--displays'])
+  if (!raw.trim()) return []
+  try {
+    const arr = JSON.parse(raw) as Array<Partial<DisplayInfo>>
+    return Array.isArray(arr)
+      ? arr
+          .filter((item) => Number.isFinite(item?.x) && Number.isFinite(item?.y) && Number.isFinite(item?.w) && Number.isFinite(item?.h))
+          .map((item) => ({
+            id: Number(item.id) || 0,
+            x: Number(item.x),
+            y: Number(item.y),
+            w: Number(item.w),
+            h: Number(item.h),
+            index: Number(item.index) || 0,
+            main: item.main === true || Number(item.main) === 1,
+          }))
+      : []
+  } catch {
+    return []
+  }
+}
+
+function intersectArea(a: ShotRect, b: { x: number; y: number; w: number; h: number }): number {
+  const left = Math.max(a.x, b.x)
+  const top = Math.max(a.y, b.y)
+  const right = Math.min(a.x + a.width, b.x + b.w)
+  const bottom = Math.min(a.y + a.height, b.y + b.h)
+  return Math.max(0, right - left) * Math.max(0, bottom - top)
+}
+
+/**
+ * 选区中心落在哪块屏。
+ *
+ * 用中心而不是"交集最大"：选区跨屏时，按中心裁到一块屏才能保证**统一缩放**
+ * （混合 DPI 下 `screencapture -R` 跨屏的像素比例不是线性的）。
+ */
+function pickDisplay(displays: DisplayInfo[], rect: ShotRect): DisplayInfo | null {
+  if (displays.length === 0) return null
+  const cx = rect.x + rect.width / 2
+  const cy = rect.y + rect.height / 2
+  const hits = displays.filter((d) => cx >= d.x && cx <= d.x + d.w && cy >= d.y && cy <= d.y + d.h)
+  if (hits.length > 0) return hits[0]
+  const sorted = displays.slice().sort((a, b) => intersectArea(rect, b) - intersectArea(rect, a))
+  return sorted[0] || displays.find((d) => d.main) || null
+}
+
+function clampRect(rect: ShotRect, box: { x: number; y: number; w: number; h: number }): ShotRect {
+  const left = Math.max(rect.x, box.x)
+  const top = Math.max(rect.y, box.y)
+  const right = Math.min(rect.x + rect.width, box.x + box.w)
+  const bottom = Math.min(rect.y + rect.height, box.y + box.h)
+  return { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) }
 }
 
 /**
@@ -283,87 +394,99 @@ function pickWindow(wins: WinInfo[], rect: ShotRect): WinInfo | null {
   return candidates[0] || null
 }
 
+interface CropBox {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+interface CapturedDisplay {
+  path: string
+  size: { w: number; h: number }
+  scale: number
+}
+
 /**
- * 收尾：**先截图，后出 UI**。
+ * 截一整块显示器（`screencapture -D`）。
  *
- * ⚠️ 顺序不能反：UI 一旦画出来，`screencapture -l` 就会把它截进图里（框、卡片都算页面内容）。
- * 所以松手后先把整窗图拿到（~250ms），再发事件让客户端画东西。
- *
- * 时间线（实测）：
- *   xattr 读矩形 19ms → 整窗截图 223ms → 算 pad → 发事件（客户端 0 延迟出框）
- * 窗口列表（74ms）在**框选期间**就预热好了，不占这段。
+ * 为什么不用 `-R`：副屏在主屏左边时坐标是负的，`screencapture -R` 直接
+ * "could not create image from rect"；屏幕锁定时 `-R` 也会失败，而 `-D` 仍然可用。
+ * 所以统一按显示器截，再用 sips 裁到需要的矩形。
  */
-async function finish(regionFile: string): Promise<void> {
-  const rect = await rectFromXattr(regionFile)
-  if (!rect) {
-    state.lastError = 'no-rect'
-    state.capturing = false
-    return
+async function captureDisplay(
+  display: DisplayInfo,
+  options: ShotOptions,
+  fileName: string,
+): Promise<CapturedDisplay | null> {
+  const dir = await ensureTmpDir()
+  const path = join(dir, fileName)
+  const index = display.index > 0 ? display.index : display.main ? 1 : 2
+  await run(CAPTURE, ['-x', '-D', String(index), path])
+  const size = await pngSize(path)
+  if (!size || display.w <= 0 || display.h <= 0) {
+    await rm(path, { force: true }).catch(() => {})
+    return null
   }
+  // 截错屏时宽高比通常对不上：宁可退回选区，也不要把红框画到一张不相干的图上
+  const expected = display.w / display.h
+  const actual = size.w / size.h
+  if (Math.abs(actual - expected) > expected * 0.02) {
+    await rm(path, { force: true }).catch(() => {})
+    return null
+  }
+  return { path, size, scale: size.w / display.w }
+}
 
-  seq += 1
+/** 把显示器图按像素矩形裁出来（sips 的 --cropOffset 是 top left）。 */
+async function cropPng(
+  source: string,
+  box: CropBox,
+  size: { w: number; h: number },
+  out: string,
+): Promise<CropBox | null> {
+  const left = Math.max(0, Math.min(size.w - 1, Math.round(box.left)))
+  const top = Math.max(0, Math.min(size.h - 1, Math.round(box.top)))
+  const width = Math.max(1, Math.min(size.w - left, Math.round(box.width)))
+  const height = Math.max(1, Math.min(size.h - top, Math.round(box.height)))
+  await run(
+    '/usr/bin/sips',
+    ['-c', String(height), String(width), '--cropOffset', String(top), String(left), source, '--out', out],
+    20_000,
+  )
+  const cropped = await pngSize(out)
+  return cropped ? { left, top, width: cropped.w, height: cropped.h } : null
+}
+
+/** 截一块选区本身（没有 region 文件时的兜底 / 自动化测试用）。 */
+async function captureSelectionToFile(
+  selection: ShotRect,
+  options: ShotOptions,
+  fileName: string,
+): Promise<{ path: string; size: { w: number; h: number }; scale: number } | null> {
+  const displays = prefetchedDisplays || (await listDisplays())
+  prefetchedDisplays = null
+  const display = pickDisplay(displays, selection)
+  if (!display) return null
+  const dir = await ensureTmpDir()
+  const captured = await captureDisplay(display, options, `display-${options.seq}.png`)
+  if (!captured) return null
+  const box = {
+    left: (selection.x - display.x) * captured.scale,
+    top: (selection.y - display.y) * captured.scale,
+    width: selection.width * captured.scale,
+    height: selection.height * captured.scale,
+  }
+  const path = join(dir, fileName)
+  const crop = await cropPng(captured.path, box, captured.size, path)
+  await rm(captured.path, { force: true }).catch(() => {})
+  if (!crop) return null
+  return { path, size: { w: crop.width, h: crop.height }, scale: captured.scale }
+}
+
+async function publish(shot: ShotPending, shotSeq: number, note = ''): Promise<void> {
   state.total += 1
-  const dir = tmpDir()
-  const imagePath = join(dir, 'window.png')
-
-  let windowRect = rect
-  let scale = 2
-  let owner = ''
-  let pad = { x: 0, y: 0 }
-
-  try {
-    const wins = prefetchedWindows || (await listWindows())
-    const win = pickWindow(wins, rect)
-    // 预取的列表只用来**选窗口 id**；用完即作废，免得陈旧尺寸流到下一次
-    prefetchedWindows = null
-    if (win) {
-      // ⚠️ 不要加 `-o`：文档说它"不截窗口阴影"，实测**反过来** ——
-      // 加了是 3840×2224（多 64px 阴影），不加才是 3840×2160（正好窗口的 2 倍）。
-      // 阴影上下不对称，按对半分会让红框整体偏（用户实测：向上偏移）。
-      await run(CAPTURE, ['-l', String(win.id), '-x', imagePath])
-      const size = await pngSize(imagePath)
-      if (size) {
-        scale = size.w / win.w
-        windowRect = { x: win.x, y: win.y, width: win.w, height: win.h }
-        owner = win.owner
-        // 正常情况 size 应当正好等于窗口的倍数（pad=0）；万一系统还是带了阴影，
-        // 就按"多出来的两半分"兜底 —— 但优先保证不触发这条。
-        pad = {
-          x: Math.max(0, Math.round((size.w - win.w * scale) / 2)),
-          y: Math.max(0, Math.round((size.h - win.h * scale) / 2)),
-        }
-      }
-    }
-    if (!owner) {
-      // 没找到窗口：退化成"选区本身"那张图（不假装有上下文）
-      await run('/bin/cp', [regionFile, imagePath])
-      const size = await pngSize(imagePath)
-      scale = size && rect.width > 0 ? size.w / rect.width : 2
-      windowRect = rect
-      pad = { x: 0, y: 0 }
-      state.lastError = 'no-window'
-    }
-  } catch (error) {
-    state.lastError = `finish-failed: ${String((error as Error)?.message ?? error)}`
-  }
-
-  const shot: ShotPending = {
-    id: `shot-${seq}`,
-    at: Date.now(),
-    imagePath,
-    rect: {
-      x: Math.round(pad.x + (rect.x - windowRect.x) * scale),
-      y: Math.round(pad.y + (rect.y - windowRect.y) * scale),
-      width: Math.round(rect.width * scale),
-      height: Math.round(rect.height * scale),
-    },
-    pad,
-    windowRect,
-    selectionRect: rect,
-    scale,
-    owner,
-    ready: true,
-  }
+  state.lastError = note
   state.pending = shot
   state.lastShot = shot
   state.capturing = false
@@ -371,25 +494,331 @@ async function finish(regionFile: string): Promise<void> {
     const fn = waiters.shift()
     if (fn) fn(shot)
   }
+  // 旧图已经没用了：客户端取图后就不再回头，保留最近几张只为重试与诊断
+  void pruneShots(shotSeq)
+}
+
+/** 删除 seq 之前的旧临时图（只删本插件自己的命名，不动目录里的其它东西）。 */
+async function pruneShots(currentSeq: number): Promise<void> {
+  try {
+    const dir = tmpDir()
+    const names = await readdir(dir)
+    for (const name of names) {
+      const match = /^(?:region|shot|display)-(\d+)\.png$/.exec(name)
+      if (!match) continue
+      if (Number(match[1]) <= currentSeq - KEEP_SHOTS) {
+        await rm(join(dir, name), { force: true }).catch(() => {})
+      }
+    }
+  } catch {
+    /* 清不掉不影响功能 */
+  }
+}
+
+interface ShotOptions {
+  seq: number
+  mode: ShotMode
+  scope: ShotScope
+  margin: number
+}
+
+/**
+ * 仅选区：框选落下的 region 文件**就是**最终图。
+ *
+ * 不需要窗口列表、不需要 xattr、不需要第二次截图；客户端也不用画布。
+ */
+async function finishSelection(
+  regionFile: string,
+  selection: ShotRect | null,
+  options: ShotOptions,
+  note = '',
+): Promise<void> {
+  const size = await pngSize(regionFile)
+  if (!size) {
+    state.lastError = 'image-missing'
+    state.capturing = false
+    return
+  }
+  const sel = selection || { x: 0, y: 0, width: size.w, height: size.h }
+  const scale = sel.width > 0 ? size.w / sel.width : 1
+  const shot: ShotPending = {
+    id: `shot-${options.seq}`,
+    at: Date.now(),
+    scope: 'selection',
+    mode: options.mode,
+    frame: false,
+    imagePath: regionFile,
+    rect: { x: 0, y: 0, width: size.w, height: size.h },
+    windowRect: sel,
+    selectionRect: sel,
+    scale,
+    pad: { x: 0, y: 0 },
+    owner: '',
+    ready: true,
+  }
+  await publish(shot, options.seq, note)
+}
+
+/** 回退到「仅选区」：有 region 就用它，没有就现截一块。 */
+async function fallbackSelection(
+  selection: ShotRect,
+  options: ShotOptions,
+  regionFile: string | null,
+  note: string,
+): Promise<void> {
+  if (regionFile) return finishSelection(regionFile, selection, options, note)
+  const captured = await captureSelectionToFile(selection, options, `region-${options.seq}.png`)
+  if (captured) return finishSelection(captured.path, selection, options, note)
+  state.lastError = note || 'selection-failed'
+  state.capturing = false
+}
+
+/** 选区 + 留白：外扩后裁到选区中心所在的那块屏，再从整屏图里裁出来。 */
+async function finishMargin(
+  selection: ShotRect,
+  options: ShotOptions,
+  regionFile: string | null,
+  note = '',
+): Promise<void> {
+  const margin = Math.max(0, Math.min(MAX_MARGIN_PT, Math.round(options.margin)))
+  if (margin <= 0) return fallbackSelection(selection, options, regionFile, note)
+
+  let expanded: ShotRect = {
+    x: selection.x - margin,
+    y: selection.y - margin,
+    width: selection.width + margin * 2,
+    height: selection.height + margin * 2,
+  }
+  const displays = prefetchedDisplays || (await listDisplays())
+  prefetchedDisplays = null
+  const display = pickDisplay(displays, selection)
+  if (!display) return fallbackSelection(selection, options, regionFile, note || 'no-display')
+  expanded = clampRect(expanded, display)
+  if (expanded.width < 2 || expanded.height < 2) {
+    return fallbackSelection(selection, options, regionFile, note || 'margin-clipped')
+  }
+
+  const captured = await captureDisplay(display, options, `display-${options.seq}.png`)
+  if (!captured) {
+    return fallbackSelection(selection, options, regionFile, note || 'margin-capture-failed')
+  }
+  const scale = captured.scale
+  const dir = await ensureTmpDir()
+  const imagePath = join(dir, `shot-${options.seq}.png`)
+  const crop = await cropPng(
+    captured.path,
+    {
+      left: (expanded.x - display.x) * scale,
+      top: (expanded.y - display.y) * scale,
+      width: expanded.width * scale,
+      height: expanded.height * scale,
+    },
+    captured.size,
+    imagePath,
+  )
+  await rm(captured.path, { force: true }).catch(() => {})
+  if (!crop) {
+    return fallbackSelection(selection, options, regionFile, note || 'margin-crop-failed')
+  }
+
+  const shot: ShotPending = {
+    id: `shot-${options.seq}`,
+    at: Date.now(),
+    scope: 'margin',
+    mode: options.mode,
+    frame: true,
+    imagePath,
+    rect: {
+      // 用裁切后的实际像素原点，避免 sips 取整带来的 1px 偏移
+      x: Math.round((selection.x - display.x) * scale) - crop.left,
+      y: Math.round((selection.y - display.y) * scale) - crop.top,
+      width: Math.round(selection.width * scale),
+      height: Math.round(selection.height * scale),
+    },
+    windowRect: expanded,
+    selectionRect: selection,
+    scale,
+    pad: { x: 0, y: 0 },
+    owner: '',
+    ready: true,
+  }
+  await publish(shot, options.seq, note)
+}
+
+/** 全屏：选区中心所在的那块显示器整屏截下来。 */
+async function finishScreen(
+  selection: ShotRect,
+  options: ShotOptions,
+  regionFile: string | null,
+): Promise<void> {
+  const displays = prefetchedDisplays || (await listDisplays())
+  prefetchedDisplays = null
+  const display = pickDisplay(displays, selection)
+  if (!display) {
+    state.lastError = 'no-display'
+    return finishMargin(selection, options, regionFile, 'no-display')
+  }
+
+  const captured = await captureDisplay(display, options, `shot-${options.seq}.png`)
+  if (!captured) {
+    state.lastError = 'screen-capture-failed'
+    return finishMargin(selection, options, regionFile, 'screen-capture-failed')
+  }
+  const scale = captured.scale
+  const shot: ShotPending = {
+    id: `shot-${options.seq}`,
+    at: Date.now(),
+    scope: 'screen',
+    mode: options.mode,
+    frame: true,
+    imagePath: captured.path,
+    rect: {
+      x: Math.round((selection.x - display.x) * scale),
+      y: Math.round((selection.y - display.y) * scale),
+      width: Math.round(selection.width * scale),
+      height: Math.round(selection.height * scale),
+    },
+    windowRect: { x: display.x, y: display.y, width: display.w, height: display.h },
+    selectionRect: selection,
+    scale,
+    pad: { x: 0, y: 0 },
+    owner: '',
+    ready: true,
+  }
+  await publish(shot, options.seq)
+}
+
+/** 整窗：找窗口、整窗截图；找不到或探针缺失时退到「选区 + 留白」。 */
+async function finishWindow(
+  regionFile: string,
+  selection: ShotRect,
+  options: ShotOptions,
+): Promise<void> {
+  if (!(await probeAvailable())) {
+    state.lastError = 'probe-missing'
+    return finishMargin(selection, options, regionFile, 'probe-missing')
+  }
+
+  const wins = prefetchedWindows || (await listWindows())
+  prefetchedWindows = null
+  const win = pickWindow(wins, selection)
+  if (!win) {
+    state.lastError = 'no-window'
+    return finishMargin(selection, options, regionFile, 'no-window')
+  }
+
+  const dir = await ensureTmpDir()
+  const imagePath = join(dir, `shot-${options.seq}.png`)
+  // ⚠️ 不要加 `-o`：文档说它"不截窗口阴影"，实测**反过来** ——
+  // 加了是 3840×2224（多 64px 阴影），不加才是 3840×2160（正好窗口的 2 倍）。
+  // 阴影上下不对称，按对半分会让红框整体偏（用户实测：向上偏移）。
+  await run(CAPTURE, ['-l', String(win.id), '-x', imagePath])
+  const size = await pngSize(imagePath)
+  if (!size) {
+    state.lastError = 'window-capture-failed'
+    return finishMargin(selection, options, regionFile, 'window-capture-failed')
+  }
+
+  const scale = win.w > 0 ? size.w / win.w : 2
+  const windowRect: ShotRect = { x: win.x, y: win.y, width: win.w, height: win.h }
+  // 正常情况 size 应当正好等于窗口的倍数（pad=0）；万一系统还是带了阴影，
+  // 就按"多出来的两半分"兜底 —— 客户端的 alpha 内容区探测会再校正一次。
+  const pad = {
+    x: Math.max(0, Math.round((size.w - win.w * scale) / 2)),
+    y: Math.max(0, Math.round((size.h - win.h * scale) / 2)),
+  }
+  const shot: ShotPending = {
+    id: `shot-${options.seq}`,
+    at: Date.now(),
+    scope: 'window',
+    mode: options.mode,
+    frame: true,
+    imagePath,
+    rect: {
+      x: Math.round(pad.x + (selection.x - windowRect.x) * scale),
+      y: Math.round(pad.y + (selection.y - windowRect.y) * scale),
+      width: Math.round(selection.width * scale),
+      height: Math.round(selection.height * scale),
+    },
+    windowRect,
+    selectionRect: selection,
+    scale,
+    pad,
+    owner: win.owner,
+    ready: true,
+  }
+  await publish(shot, options.seq)
+}
+
+/**
+ * 用户松手后的分派。
+ *
+ * 顺序仍然刻意：**先出图，后发事件**。UI 一旦画出来，`screencapture` 就会把它截进去
+ * （框、卡片都算页面内容）。仅选区的图在框选时就已经落好了，没有这个顾虑。
+ */
+async function finishInteractive(
+  regionFile: string,
+  options: ShotOptions,
+  knownRect?: ShotRect,
+): Promise<void> {
+  let selection = knownRect || null
+  if (!selection && options.scope !== 'selection') {
+    selection = await rectFromXattr(regionFile)
+  }
+  if (options.scope === 'selection') {
+    const rect = selection || (await rectFromXattr(regionFile))
+    return finishSelection(regionFile, rect, options)
+  }
+  if (!selection) {
+    state.lastError = 'no-rect'
+    return finishSelection(regionFile, null, options, 'no-rect')
+  }
+  switch (options.scope) {
+    case 'margin':
+      return finishMargin(selection, options, regionFile)
+    case 'screen':
+      return finishScreen(selection, options, regionFile)
+    case 'window':
+    default:
+      return finishWindow(regionFile, selection, options)
+  }
 }
 
 /** 起一次交互式框选。 */
-async function startInteractive(): Promise<boolean> {
-  if (!(await probeAvailable())) return false
+async function startInteractive(options: Omit<ShotOptions, 'seq'>): Promise<boolean> {
+  if (!ensureCaptureAvailable()) return false
   if (state.capturing) return false
   state.capturing = true
-  const dir = tmpDir()
-  await mkdir(dir, { recursive: true })
-  const regionFile = join(dir, 'region.png')
+  const shotSeq = ++seq
+  const opts: ShotOptions = { ...options, seq: shotSeq }
+  let dir: string
+  try {
+    dir = await ensureTmpDir()
+  } catch (error) {
+    state.lastError = `tmp-failed: ${String((error as Error)?.message ?? error)}`
+    state.capturing = false
+    return false
+  }
+  const regionFile = join(dir, `region-${shotSeq}.png`)
   await rm(regionFile, { force: true }).catch(() => {})
 
-  // 和框选并行：用户拖框那一两秒里，窗口列表早就拿好了
+  // 和框选并行：用户拖框那一两秒里，窗口 / 显示器列表早就拿好了
   prefetchedWindows = null
-  void listWindows()
-    .then((wins) => {
-      prefetchedWindows = wins
-    })
-    .catch(() => {})
+  prefetchedDisplays = null
+  if (opts.scope === 'window') {
+    void listWindows()
+      .then((wins) => {
+        prefetchedWindows = wins
+      })
+      .catch(() => {})
+  }
+  if (opts.scope !== 'selection') {
+    void listDisplays()
+      .then((displays) => {
+        prefetchedDisplays = displays
+      })
+      .catch(() => {})
+  }
 
   const child = spawn(CAPTURE, ['-i', '-x', regionFile], { stdio: 'ignore' })
   const timer = setTimeout(() => {
@@ -409,9 +838,11 @@ async function startInteractive(): Promise<boolean> {
     clearTimeout(timer)
     // 退出码非 0 / 没有文件 = 用户按了 Esc 取消
     void stat(regionFile)
-      .then((s) => (s.size > 0 ? finish(regionFile) : Promise.resolve()))
+      .then((s) => (s.size > 0 ? finishInteractive(regionFile, opts) : Promise.resolve()))
       .then(() => {
         state.capturing = false
+        prefetchedWindows = null
+        prefetchedDisplays = null
       })
       .catch(() => {
         state.capturing = false
@@ -421,35 +852,67 @@ async function startInteractive(): Promise<boolean> {
 }
 
 /** 开发/自动化用：跳过交互式框选，直接按给定矩形截一块再走同一条收尾流程。 */
-async function startWithRect(rect: ShotRect): Promise<boolean> {
-  if (!(await probeAvailable())) return false
+async function startWithRect(rect: ShotRect, options: Omit<ShotOptions, 'seq'>): Promise<boolean> {
+  if (!ensureCaptureAvailable()) return false
   if (state.capturing) return false
   state.capturing = true
-  const dir = tmpDir()
-  await mkdir(dir, { recursive: true })
-  const regionFile = join(dir, 'region.png')
-  await rm(regionFile, { force: true }).catch(() => {})
-  await run(CAPTURE, [
-    '-x',
-    '-R',
-    `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.width)},${Math.round(rect.height)}`,
-    regionFile,
-  ])
-  await finish(regionFile)
+  const shotSeq = ++seq
+  const opts: ShotOptions = { ...options, seq: shotSeq }
+  // 自动化路径也用"整屏 + 裁切"，与真实框选走出同一套坐标：不再依赖 `-R`
+  const captured = await captureSelectionToFile(rect, opts, `region-${shotSeq}.png`)
+  if (!captured) {
+    state.capturing = false
+    state.lastError = 'capture-failed'
+    return false
+  }
+  await finishInteractive(captured.path, opts, rect)
   state.capturing = false
   return true
 }
 
-/** `POST /api/shot/start` —— 开始一次截图（可带 `?rect=x,y,w,h` 供测试）。 */
-export async function handleShotStart(req: IncomingMessage, res: ServerResponse): Promise<void> {
+const DEFAULT_SHOT_CONFIG: Pick<Config, 'shotCardScope' | 'shotPanelScope' | 'shotMargin'> = {
+  shotCardScope: 'window',
+  shotPanelScope: 'selection',
+  shotMargin: 48,
+}
+
+function resolveOptions(
+  config: Pick<Config, 'shotCardScope' | 'shotPanelScope' | 'shotMargin'>,
+  mode: ShotMode,
+  url: URL,
+): Omit<ShotOptions, 'seq'> {
+  const override = url.searchParams.get('scope')
+  const stored = mode === 'panel' ? config.shotPanelScope : config.shotCardScope
+  const raw = override && SHOT_SCOPES.includes(override as ShotScope) ? override : stored
+  const scope = SHOT_SCOPES.includes(raw as ShotScope) ? (raw as ShotScope) : mode === 'panel' ? 'selection' : 'window'
+  const marginParam = url.searchParams.get('margin')
+  const marginValue = marginParam === null ? NaN : Number(marginParam)
+  const fallback = Number.isFinite(config.shotMargin) ? config.shotMargin : 48
+  const margin = Number.isFinite(marginValue)
+    ? Math.max(0, Math.min(MAX_MARGIN_PT, Math.round(marginValue)))
+    : Math.max(0, Math.min(MAX_MARGIN_PT, Math.round(fallback)))
+  return { mode, scope, margin }
+}
+
+/** `POST /api/shot/start` —— 开始一次截图（可带 `?rect=x,y,w,h&scope=…` 供测试）。 */
+export async function handleShotStart(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: Pick<Config, 'shotCardScope' | 'shotPanelScope' | 'shotMargin'> = DEFAULT_SHOT_CONFIG,
+): Promise<void> {
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { ok: false, reason: 'method-not-allowed' })
+    return
+  }
   const url = new URL(req.url || '/', 'http://localhost')
   const rectParam = url.searchParams.get('rect')
+  const mode: ShotMode = url.searchParams.get('mode') === 'panel' ? 'panel' : 'card'
   try {
     await readBody(req, 64 * 1024).catch(() => '')
   } catch {
     /* 没有 body 也无所谓 */
   }
-  if (!(await probeAvailable())) {
+  if (!ensureCaptureAvailable()) {
     sendJson(res, 200, { ok: false, reason: state.reason })
     return
   }
@@ -457,16 +920,17 @@ export async function handleShotStart(req: IncomingMessage, res: ServerResponse)
     sendJson(res, 200, { ok: false, reason: 'busy' })
     return
   }
+  const options = resolveOptions(config, mode, url)
   if (rectParam) {
     const n = rectParam.split(',').map(Number)
-    if (n.length === 4 && n.every(Number.isFinite)) {
-      const started = await startWithRect({ x: n[0], y: n[1], width: n[2], height: n[3] })
-      sendJson(res, 200, { ok: started, test: true })
+    if (n.length === 4 && n.every(Number.isFinite) && n[2] > 0 && n[3] > 0) {
+      const started = await startWithRect({ x: n[0], y: n[1], width: n[2], height: n[3] }, options)
+      sendJson(res, 200, { ok: started, test: true, mode, scope: options.scope, margin: options.margin })
       return
     }
   }
-  const started = await startInteractive()
-  sendJson(res, 200, { ok: started })
+  const started = await startInteractive(options)
+  sendJson(res, 200, { ok: started, mode, scope: options.scope, margin: options.margin })
 }
 
 /** `GET /api/shot/pending` —— 长轮询，等下一次截图结果（最多 25 秒）。 */
@@ -492,7 +956,7 @@ export function handleShotPending(_req: IncomingMessage, res: ServerResponse): v
   waiters.push(done)
 }
 
-/** `GET /api/shot/image?id=` —— 把整窗图按字节回给客户端（不进 JSON，避免几 MB 的 base64）。 */
+/** `GET /api/shot/image?id=` —— 把图按字节回给客户端（不进 JSON，避免几 MB 的 base64）。 */
 export async function handleShotImage(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url || '/', 'http://localhost')
   const id = url.searchParams.get('id') || ''
@@ -507,7 +971,7 @@ export async function handleShotImage(req: IncomingMessage, res: ServerResponse)
     res.end('shot-not-found')
     return
   }
-  // 整窗截图是后台做的：这里最多等 4 秒，还没好就 404 让客户端重试
+  // 图已经落盘（ready 恒为 true）；保留这段等待是为了兼容"先发事件、后出图"的未来实现
   const deadline = Date.now() + 4000
   while (!shot.ready && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 50))
@@ -570,16 +1034,31 @@ export async function stopShot(): Promise<void> {
 
 /** `GET /api/shot/status` —— 调试/自检。 */
 export async function handleShotStatus(_req: IncomingMessage, res: ServerResponse): Promise<void> {
-  await probeAvailable()
+  ensureCaptureAvailable()
+  const probe = await probeAvailable()
   const last = state.lastShot
   sendJson(res, 200, {
     ok: true,
     status: shotStatus(),
+    windowProbe: probe,
     clientHello,
     clientReports,
-    // 只读观察点：不清 pending，用来量"事件发出 → 整窗图做好"这一段
+    // 只读观察点：不清 pending，用来量"事件发出 → 图做好"这一段
     lastShot: last
-      ? { id: last.id, ready: last.ready, ageMs: Date.now() - last.at, owner: last.owner, rect: last.rect, pad: last.pad, scale: last.scale, selectionRect: last.selectionRect, windowRect: last.windowRect }
+      ? {
+          id: last.id,
+          scope: last.scope,
+          mode: last.mode,
+          frame: last.frame,
+          ready: last.ready,
+          ageMs: Date.now() - last.at,
+          owner: last.owner,
+          rect: last.rect,
+          pad: last.pad,
+          scale: last.scale,
+          selectionRect: last.selectionRect,
+          windowRect: last.windowRect,
+        }
       : null,
   })
 }

@@ -91,7 +91,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
       ctx.webServer.register({
         kind: 'exact',
         path: `${API_PREFIX}/shot/start`,
-        handler: (req, res) => handleShotStart(req, res),
+        handler: (req, res) => handleShotStart(req, res, config),
       }),
     `${name}: shot start route`,
   )
