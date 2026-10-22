@@ -155,18 +155,23 @@ export function annotate(image, rect, scale, shot) {
   canvas.width = Math.max(1, Math.round(iw * k))
   canvas.height = Math.max(1, Math.round(ih * k))
   var g = canvas.getContext('2d')
-  // ⚠️ 先用**最近邻**画一遍专门用来量边界：平滑缩放会把内容边缘插值成半透明，
-  // 让"透明阴影边界"变得模糊，量出来的框会偏（实测：整张图被当成内容区）。
-  g.imageSmoothingEnabled = false
-  g.drawImage(image, 0, 0, canvas.width, canvas.height)
+  // 只有整窗图需要量"内容区"：`screencapture -l` 会把透明阴影截进来，且上下不对称。
+  // 全屏、留白、仅选区都是不透明/精确矩形，直接用 host 给的位置，量了反而多花几百毫秒。
+  var needContentBox = !shot || !shot.scope || shot.scope === 'window'
   var content = null
-  try {
-    content = findContentBox(g, canvas.width, canvas.height)
-  } catch (error) {
-    content = null
+  if (needContentBox) {
+    // ⚠️ 先用**最近邻**画一遍专门用来量边界：平滑缩放会把内容边缘插值成半透明，
+    // 让"透明阴影边界"变得模糊，量出来的框会偏（实测：整张图被当成内容区）。
+    g.imageSmoothingEnabled = false
+    g.drawImage(image, 0, 0, canvas.width, canvas.height)
+    try {
+      content = findContentBox(g, canvas.width, canvas.height)
+    } catch (error) {
+      content = null
+    }
+    // 量完清掉，再用平滑缩放画最终图
+    g.clearRect(0, 0, canvas.width, canvas.height)
   }
-  // 量完清掉，再用平滑缩放画最终图
-  g.clearRect(0, 0, canvas.width, canvas.height)
   g.imageSmoothingEnabled = true
   g.drawImage(image, 0, 0, canvas.width, canvas.height)
   if (content && shot && shot.windowRect && shot.selectionRect) {
@@ -295,6 +300,15 @@ export function createShotController(env) {
     return chipEl
   }
 
+  /** 缩略图标题跟着取景范围走（图里有框才说"红框"）。 */
+  function scopeText(shot) {
+    var scope = shot && shot.scope
+    if (!shot || shot.frame === false || scope === 'selection') return '仅选区'
+    if (scope === 'screen') return '全屏 + 红框'
+    if (scope === 'margin') return '选区 + 留白'
+    return '整窗 + 红框'
+  }
+
   function hideMarkers() {
     if (frameEl) frameEl.setAttribute('data-show', '0')
     if (chipEl) chipEl.setAttribute('data-show', '0')
@@ -342,7 +356,10 @@ export function createShotController(env) {
     // 起新截图前先把上一张的框/卡片收掉：
     // 这些是我们自己的页面内容，不收拾的话会被 `screencapture -l` 截进新图里。
     clearAll()
-    fetch(SHOT_START, { method: 'POST', body: '' }).catch(function () {})
+    // 取景范围按模式分开设置：host 必须在**开始截图前**就知道这次走哪一档。
+    // 面板开着时传 panel（直接进附件），否则 card（弹语音卡）。
+    var mode = env.panelOpen ? 'panel' : 'card'
+    fetch(SHOT_START + '?mode=' + mode, { method: 'POST', body: '' }).catch(function () {})
   }
 
   /**
@@ -358,6 +375,8 @@ export function createShotController(env) {
     lastId = shot.id
     var t0 = Date.now()
     current = { shot: shot, file: null, blob: null, ref: null, refReady: null, uploading: null, t0: t0 }
+    // 这一张的句柄：后台工作完成时如果已经换了下一张（或 Esc 清空），不能再写进新的 current
+    var mine = current
     var step = 'geometry'
     try {
       // ── ① 立刻：算位置 → 画框/缩略图 → 开卡 ──
@@ -368,9 +387,13 @@ export function createShotController(env) {
       var view = viewport()
       var inside = !!(page && insideViewport(page, view))
       var anchor = null
+      // 用 host 在**开始截图时**记下的 mode，而不是此刻的面板状态：
+      // 框选期间开了/关了面板，取景范围和最终图已经定了，这里要跟它保持一致。
+      // 老 host 不带 mode 时退回"此刻面板开着"的旧行为。
+      var panelMode = !!env.panelOpen && (!shot.mode || shot.mode === 'panel')
       // 小窗开着时：这次只是"把图塞进当前输入框"，页面上**不出现任何框/缩略图/卡片**，
       // 也不改顶部那行、不带任何提示词（用户明确要求：跟"开窗那次截图"是两种模式）。
-      if (env.panelOpen) {
+      if (panelMode) {
         if (frameEl) frameEl.setAttribute('data-show', '0')
         if (chipEl) chipEl.setAttribute('data-show', '0')
       } else if (inside) {
@@ -388,6 +411,8 @@ export function createShotController(env) {
         var box = chipRectFor(edge, page || { left: 0, top: 0, width: 0, height: 0 }, view)
         chip.style.left = Math.round(box.left) + 'px'
         chip.style.top = Math.round(box.top) + 'px'
+        var chipTitle = chip.querySelector('.dsh-sel-shotchip-tx b')
+        if (chipTitle) chipTitle.textContent = scopeText(shot)
         var meta = chip.querySelector('.dsh-sel-shotchip-meta')
         if (meta) meta.textContent = Math.round(shot.selectionRect.width) + ' × ' + Math.round(shot.selectionRect.height)
         chip.setAttribute('data-show', '1')
@@ -395,30 +420,47 @@ export function createShotController(env) {
         anchor = asRect(box)
       }
 
-      // ── ② 后台：画红框 + 上传，并把 promise 挂在 current 上（发送时 await）──
+      // ── ② 后台：出图（必要时画红框）+ 上传，并把 promise 挂在 current 上（发送时 await）──
       //
       // ⚠️ 必须**等卡片动画跑完**再开始：整窗图是 3456×2114，解码 + 画布 + 读像素 + 编码 PNG
       // 都在主线程，一开工就把卡片的展开动画卡住（用户实测"卡片出现很卡"）。
+      // 仅选区没有这些重活：host 给的 region 图就是最终图，直接拿字节即可。
       var md0 = Date.now()
       step = 'annotate'
+      var imageUrl = SHOT_IMAGE + '?id=' + encodeURIComponent(shot.id)
+      var applyBlob = function (blob) {
+        if (!blob) return null
+        // 期间用户又截了一张 / 按了 Esc：这张的结果不再写进当前状态
+        if (current !== mine) return null
+        mine.blob = blob
+        mine.file = new File([blob], '截图.png', { type: blob.type || 'image/png' })
+        if (chipImg) {
+          // 换图前把上一张的 objectURL 收掉，否则每截一次就多留一个 Blob 在内存里
+          if (chipUrl) URL.revokeObjectURL(chipUrl)
+          chipUrl = URL.createObjectURL(blob)
+          chipImg.src = chipUrl
+        }
+        report({ stage: 'bg-done', ms: Date.now() - md0, frame: shot.frame !== false, scope: shot.scope || '' })
+        return null
+      }
       var startWork = function () {
-        return loadImage(SHOT_IMAGE + '?id=' + encodeURIComponent(shot.id))
+        if (shot.frame === false) {
+          return fetch(imageUrl, { cache: 'no-store' })
+            .then(function (response) {
+              if (!response.ok) throw new Error('HTTP ' + response.status)
+              return response.blob()
+            })
+            .then(applyBlob)
+            .catch(function (error) {
+              report({ stage: 'bg-fail', ms: Date.now() - md0, error: String((error && error.message) || error) })
+              return null
+            })
+        }
+        return loadImage(imageUrl)
         .then(function (img) {
           return annotate(img, shot.rect, shot.scale, shot)
         })
-        .then(function (blob) {
-          if (!blob) return null
-          current.blob = blob
-          current.file = new File([blob], '截图.png', { type: 'image/png' })
-          if (chipImg) {
-            // 换图前把上一张的 objectURL 收掉，否则每截一次就多留一个 Blob 在内存里
-            if (chipUrl) URL.revokeObjectURL(chipUrl)
-            chipUrl = URL.createObjectURL(blob)
-            chipImg.src = chipUrl
-          }
-          report({ stage: 'bg-done', ms: Date.now() - md0 })
-          return null
-        })
+        .then(applyBlob)
         .catch(function (error) {
           report({ stage: 'bg-fail', ms: Date.now() - md0, error: String((error && error.message) || error) })
           return null
@@ -429,7 +471,12 @@ export function createShotController(env) {
           resolve(startWork())
         }
         // 小窗开着时没有卡片动画要保护 → 立刻开工（图早日进输入框）
-        if (env.panelOpen) {
+        if (panelMode) {
+          kick()
+          return
+        }
+        // 仅选区没有画布重活，也不必等空闲：图早就落好了
+        if (shot.frame === false) {
           kick()
           return
         }
@@ -444,13 +491,13 @@ export function createShotController(env) {
       })
 
       // ── ③ 小窗开着：图直接进输入框（后台等图做好再塞）──
-      if (env.panelOpen) {
+      if (panelMode) {
         var ready = current.refReady
         if (ready) ready.then(function () {
-          if (current.file) env.addFiles([current.file])
+          if (current === mine && mine.file) env.addFiles([mine.file])
           if (env.focusAskBox) env.focusAskBox()
         })
-        report({ stage: 'done', branch: 'panel', ms: Date.now() - t0 })
+        report({ stage: 'done', branch: 'panel', scope: shot.scope || '', ms: Date.now() - t0 })
         return
       }
 
@@ -465,6 +512,9 @@ export function createShotController(env) {
         rect: anchor,
         shot: current,
         ref: null,
+        // 后续提示词要按取景范围换口径（仅选区没有红框，留白/全屏/整窗口径不同）
+        shotScope: shot.scope || '',
+        shotFrame: shot.frame !== false,
       }
       step = 'openVCard'
       env.openVCard()

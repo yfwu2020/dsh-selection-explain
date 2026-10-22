@@ -887,7 +887,13 @@ export function createVoiceCardController(env) {
       // 红框图是后台画的（见 shot.js）：这里等它上传完再开小窗，
       // 等待的是**已经画好、正在上传**的那张，通常几百毫秒。
       var openShotPanel = function (ref) {
-        env.openPanelWith('', '', '截图', shotRect, '', { askFirst: asked, shotRef: ref })
+        env.openPanelWith('', '', '截图', shotRect, '', {
+          askFirst: asked,
+          shotRef: ref,
+          // 取景范围要跟着图一起进小窗：提示词要按"图里有没有红框 / 图是不是只有选区"换口径
+          shotScope: selection.shotScope || '',
+          shotFrame: selection.shotFrame !== false,
+        })
         if (env.clearShotMarkers) env.clearShotMarkers()
         env.state.selection = null
         env.state.bridgeActive = false

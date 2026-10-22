@@ -173,6 +173,14 @@ export function createPanelController(env) {
    * 和"划词解读"的区别：**没有选中文字**、不请求解读、没有翻译/详解两节 ——
    * 用户说的那句话就是第一句提问，那张（已经画好红框的）截图随消息一起发。
    */
+  /** 截图顶部那行/芯片文案：按取景范围说清楚图里到底是什么。 */
+  function shotScopeLabel(scope, frame) {
+    if (frame === false || scope === 'selection') return '仅选区'
+    if (scope === 'screen') return '全屏 + 红框'
+    if (scope === 'margin') return '选区 + 留白'
+    return '整窗 + 红框'
+  }
+
   /**
    * 把面板顶部那行（quote 条）换成生成的标题。
    *
@@ -206,6 +214,14 @@ export function createPanelController(env) {
     // 正文就是用户那句话：/analyze 要求 text 非空，而截图这条路本来就没有"选中文字"
     env.state.payload = buildPayload(String(options.askFirst || ''), '', '截图')
     env.state.payload.kind = 'shot'
+    // 取景范围：提示词要按"图里是不是只有选区 / 有没有红框"换口径。
+    // 只放在截图这条路；普通划词不受影响。
+    env.state.shotScope = options.shotScope || ''
+    env.state.shotFrame = options.shotFrame !== false
+    if (env.state.shotScope) {
+      env.state.payload.shotScope = env.state.shotScope
+      env.state.payload.shotFrame = env.state.shotFrame
+    }
     env.state.kind = 'shot'
     // ⚠️ 必须有 key：`saveHistory` 的第一行是 `if (!payload || !state.cacheKey) return`，
     // 截图这条路原先提前 return、从没设过 key —— 结果整段对话**一次都没落盘**，
@@ -227,7 +243,7 @@ export function createPanelController(env) {
     env.hideButton()
     showPanel(anchor)
     env.state.shotTitle = ''
-    setQuoteLine('截图 · 已带上整窗截图')
+    setQuoteLine('截图 · ' + shotScopeLabel(env.state.shotScope, env.state.shotFrame))
     env.clearQuotes()
     env.clearAttachments()
     env.state.turns = []
