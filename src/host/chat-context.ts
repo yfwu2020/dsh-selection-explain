@@ -40,7 +40,8 @@ export async function resolveChatCapacity(ctx: Context, config: Config, route: R
       if (p && Number.isFinite(p.visualTokens) && p.visualTokens >= 0) return p.visualTokens + estimateTextTokens(p.text || '') + 32
     } catch { /* older provider: conservative pixel estimate */ }
     const pixels = (a.ref.width || 1024) * (a.ref.height || 1024)
-    return Math.max(4096, Math.ceil(pixels / (512 * 512)) * 1024)
+    // Keep a conservative tile estimate without pricing tiny thumbnails as 1MP images.
+    return Math.max(1024, Math.ceil(pixels / (512 * 512)) * 1024)
   }
   const price = (t: ChatTurn): number => 32 + estimateTextTokens(t.text) + (t.attachments || []).reduce((n, a) => n + attachmentPrice(a), 0)
   return { budget, price, attachmentPrice, modelWindow: info?.context?.contextWindow || null }
@@ -107,8 +108,11 @@ export async function planChatContext(ctx: Context, route: Route, capacity: Awai
   const newestPair = history.slice(-2).reduce((n, t) => n + capacity.price(t), 0)
   const target = Math.min(capacity.budget * 0.8 - fixedTokens - summaryReserve,
     Math.max(capacity.budget * 0.5 - fixedTokens - summaryReserve, newestPair))
-  const cut = chooseCompactionEnd(history, target, capacity.price)
-  if (cut < 0) throw Error('最近一轮原文与本轮问题过长，无法安全压缩；请引用需要讨论的具体部分')
+  let cut = chooseCompactionEnd(history, target, capacity.price)
+  // Prefer a verbatim latest pair; if it cannot fit, summarize that complete pair too.
+  // The current question is fixed input and never included in this history prefix.
+  if (cut < 0) cut = chooseCompactionEnd(history, target, capacity.price, false)
+  if (cut < 0) throw Error(`当前材料与尚未完成的历史无法安全压缩（输入预算 ${capacity.budget} tokens）；请减少本轮材料`)
   let summary: string
   try { summary = await summarize(ctx, route, state.summary, history.slice(0, cut), state.through, capacity.budget, signal, input.effort, state.sessionId || '') }
   catch (error) { throw Error('历史压缩失败，原始对话仍保留：' + String((error as Error)?.message || error)) }

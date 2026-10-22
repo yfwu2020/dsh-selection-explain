@@ -56,6 +56,9 @@ test('capacity reserves answer space and compacts at complete question-answer bo
   assert.equal(cut, 6)
   assert.equal(pairs[cut].role, 'user')
   assert.equal(chooseCompactionEnd(pairs.slice(-2), 100, t => estimateTextTokens(t.text) + 10), -1)
+  assert.equal(chooseCompactionEnd(pairs.slice(-2), 100, t => estimateTextTokens(t.text) + 10, false), 2)
+  assert.equal(chooseCompactionEnd(pairs.slice(-3), 0, () => 100, false), 3)
+  assert.equal(chooseCompactionEnd(pairs.slice(0, 3), 0, () => 100, false), -1, 'an unanswered user message cannot be swallowed')
 })
 
 test('malformed or oversized checkpoint state cannot silently skip history', () => {

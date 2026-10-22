@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { apply } from '../../lib/index.js'
 import { contextSource, historyDigest } from '../../lib/chat-context.js'
 
-async function fixture(config = {}) {
+async function fixture(config = {}, options = {}) {
   const home = await mkdtemp(join(tmpdir(), 'dsh-context-'))
   const oldHome = process.env.DSH_HOME
   process.env.DSH_HOME = home
@@ -16,8 +16,10 @@ async function fixture(config = {}) {
   let transcript = '固定的最初背景', retrieval = null, failSummary = false, forceConclusion = false, summaryFinish = 'stop'
   const llm = {
     listProviders: () => [{ id: 'fixture', name: 'Fixture' }], listModels: async () => [],
-    resolveModelInfo: async () => ({ context: { contextWindow: 64000 }, defaultMaxTokens: 4000 }),
-    imageRequestPricing: () => ({ priceImages: images => images.map(() => ({ visualTokens: 300, text: '' })) }),
+    resolveModelInfo: async () => ({ context: { contextWindow: options.contextWindow ?? 64000 }, defaultMaxTokens: 4000 }),
+    ...(options.imagePricing === false ? {} : {
+      imageRequestPricing: () => ({ priceImages: images => images.map(() => ({ visualTokens: options.imageTokens ?? 300, text: '' })) }),
+    }),
     async *stream(options) {
       calls.push(options)
       const system = textOf(options.messages.filter(m => m.role === 'system'))
@@ -57,6 +59,61 @@ function textOf(messages) { return messages.flatMap(m => blockText(m.content)).j
 const base = { text: 'selected', context: 'context', sessionId: 'session', question: '继续讨论', historyStart: 0 }
 const turns = n => Array.from({ length: n }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', text: '消息' + i }))
 const image = id => ({ kind: 'image', ref: { attachmentId: 'sha256:' + id, name: id + '.png', bytes: 5 * 1024 * 1024, width: 800, height: 600 } })
+
+test('default HTTP budget keeps several image rounds on a large-context model', async () => {
+  const f = await fixture({ tools: false }, { contextWindow: 1000000, imagePricing: false })
+  try {
+    const history = turns(30).map(t => ({ ...t, text: '文'.repeat(1800) }))
+    for (const index of [0, 10, 20]) history[index].attachments = [image('image-' + index)]
+    const r = await f.request('analyze', { ...base, history, attachments: [image('current')] })
+    const checkpoint = r.events.find(e => e.type === 'context-state')
+    assert.equal(checkpoint?.budget, 200000, r.raw)
+    assert.equal(checkpoint.state.through, 0)
+    assert.ok(r.events.some(e => e.type === 'done'), r.raw)
+    assert.equal(f.calls.at(-1).messages.flatMap(m => m.content || []).filter(b => b.type === 'image').length, 4)
+  } finally { await f.close() }
+})
+
+test('two tiny images fit a small budget without provider image pricing', async () => {
+  const f = await fixture({ tools: false, chatContextTokens: 8192 }, { imagePricing: false })
+  try {
+    const tiny = id => ({ ...image(id), ref: { ...image(id).ref, width: 120, height: 86, bytes: 2434 } })
+    const r = await f.request('analyze', { ...base, history: [], attachments: [tiny('a'), tiny('b')] })
+    assert.ok(r.events.some(e => e.type === 'done'), r.raw)
+    assert.ok(!r.events.some(e => e.type === 'error'), r.raw)
+    assert.equal(f.calls.at(-1).messages.flatMap(m => m.content || []).filter(b => b.type === 'image').length, 2)
+  } finally { await f.close() }
+})
+
+test('a recent image pair that cannot stay verbatim is summarized instead of blocking the next question', async () => {
+  const f = await fixture({ tools: false, chatContextTokens: 4096 }, { imageTokens: 3000 })
+  try {
+    const history = [{ role: 'user', text: '这张图有什么？', attachments: [image('previous')] },
+      { role: 'assistant', text: '已经确认左下角是甲方案。' }]
+    const original = structuredClone(history)
+    const r = await f.request('analyze', { ...base, history })
+    const checkpoint = r.events.find(e => e.type === 'context-state')
+    assert.equal(checkpoint?.state.through, 2, r.raw)
+    assert.ok(r.events.some(e => e.type === 'done'), r.raw)
+    assert.deepEqual(history, original)
+    assert.ok(textOf(f.calls.at(-1).messages).includes('甲方案'))
+    assert.ok(!f.calls.at(-1).messages.flatMap(m => m.content || []).some(b => b.type === 'image'))
+    const summaries = f.calls.filter(c => textOf(c.messages.filter(m => m.role === 'system')).includes('上下文压缩器')).length
+    const next = await f.request('analyze', { ...base, contextState: checkpoint.state, historyStart: 2, history: [] })
+    assert.ok(next.events.some(e => e.type === 'done'), next.raw)
+    assert.equal(f.calls.filter(c => textOf(c.messages.filter(m => m.role === 'system')).includes('上下文压缩器')).length, summaries)
+  } finally { await f.close() }
+})
+
+test('current images exceeding the whole input budget still fail without advancing history', async () => {
+  const f = await fixture({ tools: false, chatContextTokens: 4096 }, { imageTokens: 6000 })
+  try {
+    const r = await f.request('analyze', { ...base, history: [], attachments: [image('too-large')] })
+    assert.ok(r.events.some(e => e.type === 'error' && e.code === 'context-rejected'), r.raw)
+    assert.ok(!r.events.some(e => e.type === 'context-state'))
+    assert.equal(f.calls.length, 0)
+  } finally { await f.close() }
+})
 
 test('HTTP chat retains thirty short messages and every admitted historical image', async () => {
   const f = await fixture({ tools: false })

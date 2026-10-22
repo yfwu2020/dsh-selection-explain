@@ -70,11 +70,11 @@ export const SETTINGS_GROUPS: SettingGroup[] = [
     id: 'model', label: '模型',
     sections: [
       {"label": "模型", "keys": ["modelChoice"]},
-      {"label": "对话记忆", "keys": ["chatContextTokens"], "note": "容量允许时保留完整对话；接近预算时压缩较早问答，原始历史和附件仍保留。图片计入预算，不按固定张数淘汰。"},
+      {"label": "对话记忆", "keys": ["chatContextTokens"], "note": "默认输入预算为20万 tokens。接近预算时优先压缩较早问答；最近一组也放不下时会一并整理为摘要，原始历史和附件仍保留。图片计入预算，不按固定张数淘汰。"},
       {"label": "思考强度", "keys": ["translationReasoningEffort", "reasoningEffort", "chatReasoningEffort"], "note": "关闭思考仍会生成回答。"},
     ],
     items: [
-      {"key": "chatContextTokens", "kind": "number", "label": "对话输入预算", "hint": "按模型容量自动收紧，并为回答及工具结果预留空间；未知模型使用此预算。用量为估算。", "unit": "tokens", "min": CONFIG_LIMITS.chatContextTokens.min, "max": CONFIG_LIMITS.chatContextTokens.max, "step": 1024},
+      {"key": "chatContextTokens", "kind": "number", "label": "对话输入预算", "hint": "按模型容量自动收紧，并为回答及工具结果预留空间；未知模型使用此预算。用量为估算。", "unit": "tokens", "min": CONFIG_LIMITS.chatContextTokens.min, "max": CONFIG_LIMITS.chatContextTokens.max, "step": 1},
       {"key": "modelChoice", "kind": "model", "label": "模型", "hint": "", "keys": ["provider", "model"]},
       {"key": "translationReasoningEffort", "kind": "seg", "label": "首轮", "hint": "翻译 / 解读 / 注释", "options": ["off", "low", "high", "max"]},
       {"key": "reasoningEffort", "kind": "seg", "label": "次轮", "hint": "点击「展开详解」", "options": ["off", "low", "high", "max"]},

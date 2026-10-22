@@ -89,12 +89,14 @@ export function contextBudget(configured: number, window?: number, output = 8192
   return Math.floor(Math.min(configured, window * 0.8, window - output - tools))
 }
 
-/** A cut is always before a user message; at least the newest complete pair stays verbatim. */
-export function chooseCompactionEnd(turns: readonly ChatTurn[], target: number, price: (t: ChatTurn) => number): number {
+/** Prefer retaining the latest pair; pressure may allow summarizing all complete pairs. */
+export function chooseCompactionEnd(turns: readonly ChatTurn[], target: number, price: (t: ChatTurn) => number, preserveLatestPair = true): number {
   let remaining = turns.reduce((n, t) => n + price(t), 0)
-  for (let i = 0; i < turns.length - 2; i++) {
+  const end = preserveLatestPair ? turns.length - 2 : turns.length
+  for (let i = 0; i < end; i++) {
     remaining -= price(turns[i])
-    if (i + 1 > 0 && turns[i + 1].role === 'user' && remaining <= target) return i + 1
+    const boundary = i + 1 < turns.length ? turns[i + 1].role === 'user' : turns[i].role === 'assistant'
+    if (boundary && remaining <= target) return i + 1
   }
   return -1
 }

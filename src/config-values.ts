@@ -132,7 +132,7 @@ export const CONFIG_DEFAULTS: Readonly<Config> = Object.freeze({
     chatModel: '',
     reasoningEffort: 'high',
     translationReasoningEffort: 'off',
-    chatContextTokens: 32768,
+    chatContextTokens: 200000,
     historyMaxEntries: 20,
     temperature: -1,
     maxTokens: 0,
