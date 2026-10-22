@@ -166,6 +166,33 @@ console.log('\n[3] normalizeSettingsPatch')
   assert('隐藏的兼容配置不再允许设置页写入', r11.rejected.length === 3)
 }
 
+// ───────────────────────── ④ 截图取景 ─────────────────────────
+console.log('\n[4] 截图取景设置')
+{
+  assert('默认：弹卡片=整窗、进输入框=仅选区、留白 48',
+    CONFIG_DEFAULTS.shotCardScope === 'window' && CONFIG_DEFAULTS.shotPanelScope === 'selection' && CONFIG_DEFAULTS.shotMargin === 48,
+    JSON.stringify({ card: CONFIG_DEFAULTS.shotCardScope, panel: CONFIG_DEFAULTS.shotPanelScope, margin: CONFIG_DEFAULTS.shotMargin }))
+
+  const specs = new Map(SETTINGS_ITEMS.map((item) => [item.key, item]))
+  assert('两种模式都有四档 range 选项',
+    ['shotCardScope', 'shotPanelScope'].every((key) => {
+      const spec = specs.get(key)
+      return spec && spec.kind === 'seg' && JSON.stringify(spec.options) === JSON.stringify(['screen', 'window', 'margin', 'selection'])
+    }))
+
+  const good = normalizeSettingsPatch({ shotCardScope: 'selection', shotPanelScope: 'margin', shotMargin: 64 })
+  assert('合法取景值直接通过',
+    good.rejected.length === 0 && good.values.shotCardScope === 'selection' && good.values.shotPanelScope === 'margin' && good.values.shotMargin === 64,
+    JSON.stringify(good))
+
+  const bad = normalizeSettingsPatch({ shotCardScope: 'fullscreen' })
+  assert('未知取景档位被拒', bad.rejected.length === 1 && bad.values.shotCardScope === undefined)
+
+  assert('留白被 clamp 到 0–400',
+    normalizeSettingsPatch({ shotMargin: -10 }).values.shotMargin === 0 &&
+      normalizeSettingsPatch({ shotMargin: 9999 }).values.shotMargin === 400)
+}
+
 // Session route behavior is covered by test-route-cache and test-model-follow.
 
 // ───────────────────────── ⑤ payload ─────────────────────────

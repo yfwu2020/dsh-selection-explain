@@ -103,6 +103,26 @@ export interface Config {
    * 同样要等文字定稿：松手那一刻输入法还没整理完，立刻发送发出去的是没整理的草稿。
    */
   voiceAutoSend: boolean
+  /**
+   * 截图取景范围：小窗**未打开**（截图后弹语音卡问问题）时用哪一档。
+   *
+   * `screen` 全屏（选区中心所在的那块屏）｜`window` 整窗｜`margin` 选区 + 留白｜`selection` 仅选区。
+   * 默认 `window`：问"这是什么/它在哪"时需要窗口上下文。
+   */
+  shotCardScope: string
+  /**
+   * 截图取景范围：小窗**已打开**（截图直接进输入框附件）时用哪一档。
+   *
+   * 默认 `selection`：用户已经框得很准，贴进去的就是那块。
+   */
+  shotPanelScope: string
+  /**
+   * 「选区 + 留白」向四周外扩的逻辑像素（pt）。
+   *
+   * 两套模式共用一个值。Retina 下 48pt = 96 物理像素；按 pt 而不是物理像素，
+   * 换一块屏观感才一致。外扩会裁到选区中心所在的那块显示器边界内。
+   */
+  shotMargin: number
 }
 
 export const CONFIG_DEFAULTS: Readonly<Config> = Object.freeze({
@@ -140,6 +160,9 @@ export const CONFIG_DEFAULTS: Readonly<Config> = Object.freeze({
     pillIdleMs: 10000,
     voiceCancelOnSilence: true,
     voiceAutoSend: true,
+    shotCardScope: 'window',
+    shotPanelScope: 'selection',
+    shotMargin: 48,
   })
 
 export const CONFIG_LIMITS = {
@@ -161,4 +184,5 @@ export const CONFIG_LIMITS = {
   maxToolRounds: { min: 0, max: 8 },
   toolResultMaxChars: { min: 200, max: 20000 },
   pillIdleMs: { min: 2000, max: 600000 },
+  shotMargin: { min: 0, max: 400 },
 } as const

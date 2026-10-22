@@ -374,8 +374,8 @@ export async function run(env) {
   const railButtons = settingsRail ? Array.from(env.walk(settingsRail)).filter((n) => n.className === 'dsh-sel-railbtn') : []
 
   env.assert(
-    '抽屉里按 host 下发的 spec 画出 6 个分类（模型/解读/背景/联网/界面/数据）',
-    railButtons.length === 6 && railButtons.some((b) => env.textOf(b).indexOf('模型') >= 0),
+    '抽屉里按 host 下发的 spec 画出 7 个分类（模型/解读/背景/联网/界面/截图/数据）',
+    railButtons.length === 7 && railButtons.some((b) => env.textOf(b).indexOf('模型') >= 0) && railButtons.some((b) => env.textOf(b).indexOf('截图') >= 0),
     railButtons.map((b) => env.textOf(b)).join(' / ') || '一个都没有',
   )
 

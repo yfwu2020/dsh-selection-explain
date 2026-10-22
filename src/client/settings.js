@@ -37,7 +37,11 @@ export function createSettingsController(env) {
    * 它是**插件的固定词汇**，与模型无关；落到模型的哪个真实档位由 host 按该模型的声明
    * 实时算（`/models` 每个模型带一份 `effortMap`，见 host 的 mapEffortToModel）。
    */
-  var SLOT_LABEL = { off: '关', low: '低', high: '高', max: '最高' }
+  var SLOT_LABEL = {
+    off: '关', low: '低', high: '高', max: '最高',
+    // 截图取景范围（与推理档位共用 seg 标签表；值互不重叠）
+    screen: '全屏', window: '整窗', margin: '选区+留白', selection: '仅选区',
+  }
 
   var SLOT_ORDER = ['off', 'low', 'high', 'max']
 

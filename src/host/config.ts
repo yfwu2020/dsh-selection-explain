@@ -75,6 +75,12 @@ export const Config = z.object({
   voiceCancelOnSilence: z.boolean().default(CONFIG_DEFAULTS.voiceCancelOnSilence),
   /** 有字是否自动发送（默认开，见 Config 注释）。 */
   voiceAutoSend: z.boolean().default(CONFIG_DEFAULTS.voiceAutoSend),
+  /** 截图范围：小窗未打开（弹语音卡）时。screen / window / margin / selection。 */
+  shotCardScope: z.string().default(CONFIG_DEFAULTS.shotCardScope),
+  /** 截图范围：小窗已打开（直接进输入框）时。 */
+  shotPanelScope: z.string().default(CONFIG_DEFAULTS.shotPanelScope),
+  /** 「选区 + 留白」的逻辑像素（pt）。 */
+  shotMargin: z.number().min(CONFIG_LIMITS.shotMargin.min).max(CONFIG_LIMITS.shotMargin.max).default(CONFIG_DEFAULTS.shotMargin),
 })
 
 /** Preserve nullish-default semantics without duplicating the defaults. */

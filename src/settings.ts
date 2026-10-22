@@ -141,6 +141,17 @@ export const SETTINGS_GROUPS: SettingGroup[] = [
     ],
   },
   {
+    id: 'shot', label: '截图',
+    sections: [
+      {"label": "取景范围", "keys": ["shotCardScope", "shotPanelScope", "shotMargin"], "note": "两种模式的取景范围分开设置；留白两模式共用，仅「选区 + 留白」生效。"},
+    ],
+    items: [
+      {"key": "shotCardScope", "kind": "seg", "label": "小窗未打开时", "hint": "截图后弹语音卡时截取的范围。", "options": ["screen", "window", "margin", "selection"]},
+      {"key": "shotPanelScope", "kind": "seg", "label": "小窗已打开时", "hint": "截图直接进输入框附件时截取的范围。", "options": ["screen", "window", "margin", "selection"]},
+      {"key": "shotMargin", "kind": "number", "label": "选区留白", "hint": "向四周外扩的逻辑像素；仅「选区 + 留白」生效，外扩不会超出选区中心所在的那块屏。", "unit": "pt", "min": CONFIG_LIMITS.shotMargin.min, "max": CONFIG_LIMITS.shotMargin.max, "step": 8},
+    ],
+  },
+  {
     id: 'data', label: '数据',
     sections: [
       {"label": "历史记录", "keys": ["historyMaxEntries"], "note": "0 仅停止保存新历史，不清空已有记录。超出数量时移除最久未更新的对话，已升格的也参与淘汰；正式会话不受影响。"},
