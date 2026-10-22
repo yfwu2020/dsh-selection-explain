@@ -22,10 +22,10 @@ console.log('[1] 仅选区')
   const prompt = shotPromptFor('selection', false)
   const title = shotTitlePromptFor('selection', false)
   assert('明说这张图就是选区本身', prompt.includes('这张图**就是**他框选的那块区域本身'))
-  assert('明说没有红框', prompt.includes('没有红框'))
-  assert('不再让模型看“红框标出的是焦点”', !prompt.includes('红框标出的是问题的焦点'))
+  assert('整段提示词完全不提“红框”', !prompt.includes('红框'))
+  assert('标题也不提“红框”', !title.includes('红框'))
   assert('指代改成“图里的…”，不再说“框里的…”', prompt.includes('需要提及时说"图里的…"') && !prompt.includes('需要提及时说"框里的…"'))
-  assert('标题不提红框，改说“这张图里的对象”', title.includes('这张图里的对象') && !title.includes('红框圈出的那个对象'))
+  assert('标题改说“这张图里的对象”', title.includes('这张图里的对象'))
 }
 
 console.log('\n[2] 选区 + 留白')

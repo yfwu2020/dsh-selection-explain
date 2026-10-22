@@ -153,7 +153,7 @@ function shotFocusWording(scope: ShotPromptScope, frame: boolean): string {
 
 function shotIntro(scope: ShotPromptScope, frame: boolean): string {
   if (!frame || scope === 'selection') {
-    return '用户在 DSH 里按了截图快捷键，发来一张截图。这张图**就是**他框选的那块区域本身（没有红框），同时提出一个问题。'
+    return '用户在 DSH 里按了截图快捷键，发来一张截图。这张图**就是**他框选的那块区域本身，同时提出一个问题。'
   }
   if (scope === 'margin') {
     return '用户在 DSH 里按了截图快捷键，发来一张截图。这张图是选区加上周围留白：红色实线框内是选区，框外那一圈是他特意保留的周边内容。'
@@ -166,7 +166,7 @@ function shotIntro(scope: ShotPromptScope, frame: boolean): string {
 
 function shotFocusRule(scope: ShotPromptScope, frame: boolean): string {
   if (!frame || scope === 'selection') {
-    return '- 以**图里的内容**为依据回答；图里没有红框，整张图就是他关心的地方。'
+    return '- 以**图里的内容**为依据回答；整张图就是他关心的地方。'
   }
   if (scope === 'margin' || scope === 'screen') {
     return '- 以**图里的内容**为依据回答；红框内是问题的焦点，框外是它所在的位置（上下文）。'
@@ -174,7 +174,7 @@ function shotFocusRule(scope: ShotPromptScope, frame: boolean): string {
   return '- 以**图里的内容**为依据回答；红框标出的是问题的焦点，红框周围的界面是上下文。'
 }
 
-/** 按取景范围生成标题提示词（无红框时改口径，避免让模型找不存在的框）。 */
+/** 按取景范围生成标题提示词（没有框时改用“这张图里的…”口径，不把注意力引到不存在的标记上）。 */
 export function shotTitlePromptFor(scope: ShotPromptScope, frame: boolean): string {
   return [
     '现在只做一件事：给这次对话起个名字。',
