@@ -21,6 +21,13 @@ export interface AnalyzeBody {
    * 目的是让图那部分命中前缀缓存。
    */
   titleOnly?: unknown
+  /**
+   * 截图取景范围：screen / window / margin / selection。
+   * 提示词据此换口径（仅选区没有红框，留白/全屏/整窗的"框外是什么"不同）。
+   */
+  shotScope?: unknown
+  /** 截图最终图里有没有红框（仅选区为 false）。 */
+  shotFrame?: unknown
   /** 本会话已用过的工具结果摘要（追问时带上，避免重复联网）。 */
   toolDigest?: unknown
   /** 小窗对话历史（A′）：整段对话的持久化条目。 */

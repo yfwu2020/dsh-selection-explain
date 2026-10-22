@@ -442,6 +442,10 @@ export function createHistoryController(env) {
       // 不落盘的话，语音卡那条"跳过翻译与详解、直接追问"的对话下次开出来，
       // 会顶着一张空翻译卡片（"这次没有返回内容"）——用户实测。
       skipped: env.state.skipInterpretation === true,
+      // 截图取景范围：标题那次请求要带上同样的 scope，才能得到同一个 SHOT_PROMPT 口径
+      ...(payload.kind === 'shot' && env.state.shotScope
+        ? { shotScope: env.state.shotScope, shotFrame: env.state.shotFrame !== false }
+        : {}),
     }
     try {
       fetch(HISTORY, {
@@ -500,6 +504,8 @@ export function createHistoryController(env) {
         titleOnly: true,
         label: '截图',
         attachments: userTurn.attachments,
+        // 与回答那次同一个取景口径：标题是最好的"红框/仅选区"措辞，换口径会问错东西
+        ...(saved.shotScope ? { shotScope: saved.shotScope, shotFrame: saved.shotFrame !== false } : {}),
         // ⚠️ 必须带 sessionId：不带会被上游 400 拒绝（MissingSessionID），
         // 而 `env.panelSessionId` 在历史模块里并不存在 —— 用的是保存时那份 payload 里的。
         ...(sessionId ? { sessionId } : {}),

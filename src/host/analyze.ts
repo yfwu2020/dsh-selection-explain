@@ -12,7 +12,8 @@ import type { Message, ToolSchema, ContentBlock } from '@deepseek-ai/dsh-llm'
 import { createAssistantMessage, createUserMessage, ReasoningEffortId, BlockAssembler, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { name } from './constants.js'
 import { resolveToolNames, webFetchUsable, FS_TOOL_NAMES, describeToolCall, isReadAllowed, runTool, digestToolResult } from './tools.js'
-import { CHAT_SYSTEM_PROMPT, DETAIL_PROMPT, CODE_PROMPT, TRANSLATION_PROMPT, SHOT_PROMPT, SHOT_TITLE_PROMPT } from '../prompts.js'
+import { CHAT_SYSTEM_PROMPT, DETAIL_PROMPT, CODE_PROMPT, TRANSLATION_PROMPT, shotPromptFor, shotTitlePromptFor } from '../prompts.js'
+import type { ShotPromptScope } from '../prompts.js'
 import { loadDesignSkill } from './design-skill.js'
 import { systemMessageOf } from './messages.js'
 import { createThinkFilter, splitLeakedReasoning, looksLikeLeakedReasoning } from './filters.js'
@@ -136,6 +137,15 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
       )
     }
     const isShotMode = body.kind === 'shot'
+    /**
+     * 截图取景范围：决定提示词口径（有没有红框、图是不是只有选区）。
+     * 老客户端不带时按"整窗 + 红框"兜底；非法值也退到整窗，避免把提示词写坏。
+     */
+    const shotScope: ShotPromptScope =
+      body.shotScope === 'screen' || body.shotScope === 'window' || body.shotScope === 'margin' || body.shotScope === 'selection'
+        ? body.shotScope
+        : 'window'
+    const shotFrame = body.shotFrame !== false
     /**
      * 取标题（截图提问的第二次调用）。
      *
@@ -378,7 +388,7 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
     // 截图提问是**独立模式**：没有选中文字，只有一张图 + 一个问题，不能用"追问"那套提示词
     const isShot = body.kind === 'shot'
     const basePrompt = isShot
-      ? SHOT_PROMPT
+      ? shotPromptFor(shotScope, shotFrame)
       : isChat
       ? CHAT_SYSTEM_PROMPT
       : stage === 'detail'
@@ -578,12 +588,18 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
     const questionContent: ContentBlock[] =
       currentBlocks.length > 0 ? [...currentBlocks, { type: 'text', text: questionText }] : [{ type: 'text', text: questionText }]
     let openingMessages: Message[] = isChat
-      ? [...memoryMessages, ...buildHistoryMessages(), createUserMessage({ source: { kind: 'user' }, content: questionContent })]
+      ? [
+          ...memoryMessages,
+          ...buildHistoryMessages(),
+          // 截图首轮：图 + 问题已经放进 baseMessage（只需要一份，避免图片和问题各发两遍）；
+          // 追问不走截图模式，当前问题仍然放在这里。
+          ...(isShot ? [] : [createUserMessage({ source: { kind: 'user' }, content: questionContent })]),
+        ]
       : []
     if (titleOnly) {
       // 截图：base 那条消息里已经带了图 + 提问，这里只多一句"只输出标题"
       openingMessages = [
-        createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: SHOT_TITLE_PROMPT }] }),
+        createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: shotTitlePromptFor(shotScope, shotFrame) }] }),
       ]
     }
     try {
@@ -748,7 +764,11 @@ export function createAnalyze(ctx: Context, config: Config, models: ReturnType<t
           if (roundText.length === 0 && historyHadAttachments && !historyDropped && looksLikeAttachmentFailure(errorMessage, errorCode)) {
             historyDropped = true
             historyImages = { kept: 0, omitted: 0, files: 0 }
-            openingMessages = [...memoryMessages, ...buildHistoryMessages(), createUserMessage({ source: { kind: 'user' }, content: questionContent })]
+            openingMessages = [
+              ...memoryMessages,
+              ...buildHistoryMessages(),
+              ...(isShot ? [] : [createUserMessage({ source: { kind: 'user' }, content: questionContent })]),
+            ]
             // 历史附件被丢掉了 → 名单跟着缩小（只放"还看得见的"那些）
             attachedPaths = collectAttachedPaths()
             errored = false

@@ -144,24 +144,67 @@ export const DETAIL_PROMPT = [
  * 单独问一句它反而稳。而且这条请求的**前缀与回答那次逐字节相同**
  * （同样的 system、同样的图、同样的提问），图那部分应当命中前缀缓存。
  */
-export const SHOT_TITLE_PROMPT = [
-  '现在只做一件事：给这次对话起个名字。',
-  '',
-  '要求：',
-  '- 概括**红框圈出的那个对象**，不超过 20 个字（能短则短；是文字就取最关键的几个字，是图案就说清它是什么）。',
-  '- 只输出这几个字本身：不要引号、不要标点、不要前缀、不要解释、不要调用任何工具。',
-].join('\n')
+export type ShotPromptScope = 'screen' | 'window' | 'margin' | 'selection'
 
-export const SHOT_PROMPT = [
-  '用户在 DSH 里按了截图快捷键，发来一张截图，并用红色实线框出了他关心的那一块，同时提出一个问题。',
-  '',
-  '回答要求：',
-  '- 以**图里的内容**为依据回答；红框标出的是问题的焦点，红框周围的界面是上下文。',
-  '- 不要说"这段文字""这段代码"这种指代（用户没选中任何文字，只有一张图）；需要提及时说"框里的…"。',
-  '- 不要输出翻译或"解读"的格式；直接回答问题本身。',
-  '- 看不清就说看不清（图可能被压缩过），不要猜内容。',
-  '- 需要外部信息时才用工具；能用图里内容回答的，不要联网。',
-].join('\n')
+function shotFocusWording(scope: ShotPromptScope, frame: boolean): string {
+  if (!frame || scope === 'selection') return '**这张图里的对象**'
+  return '**红框圈出的那个对象**'
+}
+
+function shotIntro(scope: ShotPromptScope, frame: boolean): string {
+  if (!frame || scope === 'selection') {
+    return '用户在 DSH 里按了截图快捷键，发来一张截图。这张图**就是**他框选的那块区域本身（没有红框），同时提出一个问题。'
+  }
+  if (scope === 'margin') {
+    return '用户在 DSH 里按了截图快捷键，发来一张截图。这张图是选区加上周围留白：红色实线框内是选区，框外那一圈是他特意保留的周边内容。'
+  }
+  if (scope === 'screen') {
+    return '用户在 DSH 里按了截图快捷键，发来一张截图。这张图是他框选时所在的整块屏幕，红色实线框出了他关心的那一块。'
+  }
+  return '用户在 DSH 里按了截图快捷键，发来一张截图，并用红色实线框出了他关心的那一块，同时提出一个问题。'
+}
+
+function shotFocusRule(scope: ShotPromptScope, frame: boolean): string {
+  if (!frame || scope === 'selection') {
+    return '- 以**图里的内容**为依据回答；图里没有红框，整张图就是他关心的地方。'
+  }
+  if (scope === 'margin' || scope === 'screen') {
+    return '- 以**图里的内容**为依据回答；红框内是问题的焦点，框外是它所在的位置（上下文）。'
+  }
+  return '- 以**图里的内容**为依据回答；红框标出的是问题的焦点，红框周围的界面是上下文。'
+}
+
+/** 按取景范围生成标题提示词（无红框时改口径，避免让模型找不存在的框）。 */
+export function shotTitlePromptFor(scope: ShotPromptScope, frame: boolean): string {
+  return [
+    '现在只做一件事：给这次对话起个名字。',
+    '',
+    '要求：',
+    `- 概括${shotFocusWording(scope, frame)}，不超过 20 个字（能短则短；是文字就取最关键的几个字，是图案就说清它是什么）。`,
+    '- 只输出这几个字本身：不要引号、不要标点、不要前缀、不要解释、不要调用任何工具。',
+  ].join('\n')
+}
+
+export const SHOT_TITLE_PROMPT = shotTitlePromptFor('window', true)
+
+/** 按取景范围生成回答用的 system prompt。 */
+export function shotPromptFor(scope: ShotPromptScope, frame: boolean): string {
+  const noFrame = !frame || scope === 'selection'
+  return [
+    shotIntro(scope, frame),
+    '',
+    '回答要求：',
+    shotFocusRule(scope, frame),
+    noFrame
+      ? '- 不要说"这段文字""这段代码"这种指代（用户没选中任何文字，只有一张图）；需要提及时说"图里的…"。'
+      : '- 不要说"这段文字""这段代码"这种指代（用户没选中任何文字，只有一张图）；需要提及时说"框里的…"。',
+    '- 不要输出翻译或"解读"的格式；直接回答问题本身。',
+    '- 看不清就说看不清（图可能被压缩过），不要猜内容。',
+    '- 需要外部信息时才用工具；能用图里内容回答的，不要联网。',
+  ].join('\n')
+}
+
+export const SHOT_PROMPT = shotPromptFor('window', true)
 
 export const CHAT_SYSTEM_PROMPT = [
   '你是 DeepSeek Harness 中「划词解读」小窗里的助手，正在辅助用户对一段【选中文字】及其上下文进行理解。',

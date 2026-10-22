@@ -185,6 +185,8 @@ export function createConversationController(env) {
   function sendAsk(asked, quotes, attachments, attachmentsNote) {
     var payload = env.state.payload
     if (!payload) return
+    // 截图的第一条提问才带 kind/scope：后续追问走普通 chat，不能把首轮那句问题再发一遍。
+    var firstShot = payload.kind === 'shot' && env.state.turns.length === 0
     var withAttachments = attachments || []
     // 引用拼进**这一条**消息：发给模型、进历史、升格用的都是拼好的那份
     var sent = env.composeQuestion(quotes, asked)
@@ -297,6 +299,14 @@ export function createConversationController(env) {
         text: payload.text,
         context: payload.context,
         label: payload.label,
+        // 截图首轮：host 靠它走独立的 SHOT_PROMPT（不是"选中文字"模板），
+        // 并据此描述图里到底是整窗、全屏、留白还是仅选区。
+        ...(firstShot
+          ? {
+              kind: 'shot',
+              ...(env.state.shotScope ? { shotScope: env.state.shotScope, shotFrame: env.state.shotFrame !== false } : {}),
+            }
+          : {}),
         sessionId: env.panelOrCurrentSessionId(),
         question: sent,
         history: history,
