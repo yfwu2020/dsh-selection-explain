@@ -139,7 +139,8 @@ function findContentBox(g, width, height) {
   var probe = Math.min(400, width, height)
   function hasOpaque(data, count, stride, offset) {
     for (var i = 0; i < count; i += 1) {
-      if (data[i * stride + offset + 3] > 250) return true
+      // 阈值取 128：缩放插值会在内容边缘留下半透明像素，>250 会漏判
+      if (data[i * stride + offset + 3] > 128) return true
     }
     return false
   }
@@ -189,22 +190,33 @@ export function annotate(image, rect, scale, shot) {
   canvas.width = Math.max(1, Math.round(iw * k))
   canvas.height = Math.max(1, Math.round(ih * k))
   var g = canvas.getContext('2d')
+  // ⚠️ 先用**最近邻**画一遍专门用来量边界：平滑缩放会把内容边缘插值成半透明，
+  // 让"透明阴影边界"变得模糊，量出来的框会偏（实测：整张图被当成内容区）。
+  g.imageSmoothingEnabled = false
   g.drawImage(image, 0, 0, canvas.width, canvas.height)
-  // ⚠️ 用图的透明通道量出真实内容区，再按内容区重算红框 —— 阴影是不透明的假内容，不能算进去
   var content = null
   try {
     content = findContentBox(g, canvas.width, canvas.height)
   } catch (error) {
     content = null
   }
+  // 量完清掉，再用平滑缩放画最终图
+  g.clearRect(0, 0, canvas.width, canvas.height)
+  g.imageSmoothingEnabled = true
+  g.drawImage(image, 0, 0, canvas.width, canvas.height)
   if (content && shot && shot.windowRect && shot.selectionRect) {
     var win = shot.windowRect
     var sel = shot.selectionRect
-    var realScale = (content.right - content.left) / win.width
+    // ⚠️ 上面量出来的坐标是"画布像素"，而下面的统一缩放用的是"原图像素" ——
+    // 必须先除回原图尺度，否则会被缩放两次（实测表现：红框缩成一个小方块跑到左上角）。
+    var left = content.left / k
+    var top = content.top / k
+    var right = content.right / k
+    var realScale = (right - left) / win.width
     if (realScale > 0.2 && realScale < 5) {
       rect = {
-        x: content.left + (sel.x - win.x) * realScale,
-        y: content.top + (sel.y - win.y) * realScale,
+        x: left + (sel.x - win.x) * realScale,
+        y: top + (sel.y - win.y) * realScale,
         width: sel.width * realScale,
         height: sel.height * realScale,
       }
