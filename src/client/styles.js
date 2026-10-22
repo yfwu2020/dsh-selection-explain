@@ -108,6 +108,9 @@ export var CSS = [
   // 可以自动换行、超过 84px 内部滚动，但**不显示滚动条**。
   // ⚠️ flex:0 0 auto 不能省：滚动区是 flex 列，而 overflow 非 visible 的 flex 项目
   //    自动最小高度是 0 → 内容一多就被压扁，文字直接看不全（实测踩过）。
+  // 顶部那行是"生成的标题"时：两行封顶，超出用省略号（而不是出现滚动条）
+  '.dsh-sel-quote[data-title="1"]{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;',
+  'overflow:hidden;white-space:normal;max-height:none}',
   '.dsh-sel-quote{margin:0;padding:7px 11px;border-radius:10px;flex:0 0 auto;border-left:3px solid var(--sel-a1,#0d9488);',
   'background:var(--dsw-alias-interactive-bg-hover,rgba(140,140,140,.11));color:var(--dsw-alias-label-secondary,inherit);',
   'font-size:12.5px;line-height:1.6;box-sizing:border-box;max-width:100%;max-height:84px;',

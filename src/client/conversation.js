@@ -253,7 +253,7 @@ export function createConversationController(env) {
       answerTurn.asking = false
       answerTurn.streaming = false
       clearWaiting(env.chatLog)
-      env.saveHistory()
+      if (env.state.turns === requestTurns && env.state.cacheKey === requestKey) env.saveHistory()
       env.syncPanelStage()
       refreshAskState()
       env.state.askRequest = null
@@ -562,6 +562,9 @@ export function createConversationController(env) {
   }
 
   function runRequest(payload, cacheKey, options) {
+    // 捕获"这一枪属于哪段对话"：小窗关掉后虽然还会继续跑，但用户可能已经换了下一段
+    var requestTurns = env.state.turns
+    var requestKey = cacheKey
     env.state.cacheState = 'miss'
     if (env.state.request) env.state.request.abort()
     var controller = new AbortController()
@@ -641,7 +644,8 @@ export function createConversationController(env) {
       env.state.request = null
       clearWaiting()
       if (cacheKey) env.cache.set(cacheKey, { parts: { ...env.state.parts }, turns: env.state.turns.slice() })
-      env.saveHistory()
+      // 小窗关掉也继续落盘；只有"已经换了一段对话"时才不写（避免把旧内容写到新对话上）
+      if (env.state.turns === requestTurns && env.state.cacheKey === requestKey) env.saveHistory()
       env.paint()
     }
 

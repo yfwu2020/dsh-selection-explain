@@ -479,7 +479,8 @@ export function createHistoryController(env) {
    *   · 拿到标题后**原样重发**那条历史（只改 label）—— 存储层是按 key 覆盖；
    *   · 如果这期间你又问了一句（key 或轮数变了）→ **放弃回写**，绝不吞掉你的话。
    */
-  function requestShotTitle(saved, sessionId) {
+  function requestShotTitle(saved, sessionId, attempt) {
+    var tries = attempt || 0
     var userTurn = null
     var list = saved.turns || []
     for (var i = 0; i < list.length; i += 1) {
@@ -490,10 +491,6 @@ export function createHistoryController(env) {
     }
     if (!userTurn) return
     var savedKey = saved.key
-    // ⚠️ 冲突判据要用**同一口径**：`saved.turns` 是过滤掉隐藏轮次后的列表，
-    // 而 `env.state.turns` 包含隐藏轮次 —— 拿两者长度相比，一开始就不相等，
-    // 于是每次都在这里直接 return，标题永远写不回去（实测踩到）。
-    var rawCount = (env.state.turns || []).length
     fetch(API, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -518,24 +515,51 @@ export function createHistoryController(env) {
       })
       .then(function (raw) {
         var title = cleanShotTitle(readSseText(raw))
-        if (!title) return
-        // 冲突检查：这期间你若又问了（换了 key 或轮数变了），放弃回写
+        if (!title) throw new Error('empty-title')
+        // 只在这一种情况下放弃：你已经换到**另一段对话**（另一个 key）。
+        // 同一段对话里你又问了一句，不影响 —— 见 writeShotTitle（读最新的再改）。
         if (env.state.cacheKey !== savedKey) return
-        if ((env.state.turns || []).length !== rawCount) return
+        writeShotTitle(savedKey, title)
+      })
+      .catch(function () {
+        // 上游偶发失败（空正文 / 400 / 断流）：隔 2 秒重试一次，之后放弃
+        if (tries >= 1) return
+        setTimeout(function () {
+          requestShotTitle(saved, sessionId, tries + 1)
+        }, 2000)
+      })
+  }
+
+  /**
+   * 把标题写回历史。
+   *
+   * ⚠️ 不能拿"保存时的旧快照"去覆盖：历史条目是**整条一起存**的（标题 + 整段对话），
+   * 覆盖时如果有人在这几秒里又问了一句，旧快照会把那一句一起抹掉。
+   * 所以先**读最新的那条**，只改 label，再存回去 —— 对话一个不少，标题也更新了。
+   */
+  function writeShotTitle(key, title) {
+    fetch(HISTORY + '?key=' + encodeURIComponent(key))
+      .then(function (response) {
+        return response.ok ? response.json() : null
+      })
+      .then(function (data) {
+        var entry = data && data.entry
+        if (!entry) return
         return fetch(HISTORY, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(Object.assign({}, saved, { label: '截图 · ' + title })),
-        }).then(function (response) {
-          if (!response.ok) return
-          // 面板顶部那行也换成生成的标题（只换当前这段对话的）
-          if (env.applyShotTitle) env.applyShotTitle(title)
-          // 列表正开着就刷新一下，让新标题立刻可见
-          if (env.historyList && env.historyList.style.display === 'flex') openHistoryList()
+          body: JSON.stringify(Object.assign({}, entry, { label: '截图 · ' + title })),
         })
       })
+      .then(function (response) {
+        if (!response || !response.ok) return
+        // 面板顶部那行也换成生成的标题（只换当前这段对话的）
+        if (env.applyShotTitle) env.applyShotTitle(title)
+        // 列表正开着就刷新一下，让新标题立刻可见
+        if (env.historyList && env.historyList.style.display === 'flex') openHistoryList()
+      })
       .catch(function () {
-        /* 拿不到标题就算了：条目保持「截图」，不影响任何东西 */
+        /* 写不进去就算了：条目保持「截图」，不影响任何东西 */
       })
   }
 
@@ -570,7 +594,8 @@ export function createHistoryController(env) {
     title = title.replace(/[。！？.!?,，、:：;；…]+$/g, '')
     title = title.replace(/\s+/g, ' ').trim()
     if (!title) return ''
-    return title.length > 12 ? title.slice(0, 12) : title
+    // 不在数据层截断（放不下由界面用省略号处理）；这里只防一个离谱超长的回答
+    return title.length > 24 ? title.slice(0, 24) : title
   }
 
   /** 用一条历史（或 host 回放结果）恢复面板。 */

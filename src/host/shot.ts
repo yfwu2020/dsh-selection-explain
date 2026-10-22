@@ -62,6 +62,16 @@ export interface ShotPending {
   owner: string
   /** 整窗截图是否已经做好（`/shot/image` 会等它；客户端拿到事件就能先画框）。 */
   ready: boolean
+  /** 客户端带来的页面几何（null = 客户端没带，说明它还是旧版）。 */
+  hint?: WindowHint | null
+  /**
+   * **DSH 自己那个窗口**的矩形（屏幕点）。
+   * 客户端用它把"选区屏幕坐标"精确换算成页面的 CSS px：
+   *   scale = selfWindow.width / window.outerWidth
+   *   内容原点 = selfWindow 原点 + (outer-inner) 换算出的标题栏
+   * 拿不到就是 null（客户端回退到旧算法）。
+   */
+  selfWindow: { x: number; y: number; width: number; height: number } | null
 }
 
 interface ShotState {
@@ -150,10 +160,89 @@ async function listWindows(): Promise<WinInfo[]> {
   }
 }
 
-/** 读截图文件自带的矩形（全局点）。raw plist 里就是 4 个 double，按 0x23 标记抠出来。 */
+/**
+ * 读截图文件自带的矩形（全局点），`kMDItemScreenCaptureGlobalRect`。
+ *
+ * ⚠️ 这是 **binary plist**，不能"按顺序读 4 个 double"：
+ * plist 会**去重相同的值** —— 比如一次 300×200 的框选，x=300、w=300、y=200、h=200，
+ * 库里只存两个 double，数组的四个引用指向它们；按顺序读就会读到 [300,200] 然后跑偏。
+ * （实测：正因为这个，有些框准、有些框飘，取决于四个数有没有重复。）
+ *
+ * 所以这里按 plist 结构解：trailer → 偏移表 → 对象表 → 数组引用 → 每个值。
+ */
+function parseRectPlist(buf: Buffer): number[] | null {
+  if (buf.length < 40 || buf.toString('latin1', 0, 6) !== 'bplist') return null
+  const trailer = buf.subarray(buf.length - 32)
+  const offsetSize = trailer[6]
+  const refSize = trailer[7]
+  const numObjects = Number(trailer.readBigUInt64BE(8))
+  const topObject = Number(trailer.readBigUInt64BE(16))
+  const tableOffset = Number(trailer.readBigUInt64BE(24))
+  if (!numObjects || offsetSize < 1 || offsetSize > 8 || refSize < 1 || refSize > 8) return null
+  if (tableOffset + numObjects * offsetSize > buf.length) return null
+
+  const readSized = (at: number, size: number): number => {
+    let value = 0
+    for (let i = 0; i < size; i += 1) value = value * 256 + buf[at + i]
+    return value
+  }
+  const objectAt = (index: number): number => {
+    if (index >= numObjects) return -1
+    return readSized(tableOffset + index * offsetSize, offsetSize)
+  }
+
+  /** 把某个对象解成一个数字（int / real / double）。 */
+  const readNumber = (at: number): number | null => {
+    if (at < 0 || at >= buf.length) return null
+    const marker = buf[at]
+    const kind = marker >> 4
+    const sizeBits = marker & 0x0f
+    if (kind === 0x1) {
+      // int
+      const size = 1 << sizeBits
+      if (size > 8) return null
+      let value = 0
+      for (let i = 0; i < size; i += 1) value = value * 256 + buf[at + 1 + i]
+      return value
+    }
+    if (kind === 0x2) {
+      // real（0x22 float32 / 0x23 float64）
+      if (sizeBits === 2) return buf.readFloatBE(at + 1)
+      if (sizeBits === 3) return buf.readDoubleBE(at + 1)
+    }
+    return null
+  }
+
+  const arrayAt = objectAt(topObject)
+  if (arrayAt < 0) return null
+  const marker = buf[arrayAt]
+  if (marker >> 4 !== 0xa) return null
+  let count = marker & 0x0f
+  let refsAt = arrayAt + 1
+  if (count === 0x0f) {
+    // 长数组：后面跟一个 int 表示数量
+    const intMarker = buf[refsAt]
+    const size = 1 << (intMarker & 0x0f)
+    let value = 0
+    for (let i = 0; i < size; i += 1) value = value * 256 + buf[refsAt + 1 + i]
+    count = value
+    refsAt += 1 + size
+  }
+  const out: number[] = []
+  for (let i = 0; i < count; i += 1) {
+    const ref = readSized(refsAt + i * refSize, refSize)
+    const value = readNumber(objectAt(ref))
+    if (value === null) return null
+    out.push(value)
+  }
+  return out
+}
+
+/** 从截图文件的扩展属性里读矩形（点）。 */
 async function rectFromXattr(file: string): Promise<ShotRect | null> {
-  const hex = (await run('/usr/bin/xattr', ['-px', 'com.apple.metadata:kMDItemScreenCaptureGlobalRect', file]))
-    .replace(/\s+/g, '')
+  const hex = (
+    await run('/usr/bin/xattr', ['-px', 'com.apple.metadata:kMDItemScreenCaptureGlobalRect', file])
+  ).replace(/\s+/g, '')
   if (!hex || hex.length % 2 !== 0) return null
   let buf: Buffer
   try {
@@ -161,14 +250,8 @@ async function rectFromXattr(file: string): Promise<ShotRect | null> {
   } catch {
     return null
   }
-  const nums: number[] = []
-  for (let i = 0; i + 8 < buf.length; i += 1) {
-    if ((buf[i] & 0xf0) === 0x20 && (buf[i] & 0x0f) === 3) {
-      nums.push(buf.readDoubleBE(i + 1))
-      i += 8
-    }
-  }
-  if (nums.length < 4) return null
+  const nums = parseRectPlist(buf)
+  if (!nums || nums.length < 4) return null
   const [x, y, w, h] = nums
   if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null
   return { x, y, width: w, height: h }
@@ -220,7 +303,7 @@ function pickWindow(wins: WinInfo[], rect: ShotRect): WinInfo | null {
  *   xattr 读矩形 19ms → 整窗截图 223ms → 算 pad → 发事件（客户端 0 延迟出框）
  * 窗口列表（74ms）在**框选期间**就预热好了，不占这段。
  */
-async function finish(regionFile: string): Promise<void> {
+async function finish(regionFile: string, hint: WindowHint | null = null): Promise<void> {
   const rect = await rectFromXattr(regionFile)
   if (!rect) {
     state.lastError = 'no-rect'
@@ -272,6 +355,7 @@ async function finish(regionFile: string): Promise<void> {
     state.lastError = `finish-failed: ${String((error as Error)?.message ?? error)}`
   }
 
+  const selfWindow = pickSelfWindow(prefetchedWindows || (await listWindows()), hint)
   const shot: ShotPending = {
     id: `shot-${seq}`,
     at: Date.now(),
@@ -288,6 +372,8 @@ async function finish(regionFile: string): Promise<void> {
     scale,
     owner,
     ready: true,
+    selfWindow,
+    hint,
   }
   state.pending = shot
   state.lastShot = shot
@@ -299,7 +385,7 @@ async function finish(regionFile: string): Promise<void> {
 }
 
 /** 起一次交互式框选。 */
-async function startInteractive(): Promise<boolean> {
+async function startInteractive(hint: WindowHint | null): Promise<boolean> {
   if (!(await probeAvailable())) return false
   if (state.capturing) return false
   state.capturing = true
@@ -346,7 +432,7 @@ async function startInteractive(): Promise<boolean> {
 }
 
 /** 开发/自动化用：跳过交互式框选，直接按给定矩形截一块再走同一条收尾流程。 */
-async function startWithRect(rect: ShotRect): Promise<boolean> {
+async function startWithRect(rect: ShotRect, hint: WindowHint | null): Promise<boolean> {
   if (!(await probeAvailable())) return false
   if (state.capturing) return false
   state.capturing = true
@@ -360,14 +446,61 @@ async function startWithRect(rect: ShotRect): Promise<boolean> {
     `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.width)},${Math.round(rect.height)}`,
     regionFile,
   ])
-  await finish(regionFile)
+  await finish(regionFile, hint)
   state.capturing = false
   return true
+}
+
+/** 客户端带来的页面几何提示（用来认领"我们自己的窗口"）。 */
+export interface WindowHint {
+  screenX: number
+  screenY: number
+  outerWidth: number
+  outerHeight: number
+  innerWidth: number
+  innerHeight: number
+}
+
+function readHint(url: URL): WindowHint | null {
+  const num = (key: string): number => Number(url.searchParams.get(key))
+  const hint: WindowHint = {
+    screenX: num('sx'),
+    screenY: num('sy'),
+    outerWidth: num('ow'),
+    outerHeight: num('oh'),
+    innerWidth: num('iw'),
+    innerHeight: num('ih'),
+  }
+  const ok = [hint.screenX, hint.screenY, hint.outerWidth, hint.outerHeight, hint.innerWidth, hint.innerHeight].every(
+    (n) => Number.isFinite(n),
+  )
+  return ok && hint.outerWidth > 0 ? hint : null
+}
+
+/**
+ * 从窗口列表里认出"DSH 自己的窗口"。
+ *
+ * 判据：包含客户端的屏幕左上角（screenX/Y 就在自己窗口内），且宽度最接近它的 outerWidth。
+ * 认不出来就返回 null —— 客户端会回退到旧算法，不会更差。
+ */
+function pickSelfWindow(wins: WinInfo[], hint: WindowHint | null): ShotRect | null {
+  if (!hint) return null
+  const cx = hint.screenX + 2
+  const cy = hint.screenY + 2
+  const candidates = wins
+    .filter((w) => w.layer === 0 && cx >= w.x && cx <= w.x + w.w && cy >= w.y && cy <= w.y + w.h)
+    .sort((a, b) => Math.abs(a.w - hint.outerWidth) - Math.abs(b.w - hint.outerWidth))
+  const best = candidates[0]
+  if (!best) return null
+  // 宽度差太多说明认错了（比如窗口被系统加了边框）
+  if (Math.abs(best.w - hint.outerWidth) > Math.max(40, hint.outerWidth * 0.1)) return null
+  return { x: best.x, y: best.y, width: best.w, height: best.h }
 }
 
 /** `POST /api/shot/start` —— 开始一次截图（可带 `?rect=x,y,w,h` 供测试）。 */
 export async function handleShotStart(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url || '/', 'http://localhost')
+  const hint = readHint(url)
   const rectParam = url.searchParams.get('rect')
   try {
     await readBody(req, 64 * 1024).catch(() => '')
@@ -385,12 +518,12 @@ export async function handleShotStart(req: IncomingMessage, res: ServerResponse)
   if (rectParam) {
     const n = rectParam.split(',').map(Number)
     if (n.length === 4 && n.every(Number.isFinite)) {
-      const started = await startWithRect({ x: n[0], y: n[1], width: n[2], height: n[3] })
+      const started = await startWithRect({ x: n[0], y: n[1], width: n[2], height: n[3] }, hint)
       sendJson(res, 200, { ok: started, test: true })
       return
     }
   }
-  const started = await startInteractive()
+  const started = await startInteractive(hint)
   sendJson(res, 200, { ok: started })
 }
 
@@ -456,6 +589,8 @@ export async function handleShotImage(req: IncomingMessage, res: ServerResponse)
 
 /** 客户端加载时回报的自检结果（开发期用，只存内存）。 */
 export let clientHello: unknown = null
+/** 按 stage 保留最近一次上报：'geometry' 这种关键诊断不会被后面的 'uploaded' 覆盖。 */
+export const clientReports: Record<string, unknown> = {}
 
 export function handleShotHello(req: IncomingMessage, res: ServerResponse): void {
   const chunks: Buffer[] = []
@@ -463,6 +598,8 @@ export function handleShotHello(req: IncomingMessage, res: ServerResponse): void
   req.on('end', () => {
     try {
       clientHello = JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null')
+      const stage = (clientHello as { stage?: string } | null)?.stage
+      if (stage) clientReports[stage] = clientHello
     } catch {
       clientHello = { parseError: true }
     }
@@ -497,9 +634,10 @@ export async function handleShotStatus(_req: IncomingMessage, res: ServerRespons
     ok: true,
     status: shotStatus(),
     clientHello,
+    clientReports,
     // 只读观察点：不清 pending，用来量"事件发出 → 整窗图做好"这一段
     lastShot: last
-      ? { id: last.id, ready: last.ready, ageMs: Date.now() - last.at, owner: last.owner, rect: last.rect, pad: last.pad, scale: last.scale }
+      ? { id: last.id, ready: last.ready, ageMs: Date.now() - last.at, owner: last.owner, rect: last.rect, pad: last.pad, scale: last.scale, selectionRect: last.selectionRect, selfWindow: last.selfWindow, hint: last.hint }
       : null,
   })
 }

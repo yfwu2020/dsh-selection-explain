@@ -179,9 +179,24 @@ export function createPanelController(env) {
    * 为什么不是一开始就显示标题：标题要等回答结束后再单独问一次模型才有，
    * 所以面板先显示问题，拿到标题后再替换 —— 只换当前这段对话的。
    */
+  /** 顶部那行显示什么：截图对话有标题就优先显示标题（追问不再覆盖它）。 */
+  function setQuoteLine(text) {
+    if (!env.quote) return
+    var title = env.state.shotTitle
+    if (title) {
+      env.quote.textContent = String(title)
+      env.quote.setAttribute('data-title', '1')
+      return
+    }
+    env.quote.removeAttribute('data-title')
+    env.quote.textContent = text
+  }
+
   function applyShotTitle(title) {
-    if (!title || !env.quote) return
-    env.quote.textContent = String(title)
+    if (!title) return
+    // 记进状态：之后每次追问重绘顶部那行，都会优先用这个标题（否则会被"最新问题"盖掉）
+    env.state.shotTitle = String(title)
+    setQuoteLine(String(title))
   }
 
   function openPanelForShot(anchor, options) {
@@ -211,7 +226,8 @@ export function createPanelController(env) {
     env.state.cacheKey = cacheKeyOf(String(options.askFirst || ''), 'shot:' + shotIdentity)
     env.hideButton()
     showPanel(anchor)
-    env.quote.textContent = '截图 · 已带上整窗截图'
+    env.state.shotTitle = ''
+    setQuoteLine('截图 · 已带上整窗截图')
     env.clearQuotes()
     env.clearAttachments()
     env.state.turns = []
@@ -252,7 +268,8 @@ export function createPanelController(env) {
     env.state.kind = env.state.payload.kind
     env.hideButton()
     showPanel(anchor)
-    env.quote.textContent = text.length > 240 ? text.slice(0, 240) + ' …' : text
+    env.state.shotTitle = ''
+    setQuoteLine(text.length > 240 ? text.slice(0, 240) + ' …' : text)
     applySectionTitle(env.state.kind, text)
     // key 用稳定上下文（选中文字**之前**那段）；真正喂模型时仍然用完整上下文
     var cacheKey = cacheKeyOf(text, keyContext === undefined ? context : keyContext)
@@ -717,14 +734,11 @@ export function createPanelController(env) {
     // 正在录音/识别就到此为止：麦**一定要松开**（不能让标签页一直显示"正在使用麦克风"），
     // 识别出来的文字也没地方放了 —— 连同提示一起静默收掉。
     env.cancelVoice()
-    // 收起小窗不该被记成"失败"：打个标记，让 fail() 走「已停止」而不是「解读失败」
-    if (env.state.request) env.state.aborted = true
-    if (env.state.request) env.state.request.abort()
-    env.state.request = null
-    if (env.state.askRequest) {
-      env.state.stopped = true
-      env.state.askRequest.abort()
-    }
+    // 用户要的是：小窗关掉 ≠ 停止生成。
+    // 模型继续把话说完，结果照常落盘（下次从「最近」里打开就能看到完整回答），
+    // 标题那一枪也照常发 —— 那边本来就不依赖小窗。
+    // 只有点「停止」按钮 / 换一段对话才真正 abort（见 conversation.js）。
+    env.state.detached = true
     releaseRenderedContent()
     env.paintPill()
     // 小窗收了：抽屉若也关着就把轮询停掉（两处都不需要这个值了）
