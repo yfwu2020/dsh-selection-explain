@@ -62,16 +62,6 @@ export interface ShotPending {
   owner: string
   /** 整窗截图是否已经做好（`/shot/image` 会等它；客户端拿到事件就能先画框）。 */
   ready: boolean
-  /** 客户端带来的页面几何（null = 客户端没带，说明它还是旧版）。 */
-  hint?: WindowHint | null
-  /**
-   * **DSH 自己那个窗口**的矩形（屏幕点）。
-   * 客户端用它把"选区屏幕坐标"精确换算成页面的 CSS px：
-   *   scale = selfWindow.width / window.outerWidth
-   *   内容原点 = selfWindow 原点 + (outer-inner) 换算出的标题栏
-   * 拿不到就是 null（客户端回退到旧算法）。
-   */
-  selfWindow: { x: number; y: number; width: number; height: number } | null
 }
 
 interface ShotState {
@@ -303,7 +293,7 @@ function pickWindow(wins: WinInfo[], rect: ShotRect): WinInfo | null {
  *   xattr 读矩形 19ms → 整窗截图 223ms → 算 pad → 发事件（客户端 0 延迟出框）
  * 窗口列表（74ms）在**框选期间**就预热好了，不占这段。
  */
-async function finish(regionFile: string, hint: WindowHint | null = null): Promise<void> {
+async function finish(regionFile: string): Promise<void> {
   const rect = await rectFromXattr(regionFile)
   if (!rect) {
     state.lastError = 'no-rect'
@@ -324,11 +314,23 @@ async function finish(regionFile: string, hint: WindowHint | null = null): Promi
   try {
     const wins = prefetchedWindows || (await listWindows())
     const win = pickWindow(wins, rect)
+    // 预取的列表只用来**选窗口 id**；用完即作废，免得陈旧尺寸流到下一次
+    prefetchedWindows = null
     if (win) {
       // ⚠️ 不要加 `-o`：文档说它"不截窗口阴影"，实测**反过来** ——
       // 加了是 3840×2224（多 64px 阴影），不加才是 3840×2160（正好窗口的 2 倍）。
       // 阴影上下不对称，按对半分会让红框整体偏（用户实测：向上偏移）。
       await run(CAPTURE, ['-l', String(win.id), '-x', imagePath])
+      // ⚠️ 截完再取一次列表：窗口可能刚被拖动/缩放，用旧矩形算 scale 会错得很离谱
+      //（实测：旧值 1280×820 vs 实际 1616×945 → scale 2.53 而不是 2.0）。
+      const fresh = await listWindows()
+      const latest = fresh.find((w) => w.id === win.id)
+      if (latest) {
+        win.x = latest.x
+        win.y = latest.y
+        win.w = latest.w
+        win.h = latest.h
+      }
       const size = await pngSize(imagePath)
       if (size) {
         scale = size.w / win.w
@@ -355,7 +357,6 @@ async function finish(regionFile: string, hint: WindowHint | null = null): Promi
     state.lastError = `finish-failed: ${String((error as Error)?.message ?? error)}`
   }
 
-  const selfWindow = pickSelfWindow(prefetchedWindows || (await listWindows()), hint)
   const shot: ShotPending = {
     id: `shot-${seq}`,
     at: Date.now(),
@@ -372,8 +373,6 @@ async function finish(regionFile: string, hint: WindowHint | null = null): Promi
     scale,
     owner,
     ready: true,
-    selfWindow,
-    hint,
   }
   state.pending = shot
   state.lastShot = shot
@@ -385,7 +384,7 @@ async function finish(regionFile: string, hint: WindowHint | null = null): Promi
 }
 
 /** 起一次交互式框选。 */
-async function startInteractive(hint: WindowHint | null): Promise<boolean> {
+async function startInteractive(): Promise<boolean> {
   if (!(await probeAvailable())) return false
   if (state.capturing) return false
   state.capturing = true
@@ -432,7 +431,7 @@ async function startInteractive(hint: WindowHint | null): Promise<boolean> {
 }
 
 /** 开发/自动化用：跳过交互式框选，直接按给定矩形截一块再走同一条收尾流程。 */
-async function startWithRect(rect: ShotRect, hint: WindowHint | null): Promise<boolean> {
+async function startWithRect(rect: ShotRect): Promise<boolean> {
   if (!(await probeAvailable())) return false
   if (state.capturing) return false
   state.capturing = true
@@ -446,61 +445,14 @@ async function startWithRect(rect: ShotRect, hint: WindowHint | null): Promise<b
     `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.width)},${Math.round(rect.height)}`,
     regionFile,
   ])
-  await finish(regionFile, hint)
+  await finish(regionFile)
   state.capturing = false
   return true
-}
-
-/** 客户端带来的页面几何提示（用来认领"我们自己的窗口"）。 */
-export interface WindowHint {
-  screenX: number
-  screenY: number
-  outerWidth: number
-  outerHeight: number
-  innerWidth: number
-  innerHeight: number
-}
-
-function readHint(url: URL): WindowHint | null {
-  const num = (key: string): number => Number(url.searchParams.get(key))
-  const hint: WindowHint = {
-    screenX: num('sx'),
-    screenY: num('sy'),
-    outerWidth: num('ow'),
-    outerHeight: num('oh'),
-    innerWidth: num('iw'),
-    innerHeight: num('ih'),
-  }
-  const ok = [hint.screenX, hint.screenY, hint.outerWidth, hint.outerHeight, hint.innerWidth, hint.innerHeight].every(
-    (n) => Number.isFinite(n),
-  )
-  return ok && hint.outerWidth > 0 ? hint : null
-}
-
-/**
- * 从窗口列表里认出"DSH 自己的窗口"。
- *
- * 判据：包含客户端的屏幕左上角（screenX/Y 就在自己窗口内），且宽度最接近它的 outerWidth。
- * 认不出来就返回 null —— 客户端会回退到旧算法，不会更差。
- */
-function pickSelfWindow(wins: WinInfo[], hint: WindowHint | null): ShotRect | null {
-  if (!hint) return null
-  const cx = hint.screenX + 2
-  const cy = hint.screenY + 2
-  const candidates = wins
-    .filter((w) => w.layer === 0 && cx >= w.x && cx <= w.x + w.w && cy >= w.y && cy <= w.y + w.h)
-    .sort((a, b) => Math.abs(a.w - hint.outerWidth) - Math.abs(b.w - hint.outerWidth))
-  const best = candidates[0]
-  if (!best) return null
-  // 宽度差太多说明认错了（比如窗口被系统加了边框）
-  if (Math.abs(best.w - hint.outerWidth) > Math.max(40, hint.outerWidth * 0.1)) return null
-  return { x: best.x, y: best.y, width: best.w, height: best.h }
 }
 
 /** `POST /api/shot/start` —— 开始一次截图（可带 `?rect=x,y,w,h` 供测试）。 */
 export async function handleShotStart(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url || '/', 'http://localhost')
-  const hint = readHint(url)
   const rectParam = url.searchParams.get('rect')
   try {
     await readBody(req, 64 * 1024).catch(() => '')
@@ -518,12 +470,12 @@ export async function handleShotStart(req: IncomingMessage, res: ServerResponse)
   if (rectParam) {
     const n = rectParam.split(',').map(Number)
     if (n.length === 4 && n.every(Number.isFinite)) {
-      const started = await startWithRect({ x: n[0], y: n[1], width: n[2], height: n[3] }, hint)
+      const started = await startWithRect({ x: n[0], y: n[1], width: n[2], height: n[3] })
       sendJson(res, 200, { ok: started, test: true })
       return
     }
   }
-  const started = await startInteractive(hint)
+  const started = await startInteractive()
   sendJson(res, 200, { ok: started })
 }
 
@@ -637,7 +589,7 @@ export async function handleShotStatus(_req: IncomingMessage, res: ServerRespons
     clientReports,
     // 只读观察点：不清 pending，用来量"事件发出 → 整窗图做好"这一段
     lastShot: last
-      ? { id: last.id, ready: last.ready, ageMs: Date.now() - last.at, owner: last.owner, rect: last.rect, pad: last.pad, scale: last.scale, selectionRect: last.selectionRect, windowRect: last.windowRect, selfWindow: last.selfWindow, hint: last.hint }
+      ? { id: last.id, ready: last.ready, ageMs: Date.now() - last.at, owner: last.owner, rect: last.rect, pad: last.pad, scale: last.scale, selectionRect: last.selectionRect, windowRect: last.windowRect }
       : null,
   })
 }

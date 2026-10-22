@@ -23,41 +23,6 @@ export var FRAME_WIDTH_MIN_PX = 3
 export var SHOT_INSIDE_SLOP = 2
 
 /** 屏幕矩形 → 页面矩形。 */
-/**
- * 把"选区（屏幕点）"换算成"页面 CSS px"。
- *
- * 旧算法只用 `window.screenX/screenY`，它等于窗口**外框**左上角，而且完全不管页面缩放 ——
- * 窗口一大、或者页面被缩放过，误差就被放大（用户实测：页面尺寸一变框就飘得很厉害）。
- *
- * 新算法全部用**实测值**：
- *   scale   = 自己窗口宽(点) / outerWidth(CSS px)      ← 缩放多少都算得出
- *   内容原点 = 窗口原点 + (outerHeight - innerHeight) × scale
- * 这些量每次截图现取，与窗口大小 / 缩放 / DPI 无关。
- *
- * 拿不到 selfWindow（host 没认出来）就回退旧算法，不会更差。
- */
-export function pageRectFromScreen(rect, selfWindow, metrics) {
-  if (!rect) return null
-  if (!selfWindow || !metrics) return pageRectOf(rect, metrics)
-  var outerW = metrics.outerWidth || 0
-  var outerH = metrics.outerHeight || 0
-  var innerH = metrics.innerHeight || 0
-  if (outerW <= 0 || outerH <= 0) return pageRectOf(rect, metrics)
-  var scale = selfWindow.width / outerW
-  if (!(scale > 0.2 && scale < 5)) return pageRectOf(rect, metrics)
-  var chrome = Math.max(0, outerH - innerH) * scale
-  // 合理性检查：标题栏不该超过 80 点（超过说明认错窗口或量到了别的边框）
-  if (chrome > 80) chrome = 0
-  var originX = selfWindow.x
-  var originY = selfWindow.y + chrome
-  return asRect({
-    left: (rect.x - originX) / scale,
-    top: (rect.y - originY) / scale,
-    width: rect.width / scale,
-    height: rect.height / scale,
-  })
-}
-
 export function pageRectOf(rect, origin) {
   if (!rect) return null
   var sx = origin && typeof origin.screenX === 'number' ? origin.screenX : 0
@@ -377,21 +342,9 @@ export function createShotController(env) {
     // 起新截图前先把上一张的框/卡片收掉：
     // 这些是我们自己的页面内容，不收拾的话会被 `screencapture -l` 截进新图里。
     clearAll()
-    // 带上页面几何：host 靠它认出"DSH 自己的窗口"，再配合它把选区精确换算成 CSS px
-    var win = env.window || window
-    var q =
-      '?sx=' + Math.round(win.screenX || 0) +
-      '&sy=' + Math.round(win.screenY || 0) +
-      '&ow=' + Math.round(win.outerWidth || 0) +
-      '&oh=' + Math.round(win.outerHeight || 0) +
-      '&iw=' + Math.round(win.innerWidth || 0) +
-      '&ih=' + Math.round(win.innerHeight || 0)
-    fetch(SHOT_START + q, { method: 'POST', body: '' }).catch(function () {})
+    fetch(SHOT_START, { method: 'POST', body: '' }).catch(function () {})
   }
 
-  /**
-   * 处理一次结果：画红框 → 上传 → 放进界面。
-   */
   /**
    * 处理一次截图结果。
    *
@@ -411,17 +364,7 @@ export function createShotController(env) {
       // layer 可能被 slot 重渲染摘掉（见 index.js 的 ensureLayer）：这里先挂回去，
       // 否则框和卡片会 append 到一个不在文档里的节点上 —— 什么都不显示。
       if (env.ensureLayer) env.ensureLayer()
-      var win = env.window || window
-      var metrics = {
-        screenX: win.screenX || 0,
-        screenY: win.screenY || 0,
-        outerWidth: win.outerWidth || 0,
-        outerHeight: win.outerHeight || 0,
-        innerWidth: win.innerWidth || 0,
-        innerHeight: win.innerHeight || 0,
-      }
-      var page = pageRectFromScreen(shot.selectionRect, shot.selfWindow, metrics)
-      report({ stage: 'geometry', self: shot.selfWindow, metrics: metrics, page: page ? [Math.round(page.left), Math.round(page.top), Math.round(page.width), Math.round(page.height)] : null })
+      var page = pageRectOf(shot.selectionRect, origin())
       var view = viewport()
       var inside = !!(page && insideViewport(page, view))
       var anchor
