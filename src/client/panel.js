@@ -205,6 +205,8 @@ export function createPanelController(env) {
     // 记进状态：之后每次追问重绘顶部那行，都会优先用这个标题（否则会被"最新问题"盖掉）
     env.state.shotTitle = String(title)
     setQuoteLine(String(title))
+    // 胶囊左侧也显示同一个标题：否则标题生成了，胶囊还停在用户那句问题上
+    if (env.paintPill) env.paintPill()
   }
 
   function openPanelForShot(anchor, options) {
@@ -244,6 +246,7 @@ export function createPanelController(env) {
     showPanel(anchor)
     env.state.shotTitle = ''
     setQuoteLine('截图 · ' + shotScopeLabel(env.state.shotScope, env.state.shotFrame))
+    if (env.paintPill) env.paintPill()
     env.clearQuotes()
     env.clearAttachments()
     env.state.turns = []
@@ -287,6 +290,8 @@ export function createPanelController(env) {
     env.state.shotTitle = ''
     setQuoteLine(text.length > 240 ? text.slice(0, 240) + ' …' : text)
     applySectionTitle(env.state.kind, text)
+    // 清掉上一段截图标题后，胶囊也要立刻回到这段文字
+    if (env.paintPill) env.paintPill()
     // key 用稳定上下文（选中文字**之前**那段）；真正喂模型时仍然用完整上下文
     var cacheKey = cacheKeyOf(text, keyContext === undefined ? context : keyContext)
     var cached = env.cache.get(cacheKey)

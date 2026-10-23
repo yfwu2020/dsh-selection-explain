@@ -689,6 +689,8 @@ export function createHistoryController(env) {
     env.applySectionTitle(env.state.kind, entry.text)
     hideHistoryList()
     env.paint()
+    // 胶囊左侧也要跟着回放：有标题显示标题，没标题显示这段原文
+    if (env.paintPill) env.paintPill()
     renderTurns()
   }
 

@@ -6,7 +6,10 @@ export function createPillController(env) {
 
   /** 胶囊左侧那截"最近一次划的是什么"（太长就截断）。 */
   function pillSnippet() {
-    var text = env.state.payload && env.state.payload.text ? String(env.state.payload.text) : ''
+    // 截图对话：优先用模型起的标题；还没生成时才退回用户问的那句话
+    var title = env.state.shotTitle ? String(env.state.shotTitle) : ''
+    title = title.replace(/\s+/g, ' ').trim()
+    var text = title || (env.state.payload && env.state.payload.text ? String(env.state.payload.text) : '')
     text = text.replace(/\s+/g, ' ').trim()
     if (!text) return ''
     return text.length > 12 ? text.slice(0, 12) + '…' : text
@@ -47,7 +50,7 @@ export function createPillController(env) {
     var caret = env.panelOpen ? '▾' : '▴'
     if (env.pillCaret.textContent !== caret) env.pillCaret.textContent = caret
     env.pill.title = [
-      snippet ? '最近一次划词：' + snippet : '还没有划过词',
+      snippet ? (env.state.shotTitle ? '最近一次截图：' : '最近一次划词：') + snippet : '还没有划过词',
       status.text,
       env.panelOpen ? '点击收起小窗' : '点击回到这个小窗',
       '可拖动（拖到右下角附近会吸附回去）',

@@ -926,6 +926,7 @@ export function apply(ctx) {
     get quote() { return quote },
     get applySectionTitle() { return panelController.applySectionTitle },
     get paint() { return panelController.paint },
+    get paintPill() { return pillController.paintPill },
     get timerScope() { return timerScope },
     get panelOpen() { return panelOpen },
     set panelOpen(value) { panelOpen = value },
