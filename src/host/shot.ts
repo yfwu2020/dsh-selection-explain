@@ -88,6 +88,13 @@ export interface ShotPending {
   ready: boolean
 }
 
+/** 一次截图失败（客户端通过长轮询取走，用来给用户一句人话）。 */
+export interface ShotError {
+  code: string
+  message: string
+  at: number
+}
+
 interface ShotState {
   available: boolean
   reason: string
@@ -95,6 +102,8 @@ interface ShotState {
   capturing: boolean
   /** 最近一次结果（客户端取走即清）。 */
   pending: ShotPending | null
+  /** 最近一次失败（客户端取走即清）。 */
+  pendingError: ShotError | null
   /** 最近一次结果的**副本**：图像端点在 pending 被取走之后仍要能按 id 找到图。 */
   lastShot: ShotPending | null
   /** 上一次失败原因（调试）。 */
@@ -108,13 +117,14 @@ const state: ShotState = {
   reason: 'idle',
   capturing: false,
   pending: null,
+  pendingError: null,
   lastShot: null,
   lastError: '',
   total: 0,
 }
 
-/** 长轮询的等待者。 */
-const waiters: Array<(shot: ShotPending | null) => void> = []
+/** 长轮询的等待者（成功或失败都会叫醒）。 */
+const waiters: Array<() => void> = []
 
 /** 每次截图递增；临时文件名与事件 id 都用它，避免第二张图覆盖第一张。 */
 let seq = 0
@@ -484,18 +494,36 @@ async function captureSelectionToFile(
   return { path, size: { w: crop.width, h: crop.height }, scale: captured.scale }
 }
 
+function notifyWaiters(): void {
+  while (waiters.length > 0) {
+    const fn = waiters.shift()
+    if (fn) fn()
+  }
+}
+
 async function publish(shot: ShotPending, shotSeq: number, note = ''): Promise<void> {
   state.total += 1
   state.lastError = note
   state.pending = shot
+  // 成功这一次比之前那条失败更新：不要把旧错误再塞给客户端
+  state.pendingError = null
   state.lastShot = shot
   state.capturing = false
-  while (waiters.length > 0) {
-    const fn = waiters.shift()
-    if (fn) fn(shot)
-  }
+  notifyWaiters()
   // 旧图已经没用了：客户端取图后就不再回头，保留最近几张只为重试与诊断
   void pruneShots(shotSeq)
+}
+
+/**
+ * 截图失败（**起完截图之后**发生的失败）：把一条人话放进长轮询，客户端弹提示。
+ *
+ * 用户按 Esc 取消不算失败 —— 那条路径不调用这里。
+ */
+function fail(code: string, message: string): void {
+  state.lastError = code
+  state.pendingError = { code, message, at: Date.now() }
+  state.capturing = false
+  notifyWaiters()
 }
 
 /** 删除 seq 之前的旧临时图（只删本插件自己的命名，不动目录里的其它东西）。 */
@@ -535,8 +563,7 @@ async function finishSelection(
 ): Promise<void> {
   const size = await pngSize(regionFile)
   if (!size) {
-    state.lastError = 'image-missing'
-    state.capturing = false
+    fail('image-missing', '截图已经拍下，但读不到图片文件，请重试')
     return
   }
   const sel = selection || { x: 0, y: 0, width: size.w, height: size.h }
@@ -569,8 +596,7 @@ async function fallbackSelection(
   if (regionFile) return finishSelection(regionFile, selection, options, note)
   const captured = await captureSelectionToFile(selection, options, `region-${options.seq}.png`)
   if (captured) return finishSelection(captured.path, selection, options, note)
-  state.lastError = note || 'selection-failed'
-  state.capturing = false
+  fail(note || 'selection-failed', '截图已拍下，但读取图片失败，请重试')
 }
 
 /** 选区 + 留白：外扩后裁到选区中心所在的那块屏，再从整屏图里裁出来。 */
@@ -784,6 +810,16 @@ async function finishInteractive(
   }
 }
 
+/** 把 screencapture 的 stderr 翻成用户能照做的一句话。 */
+function friendlyCaptureError(stderr: string, code: number | null): string {
+  const text = stderr.toLowerCase()
+  if (text.includes('not authorized') || text.includes('permission') || text.includes('could not create image')) {
+    return '没有屏幕录制权限：请在 系统设置 → 隐私与安全性 → 屏幕录制 中允许 DSH，然后重试'
+  }
+  const tail = stderr.trim().replace(/\s+/g, ' ').slice(0, 160)
+  return `系统截图失败（退出码 ${code ?? '未知'}）${tail ? `：${tail}` : ''}`
+}
+
 /** 起一次交互式框选。 */
 async function startInteractive(options: Omit<ShotOptions, 'seq'>): Promise<boolean> {
   if (!ensureCaptureAvailable()) return false
@@ -820,8 +856,14 @@ async function startInteractive(options: Omit<ShotOptions, 'seq'>): Promise<bool
       .catch(() => {})
   }
 
-  const child = spawn(CAPTURE, ['-i', '-x', regionFile], { stdio: 'ignore' })
+  const child = spawn(CAPTURE, ['-i', '-x', regionFile], { stdio: ['ignore', 'ignore', 'pipe'] })
+  let stderr = ''
+  let timedOut = false
+  child.stderr?.on('data', (chunk: Buffer | string) => {
+    if (stderr.length < 4000) stderr += String(chunk)
+  })
   const timer = setTimeout(() => {
+    timedOut = true
     try {
       child.kill('SIGTERM')
     } catch {
@@ -831,21 +873,36 @@ async function startInteractive(options: Omit<ShotOptions, 'seq'>): Promise<bool
 
   child.on('error', () => {
     clearTimeout(timer)
-    state.capturing = false
-    state.lastError = 'spawn-failed'
+    fail('spawn-failed', '无法启动系统截图命令（screencapture）')
   })
-  child.on('close', () => {
+  child.on('close', (code, signal) => {
     clearTimeout(timer)
-    // 退出码非 0 / 没有文件 = 用户按了 Esc 取消
+    // stat 失败（没有文件）不等于程序异常：先当成"没拍到"，下面按退出码/stderr 区分
     void stat(regionFile)
-      .then((s) => (s.size > 0 ? finishInteractive(regionFile, opts) : Promise.resolve()))
-      .then(() => {
+      .catch(() => null)
+      .then((s) => {
+        // spawn 失败已经报过（'error' 之后仍可能来一条 close）
+        if (state.pendingError) return undefined
+        if (s && s.size > 0) return finishInteractive(regionFile, opts)
+        if (timedOut || signal === 'SIGTERM') {
+          fail('timeout', '框选超时，已取消这次截图')
+        } else if ((typeof code === 'number' && code !== 0) || stderr.trim()) {
+          // 非 0 退出码或 stderr 都说明系统截图失败；退出码 0 + 无输出才是用户按 Esc
+          fail('capture-failed', friendlyCaptureError(stderr, code))
+        }
+        return undefined
+      })
+      .catch((error: unknown) => {
+        // 已经发布过结果（例如回退成功）就不要再追加一条失败
+        const shotId = `shot-${shotSeq}`
+        if (state.pending?.id === shotId || state.lastShot?.id === shotId) return
+        const message = String((error as Error)?.message ?? error)
+        fail('finish-failed', `截图已拍下，但处理失败：${message}`)
+      })
+      .finally(() => {
         state.capturing = false
         prefetchedWindows = null
         prefetchedDisplays = null
-      })
-      .catch(() => {
-        state.capturing = false
       })
   })
   return true
@@ -859,15 +916,21 @@ async function startWithRect(rect: ShotRect, options: Omit<ShotOptions, 'seq'>):
   const shotSeq = ++seq
   const opts: ShotOptions = { ...options, seq: shotSeq }
   // 自动化路径也用"整屏 + 裁切"，与真实框选走出同一套坐标：不再依赖 `-R`
-  const captured = await captureSelectionToFile(rect, opts, `region-${shotSeq}.png`)
-  if (!captured) {
-    state.capturing = false
-    state.lastError = 'capture-failed'
+  try {
+    const captured = await captureSelectionToFile(rect, opts, `region-${shotSeq}.png`)
+    if (!captured) {
+      state.capturing = false
+      state.lastError = 'capture-failed'
+      return false
+    }
+    await finishInteractive(captured.path, opts, rect)
+    return true
+  } catch (error) {
+    state.lastError = `start-failed: ${String((error as Error)?.message ?? error)}`
     return false
+  } finally {
+    state.capturing = false
   }
-  await finishInteractive(captured.path, opts, rect)
-  state.capturing = false
-  return true
 }
 
 const DEFAULT_SHOT_CONFIG: Pick<Config, 'shotCardScope' | 'shotPanelScope' | 'shotMargin'> = {
@@ -904,6 +967,8 @@ export async function handleShotStart(
     sendJson(res, 405, { ok: false, reason: 'method-not-allowed' })
     return
   }
+  // 新的一次尝试覆盖上一次还没取走的失败提示
+  state.pendingError = null
   const url = new URL(req.url || '/', 'http://localhost')
   const rectParam = url.searchParams.get('rect')
   const mode: ShotMode = url.searchParams.get('mode') === 'panel' ? 'panel' : 'card'
@@ -925,33 +990,54 @@ export async function handleShotStart(
     const n = rectParam.split(',').map(Number)
     if (n.length === 4 && n.every(Number.isFinite) && n[2] > 0 && n[3] > 0) {
       const started = await startWithRect({ x: n[0], y: n[1], width: n[2], height: n[3] }, options)
-      sendJson(res, 200, { ok: started, test: true, mode, scope: options.scope, margin: options.margin })
+      sendJson(res, 200, {
+        ok: started,
+        test: true,
+        mode,
+        scope: options.scope,
+        margin: options.margin,
+        ...(started ? {} : { reason: state.lastError || 'start-failed' }),
+      })
       return
     }
   }
   const started = await startInteractive(options)
-  sendJson(res, 200, { ok: started, mode, scope: options.scope, margin: options.margin })
+  sendJson(res, 200, {
+    ok: started,
+    mode,
+    scope: options.scope,
+    margin: options.margin,
+    ...(started ? {} : { reason: state.lastError || 'start-failed' }),
+  })
 }
 
-/** `GET /api/shot/pending` —— 长轮询，等下一次截图结果（最多 25 秒）。 */
+/** `GET /api/shot/pending` —— 长轮询，等下一次截图结果或失败原因（最多 25 秒）。 */
 export function handleShotPending(_req: IncomingMessage, res: ServerResponse): void {
-  const take = () => {
+  const takeShot = () => {
     const shot = state.pending
     state.pending = null
     return shot
   }
-  if (state.pending) {
-    sendJson(res, 200, { ok: true, shot: take(), status: shotStatus() })
+  const takeError = () => {
+    const error = state.pendingError
+    state.pendingError = null
+    return error
+  }
+  const reply = () => {
+    sendJson(res, 200, { ok: true, shot: takeShot(), error: takeError(), status: shotStatus() })
+  }
+  if (state.pending || state.pendingError) {
+    reply()
     return
   }
   const timer = setTimeout(() => {
     const i = waiters.indexOf(done)
     if (i >= 0) waiters.splice(i, 1)
-    sendJson(res, 200, { ok: true, shot: null, status: shotStatus() })
+    reply()
   }, 25_000)
   const done = () => {
     clearTimeout(timer)
-    sendJson(res, 200, { ok: true, shot: take(), status: shotStatus() })
+    reply()
   }
   waiters.push(done)
 }
