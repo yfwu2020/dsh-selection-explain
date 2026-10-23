@@ -16,6 +16,8 @@ export function createHistoryController(env) {
    */
   /** HTML转文字只用于明确引用和引用附近的可读快照；发送历史保持原文。 */
   var foldCount = 0
+  /** 正在为哪条截图对话请求标题：防止同一段对话的快速追问重复起标题请求。 */
+  var shotTitlePendingKey = ''
 
   var HTML_VOID_TAGS = {
     area: 1, base: 1, br: 1, col: 1, embed: 1, hr: 1, img: 1, input: 1,
@@ -432,7 +434,13 @@ export function createHistoryController(env) {
       key: env.state.cacheKey,
       text: payload.text,
       context: payload.context,
-      label: payload.label,
+      // 截图有标题时写进 label（旧列表/旧客户端也能显示）；标题本体另存 title
+      label: payload.kind === 'shot' && String(env.state.shotTitle || '').trim()
+        ? '截图 · ' + String(env.state.shotTitle).trim()
+        : payload.label,
+      ...(payload.kind === 'shot' && String(env.state.shotTitle || '').trim()
+        ? { title: String(env.state.shotTitle).trim() }
+        : {}),
       parts: env.state.parts,
       turns: turns,
       toolDigest: env.state.toolDigest,
@@ -460,8 +468,12 @@ export function createHistoryController(env) {
         .then(function (result) {
           var failed = !result || result.ok !== true
           noteSaved(failed)
-          // 截图提问：落盘成功后再去要一次标题（后台，不阻塞、不影响对话状态）
-          if (!failed && payload.kind === 'shot') requestShotTitle(savedBody, payload.sessionId)
+          // 截图提问：落盘成功后再去要一次标题（后台，不阻塞、不影响对话状态）。
+          // 已经有标题 / 同一段对话正在请求时不再重复问 —— 否则每次追问都可能重起一次标题。
+          if (!failed && payload.kind === 'shot' && !String(env.state.shotTitle || '').trim() && shotTitlePendingKey !== savedBody.key) {
+            shotTitlePendingKey = savedBody.key
+            requestShotTitle(savedBody, payload.sessionId)
+          }
         })
         .catch(function () {
           noteSaved(true)
@@ -522,14 +534,18 @@ export function createHistoryController(env) {
       .then(function (raw) {
         var title = cleanShotTitle(readSseText(raw))
         if (!title) throw new Error('empty-title')
-        // 只在这一种情况下放弃：你已经换到**另一段对话**（另一个 key）。
-        // 同一段对话里你又问了一句，不影响 —— 见 writeShotTitle（读最新的再改）。
-        if (env.state.cacheKey !== savedKey) return
+        if (shotTitlePendingKey === savedKey) shotTitlePendingKey = ''
+        // 先把标题挂到当前面板（即使随后写历史失败，用户也能立刻看到）；
+        // 再异步写回历史，供重开 / 最近列表使用。
+        if (env.state.cacheKey === savedKey && env.applyShotTitle) env.applyShotTitle(title)
         writeShotTitle(savedKey, title)
       })
       .catch(function () {
         // 上游偶发失败（空正文 / 400 / 断流）：隔 2 秒重试一次，之后放弃
-        if (tries >= 1) return
+        if (tries >= 1) {
+          if (shotTitlePendingKey === savedKey) shotTitlePendingKey = ''
+          return
+        }
         setTimeout(function () {
           requestShotTitle(saved, sessionId, tries + 1)
         }, 2000)
@@ -541,7 +557,7 @@ export function createHistoryController(env) {
    *
    * ⚠️ 不能拿"保存时的旧快照"去覆盖：历史条目是**整条一起存**的（标题 + 整段对话），
    * 覆盖时如果有人在这几秒里又问了一句，旧快照会把那一句一起抹掉。
-   * 所以先**读最新的那条**，只改 label，再存回去 —— 对话一个不少，标题也更新了。
+   * 所以先**读最新的那条**，只改 title/label，再存回去 —— 对话一个不少，标题也更新了。
    */
   function writeShotTitle(key, title) {
     fetch(HISTORY + '?key=' + encodeURIComponent(key))
@@ -554,18 +570,17 @@ export function createHistoryController(env) {
         return fetch(HISTORY, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(Object.assign({}, entry, { label: '截图 · ' + title })),
+          // title 是权威字段；label 继续写成「截图 · 标题」兼容旧列表/旧版本
+          body: JSON.stringify(Object.assign({}, entry, { title: title, label: '截图 · ' + title })),
         })
       })
       .then(function (response) {
         if (!response || !response.ok) return
-        // 面板顶部那行也换成生成的标题（只换当前这段对话的）
-        if (env.applyShotTitle) env.applyShotTitle(title)
         // 列表正开着就刷新一下，让新标题立刻可见
         if (env.historyList && env.historyList.style.display === 'flex') openHistoryList()
       })
       .catch(function () {
-        /* 写不进去就算了：条目保持「截图」，不影响任何东西 */
+        /* 写不进去就算了：面板已显示标题，下一次保存会把 title 一起带上 */
       })
   }
 
@@ -654,7 +669,23 @@ export function createHistoryController(env) {
     env.state.toolBusy = false
     env.state.cacheState = source === 'local' ? 'local' : 'history'
     env.state.chars = (env.state.parts.translation || '').length + (env.state.parts.detail || '').length
-    env.quote.textContent = entry.text.length > 240 ? entry.text.slice(0, 240) + ' …' : entry.text
+    // 截图标题要跟着条目一起回放：老条目没存 title，就从 label（「截图 · 标题」）兜底解析
+    var replayTitle = typeof entry.title === 'string' ? entry.title.trim() : ''
+    if (!replayTitle) {
+      var titleMatch = /^截图 · (.+)$/.exec(String(entry.label || ''))
+      if (titleMatch) replayTitle = titleMatch[1]
+    }
+    env.state.shotTitle = replayTitle
+    if (replayTitle) {
+      if (env.applyShotTitle) env.applyShotTitle(replayTitle)
+      else {
+        env.quote.textContent = replayTitle
+        env.quote.setAttribute('data-title', '1')
+      }
+    } else {
+      env.quote.textContent = entry.text.length > 240 ? entry.text.slice(0, 240) + ' …' : entry.text
+      env.quote.removeAttribute('data-title')
+    }
     env.applySectionTitle(env.state.kind, entry.text)
     hideHistoryList()
     env.paint()
@@ -795,9 +826,11 @@ export function createHistoryController(env) {
   function historyRow(item) {
     var row = el('div', 'dsh-sel-historyrow')
     // 标题独占一行（不再被右边的小字挤掉），空标题也给个交代
-    // 截图条目：label 形如「截图 · 预算逻辑」—— 用对象名当主标题，问题退成副行
+    // 截图条目：优先用 title 字段；老条目只有 label「截图 · 预算逻辑」时从 label 解析
+    var shotTitle = typeof item.title === 'string' ? item.title.trim() : ''
     var shotMatch = /^截图 · (.+)$/.exec(String(item.label || ''))
-    var main = shotMatch ? shotMatch[1] : String(item.text || '').trim()
+    var isShot = !!shotTitle || !!shotMatch
+    var main = shotTitle || (shotMatch ? shotMatch[1] : String(item.text || '').trim())
     // 只留标题 + 元信息（轮数/时间）；问题那行不要 —— 用户嫌太啰嗦
     row.appendChild(el('div', 'dsh-sel-historytext', main || '（这次没选中文字）'))
     // 删除键：stopPropagation 很重要 —— 否则点它会被当成"点这一行去回放"
@@ -813,7 +846,7 @@ export function createHistoryController(env) {
     row.appendChild(del)
     // 截图条目的标题已经在主行了，元信息里只留"截图"两个字，
     // 否则会显示成「截图 · 人的后脑勺背影 · 1 轮」，标题重复一遍
-    var metaLabel = shotMatch ? '截图' : shortLabel(item.label)
+    var metaLabel = isShot ? '截图' : shortLabel(item.label)
     var meta =
       (metaLabel ? metaLabel + ' · ' : '') +
       (item.turns > 0 ? item.turns + ' 轮 · ' : '') +
