@@ -881,12 +881,28 @@ export function createVoiceCardController(env) {
     // 侧边栏网页那条路没有 Range（不透明源帧的选区拿不出来），上下文 / 标签直接用
     // 帧内桥采好带过来的那份 —— 与 openForSelection 的 iframe 分支同一条规则。
     if (selection.source === 'shot') {
-      vcardHandoff = vcardRect()
-      closeVCard()
       var shotRect = selection.rect
       // 红框图是后台画的（见 shot.js）：这里等它上传完再开小窗，
       // 等待的是**已经画好、正在上传**的那张，通常几百毫秒。
       var openShotPanel = function (ref) {
+        // 上传期间用户按了 Esc / 换了会话：这张已经作废，别再开小窗
+        if (!env.state.selection || env.state.selection !== selection) return
+        // 图没生成/没传上去时不要静默开窗发送一条"声称带了截图"的消息：
+        // 卡片保持打开，用户可以重试或 Esc 取消。
+        var why = env.shotFailed ? env.shotFailed() : ''
+        if (!ref && why) {
+          if (env.shotNotice) {
+            env.shotNotice(
+              why === 'upload-failed'
+                ? '截图上传失败，可以再按一次发送重试'
+                : '截图没有生成成功，这条先不发送；请按 Esc 后重新截图',
+            )
+          }
+          return
+        }
+        // 交接起点要在 closeVCard 之前量 —— 之后它 display:none，量出来是 0
+        vcardHandoff = vcardRect()
+        closeVCard()
         env.openPanelWith('', '', '截图', shotRect, '', {
           askFirst: asked,
           shotRef: ref,

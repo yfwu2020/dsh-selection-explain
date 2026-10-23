@@ -249,6 +249,68 @@ export function createShotController(env) {
   var chipImg = null
   /** 缩略图的 objectURL：换图/清理时要 revoke，否则 Blob 一直留着。 */
   var chipUrl = ''
+  /** 截图失败的可见提示（Toast）：不能只写 /shot/status 诊断。 */
+  var toastEl = null
+  var toastTimer = 0
+
+  /** 失败原因 → 用户能照做的一句话。host 给了 message 就优先用。 */
+  function errorText(info) {
+    var code = info && (info.code || info.reason) ? String(info.code || info.reason) : ''
+    if (info && typeof info.message === 'string' && info.message.trim()) return info.message
+    if (code === 'not-macos') return '截图功能目前仅支持 macOS'
+    if (code === 'no-screen-permission') return '没有屏幕录制权限：请在 系统设置 → 隐私与安全性 → 屏幕录制 中允许 DSH，然后重试'
+    if (code === 'busy') return '正在截图，请稍候'
+    if (code === 'probe-missing') return '截图组件缺失，请重新构建插件后重试'
+    if (code === 'spawn-failed') return '系统截图命令启动失败'
+    if (code === 'timeout') return '框选超时，已取消这次截图'
+    if (code === 'capture-failed') return '截图失败，请检查屏幕录制权限后重试'
+    if (code === 'image-missing' || code === 'finish-failed') return '截图已拍下，但处理失败，请重试'
+    if (code.indexOf('tmp-failed') === 0) return '截图临时目录不可用，请重试'
+    if (code.indexOf('start-failed') === 0) return '截图启动失败，请重试'
+    return '截图失败，请重试'
+  }
+
+  function ensureToast() {
+    if (toastEl) {
+      // slot 重渲染可能把 layer 换掉：提示节点要跟着挂回去
+      if (env.layer && toastEl.parentNode !== env.layer) env.layer.appendChild(toastEl)
+      return toastEl
+    }
+    var d = doc()
+    toastEl = d.createElement('div')
+    toastEl.className = 'dsh-sel-shot-toast'
+    toastEl.setAttribute('data-show', '0')
+    toastEl.setAttribute('role', 'status')
+    toastEl.setAttribute('aria-live', 'polite')
+    toastEl.addEventListener('click', function () {
+      hideNotice()
+    })
+    env.layer.appendChild(toastEl)
+    return toastEl
+  }
+
+  /** 显示一条失败提示。tone 目前只有 'error'，留口子给以后的中性提示。 */
+  function notice(text, tone) {
+    if (!text) return
+    if (env.ensureLayer) env.ensureLayer()
+    var el = ensureToast()
+    el.textContent = String(text)
+    el.setAttribute('data-tone', tone || 'error')
+    el.setAttribute('data-show', '1')
+    if (toastTimer) clearTimeout(toastTimer)
+    toastTimer = setTimeout(function () {
+      toastTimer = 0
+      hideNotice()
+    }, 4500)
+  }
+
+  function hideNotice() {
+    if (toastTimer) {
+      clearTimeout(toastTimer)
+      toastTimer = 0
+    }
+    if (toastEl) toastEl.setAttribute('data-show', '0')
+  }
 
   function doc() {
     return env.document
@@ -318,6 +380,7 @@ export function createShotController(env) {
    * 收干净：框、缩略图、卡片、选区状态。ESC 与点空白都走它。
    */
   function clearAll() {
+    hideNotice()
     hideMarkers()
     if (chipUrl) {
       URL.revokeObjectURL(chipUrl)
@@ -336,7 +399,7 @@ export function createShotController(env) {
     if (!d || !d.addEventListener) return
     cancelBound = true
     var showing = function () {
-      return !!current || (frameEl && frameEl.getAttribute('data-show') === '1') || (chipEl && chipEl.getAttribute('data-show') === '1')
+      return !!current || (frameEl && frameEl.getAttribute('data-show') === '1') || (chipEl && chipEl.getAttribute('data-show') === '1') || (toastEl && toastEl.getAttribute('data-show') === '1')
     }
     d.addEventListener('keydown', function (event) {
       if (event.key === 'Escape' && showing()) clearAll()
@@ -347,6 +410,7 @@ export function createShotController(env) {
       var card = env.vcardElement && env.vcardElement()
       if (card && target && card.contains && card.contains(target)) return
       if (chipEl && target && chipEl.contains && chipEl.contains(target)) return
+      if (toastEl && target && toastEl.contains && toastEl.contains(target)) return
       clearAll()
     }, true)
   }
@@ -359,7 +423,18 @@ export function createShotController(env) {
     // 取景范围按模式分开设置：host 必须在**开始截图前**就知道这次走哪一档。
     // 面板开着时传 panel（直接进附件），否则 card（弹语音卡）。
     var mode = env.panelOpen ? 'panel' : 'card'
-    fetch(SHOT_START + '?mode=' + mode, { method: 'POST', body: '' }).catch(function () {})
+    fetch(SHOT_START + '?mode=' + mode, { method: 'POST', body: '' })
+      .then(function (response) {
+        if (!response.ok) throw new Error('HTTP ' + response.status)
+        return response.json()
+      })
+      .then(function (info) {
+        // 起截图就失败（非 macOS / 正在截图 / 权限 / 临时目录）：必须当场说，否则就是按了没反应
+        if (!info || info.ok !== true) notice(errorText(info))
+      })
+      .catch(function () {
+        notice('截图服务不可用，请稍后重试')
+      })
   }
 
   /**
@@ -374,7 +449,7 @@ export function createShotController(env) {
     if (!shot || shot.id === lastId) return
     lastId = shot.id
     var t0 = Date.now()
-    current = { shot: shot, file: null, blob: null, ref: null, refReady: null, uploading: null, t0: t0 }
+    current = { shot: shot, file: null, blob: null, ref: null, refReady: null, uploading: null, error: '', t0: t0 }
     // 这一张的句柄：后台工作完成时如果已经换了下一张（或 Esc 清空），不能再写进新的 current
     var mine = current
     var step = 'geometry'
@@ -434,6 +509,7 @@ export function createShotController(env) {
         if (current !== mine) return null
         mine.blob = blob
         mine.file = new File([blob], '截图.png', { type: blob.type || 'image/png' })
+        mine.error = ''
         if (chipImg) {
           // 换图前把上一张的 objectURL 收掉，否则每截一次就多留一个 Blob 在内存里
           if (chipUrl) URL.revokeObjectURL(chipUrl)
@@ -441,6 +517,14 @@ export function createShotController(env) {
           chipImg.src = chipUrl
         }
         report({ stage: 'bg-done', ms: Date.now() - md0, frame: shot.frame !== false, scope: shot.scope || '' })
+        return null
+      }
+      var markWorkFailed = function (message, error) {
+        if (current === mine) {
+          mine.error = 'image-failed'
+          notice(message)
+        }
+        report({ stage: 'bg-fail', ms: Date.now() - md0, error: String((error && error.message) || error) })
         return null
       }
       var startWork = function () {
@@ -452,8 +536,7 @@ export function createShotController(env) {
             })
             .then(applyBlob)
             .catch(function (error) {
-              report({ stage: 'bg-fail', ms: Date.now() - md0, error: String((error && error.message) || error) })
-              return null
+              return markWorkFailed('截图已拍下，但读取图片失败，请重试', error)
             })
         }
         return loadImage(imageUrl)
@@ -462,8 +545,7 @@ export function createShotController(env) {
         })
         .then(applyBlob)
         .catch(function (error) {
-          report({ stage: 'bg-fail', ms: Date.now() - md0, error: String((error && error.message) || error) })
-          return null
+          return markWorkFailed('截图已拍下，但处理图片失败，请重试', error)
         })
       }
       current.refReady = new Promise(function (resolve) {
@@ -494,7 +576,9 @@ export function createShotController(env) {
       if (panelMode) {
         var ready = current.refReady
         if (ready) ready.then(function () {
-          if (current === mine && mine.file) env.addFiles([mine.file])
+          if (current !== mine) return
+          if (mine.file) env.addFiles([mine.file])
+          else if (!mine.error) notice('截图没有生成成功，请重试')
           if (env.focusAskBox) env.focusAskBox()
         })
         report({ stage: 'done', branch: 'panel', scope: shot.scope || '', ms: Date.now() - t0 })
@@ -613,6 +697,7 @@ export function createShotController(env) {
       var res = await fetch(SHOT_PENDING, { cache: 'no-store' })
       if (res.ok) {
         var data = await res.json()
+        if (data && data.error) notice(errorText(data.error))
         if (data && data.shot) await handle(data.shot)
       }
     } catch (error) {
@@ -642,6 +727,7 @@ export function createShotController(env) {
     stop: function () {
       if (timer) clearTimeout(timer)
       timer = 0
+      hideNotice()
     },
     /** 快捷键按下时调用。 */
     capture: startCapture,
@@ -660,21 +746,48 @@ export function createShotController(env) {
     takeRefAsync: function () {
       var here = current
       if (!here) return Promise.resolve(null)
+      // 取图/画图已经失败：不要再尝试上传，让发送方据此保留卡片并提示。
+      // 上传失败是个例外：blob 还在，用户再按一次发送可以重试。
+      if (here.error && here.error !== 'upload-failed') return Promise.resolve(null)
       if (here.ref) return Promise.resolve(here.ref)
       if (here.uploading) return here.uploading
-      if (!here.refReady) return Promise.resolve(null)
+      if (!here.refReady) {
+        here.error = 'image-failed'
+        notice('截图已拍下，但还没有准备好，请重试')
+        return Promise.resolve(null)
+      }
       here.uploading = here.refReady.then(function () {
         if (here.ref) return here.ref
-        if (!here.blob) return null
+        if (!here.blob) {
+          if (!here.error) {
+            here.error = 'image-failed'
+            notice('截图已拍下，但读取图片失败，请重试')
+          }
+          return null
+        }
         return uploadAnnotated(here.blob).then(function (ref) {
+          if (!ref) {
+            // 上传失败：清掉 uploading，允许用户再点一次发送重试。
+            // 提示由语音卡统一给（它知道"这条先不发送"的上下文）。
+            here.error = 'upload-failed'
+            here.uploading = null
+            return null
+          }
           here.ref = ref
           here.blob = null
-          report({ stage: 'uploaded', ref: !!ref })
+          here.error = ''
+          report({ stage: 'uploaded', ref: true })
           return ref
         })
       })
       return here.uploading
     },
+    /** 当前这张图是否已经失败（供语音卡在发送时决定"先别开小窗"）。 */
+    failed: function () {
+      return current && current.error ? String(current.error) : ''
+    },
+    /** 给语音卡/其它控制器用的提示入口。 */
+    notice: notice,
     takeRef: function () {
       return current ? current.ref : null
     },
@@ -683,6 +796,7 @@ export function createShotController(env) {
         polling: !!timer,
         lastId: lastId,
         hasFile: !!(current && current.file),
+        error: current && current.error ? String(current.error) : '',
         frame: frameEl ? frameEl.getAttribute('data-show') === '1' : false,
         chip: chipEl ? chipEl.getAttribute('data-show') === '1' : false,
       }

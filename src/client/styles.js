@@ -852,6 +852,16 @@ export var CSS = [
   '.dsh-sel-shotchip-tx{display:flex;flex-direction:column;font-size:10.5px;line-height:1.35;white-space:nowrap;',
   'color:var(--dsw-alias-label-secondary,rgba(90,90,90,.9))}',
   '.dsh-sel-shotchip-tx b{font-size:10.5px;font-weight:600;color:var(--dsw-alias-label-primary,inherit)}',
+  // ── 截图失败的可见提示（Toast）──
+  // 以前所有失败都只写进 /shot/status 诊断，用户按了快捷键没反应。这条浮层是唯一的用户可见面：
+  // 位置放在底部中间（不挡卡片/面板），点击可立刻关掉，4.5 秒后自动消失。
+  '.dsh-sel-shot-toast{position:fixed;left:50%;bottom:76px;transform:translate(-50%,6px);z-index:2147483005;',
+  'box-sizing:border-box;max-width:min(82vw,460px);padding:9px 14px;border-radius:10px;',
+  'background:rgba(28,32,36,.95);color:#fff;font-size:12px;line-height:1.55;text-align:left;',
+  'box-shadow:0 10px 28px rgba(0,0,0,.28);opacity:0;pointer-events:none;',
+  'transition:opacity .16s ease,transform .16s ease}',
+  '.dsh-sel-shot-toast[data-show="1"]{opacity:1;pointer-events:auto;transform:translate(-50%,0)}',
+  '.dsh-sel-shot-toast[data-tone="error"]{background:rgba(153,27,27,.96)}',
   '.dsh-sel-thread{position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;',
   'z-index:2147482998;overflow:visible;display:none;opacity:0;transition:opacity .14s ease}',
   '.dsh-sel-thread path{fill:none;stroke-width:1.6;stroke-dasharray:4 4;',

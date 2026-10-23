@@ -754,6 +754,8 @@ export function apply(ctx) {
   })
   var voiceCardController = createVoiceCardController({
     get shotRefAsync() { return shotController.takeRefAsync },
+    get shotFailed() { return shotController.failed },
+    get shotNotice() { return shotController.notice },
     get clearShotMarkers() { return shotController.clearMarkers },
     get layer() { return layer },
     get later() { return later },
