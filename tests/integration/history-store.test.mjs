@@ -173,3 +173,21 @@ test('restoring an old snapshot respects capacity and original age', async t => 
   assert.equal((await api({ entry: snapshot('restored-oldest', 1, { pinned: true }) }, '?restore=1')).status, 200)
   assert.deepEqual((await api()).entries.map(entry => entry.key), ['newer', 'older'])
 })
+
+test('shot title is stored separately and survives follow-up saves', async t => {
+  const { api } = await fixture(t)
+  // 第一次保存：标题单独存 title；label 仍是位置语义「截图」
+  await api(snapshot('shot-1', 1000, { label: '截图', title: '预算逻辑' }))
+  let entry = (await api(undefined, '?key=shot-1')).entry
+  assert.equal(entry.title, '预算逻辑')
+  assert.equal(entry.label, '截图')
+
+  // 追问那次保存没带 title（旧客户端 / 标题请求尚未完成的竞态）：不能把标题抹掉
+  await api(snapshot('shot-1', 1001, { label: '截图' }))
+  entry = (await api(undefined, '?key=shot-1')).entry
+  assert.equal(entry.title, '预算逻辑')
+
+  // 最近列表的元信息也要带上 title，列表才能显示对象名而不是问题
+  const list = (await api()).entries
+  assert.equal(list.find(item => item.key === 'shot-1').title, '预算逻辑')
+})

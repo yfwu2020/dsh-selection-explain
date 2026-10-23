@@ -60,6 +60,13 @@ interface HistoryInput {
    * 该如实说一声），而是"这一轮从来没请求过解读"。
    */
   skipped?: unknown
+  /**
+   * 截图提问的会话标题（模型单独起的名字，如「预算逻辑」）。
+   *
+   * 单独存字段，不再只塞进 `label`：`label` 是"选中文字所在位置"的语义，
+   * 截图后续每次 saveHistory 都会把 label 写回「截图」——标题会因此丢。
+   */
+  title?: unknown
 }
 
 interface HistoryEntry {
@@ -67,6 +74,8 @@ interface HistoryEntry {
   text: string
   context: string
   label: string
+  /** 截图提问的会话标题；只有截图对话才有。 */
+  title?: string
   at: number
   parts: { translation: string; detail: string }
   contextState?: ContextState
@@ -335,6 +344,8 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
       pinned: input.pinned === true,
       // 缺少 skipped 的旧条目继续保持未知状态。
       ...(typeof input.skipped === 'boolean' ? { skipped: input.skipped } : {}),
+      // 标题单独存；旧条目没有这个字段时保持缺失（回放时再从 label 兜底解析）
+      ...(typeof input.title === 'string' && input.title.trim() ? { title: clampText(input.title, 60) } : {}),
     }
   }
 
@@ -405,6 +416,10 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
     if (typeof input.skipped !== 'boolean' && typeof previous?.skipped === 'boolean') {
       entry.skipped = previous.skipped
     }
+    // 标题已经生成过、而这次保存没带（旧客户端/追问快照）：保留原值，别把标题抹掉
+    if (typeof input.title !== 'string' && typeof previous?.title === 'string') {
+      entry.title = previous.title
+    }
     history.delete(key)
     history.set(key, entry)
     trimHistory()
@@ -434,6 +449,8 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
     key: entry.key,
     text: entry.text.length > 60 ? `${entry.text.slice(0, 60)}…` : entry.text,
     label: entry.label,
+    // 截图标题：列表 / 回放顶部都优先用它
+    title: entry.title ?? '',
     at: entry.at,
     turns: entry.turns.filter((turn) => turn.role === 'user').length,
     hasDetail: entry.parts.detail.length > 0,
@@ -511,6 +528,8 @@ export function createHistoryStore(ctx: Context, config: Config, models: ReturnT
           turns: body?.turns,
           contextState: body?.contextState,
           toolDigest: typeof body?.toolDigest === 'string' ? body.toolDigest : '',
+          // 截图标题：独立字段；客户端没带时保持缺失，由 saveHistoryEntry 继承旧值
+          ...(typeof body?.title === 'string' ? { title: body.title } : {}),
           pinned: body?.pinned === true,
           // 只在客户端**明确上报** true/false 时才带着走；没报就是"不知道"，
           // 不能在这里用 `=== true` 把它压成 false（那正是把三态压成两态的那一步）。
