@@ -34,6 +34,15 @@ const CAPTURE = '/usr/sbin/screencapture'
 /** 交互式框选 + 整窗截图的总超时：用户可能慢慢框，给足 90 秒。 */
 const SELECT_TIMEOUT_MS = 90_000
 
+/**
+ * 让"等待外部事件"的定时器不参与事件循环存活判定。
+ * 宿主进程退出/更新时，这类等待（长轮询、外部命令超时）没有继续存在的意义，
+ * 但一个普通的 setTimeout 会把进程钉住，直到它自己到期。
+ */
+function unrefTimer(timer: unknown): void {
+  ;(timer as { unref?: () => void } | null)?.unref?.()
+}
+
 /** 窗口列表探针（随包编译，见 native/window-list.c）。 */
 export function resolveWindowProbe(): string {
   const here = dirname(fileURLToPath(import.meta.url))
@@ -870,6 +879,7 @@ async function startInteractive(options: Omit<ShotOptions, 'seq'>): Promise<bool
       /* already gone */
     }
   }, SELECT_TIMEOUT_MS)
+  unrefTimer(timer)
 
   child.on('error', () => {
     clearTimeout(timer)
@@ -1035,6 +1045,10 @@ export function handleShotPending(_req: IncomingMessage, res: ServerResponse): v
     if (i >= 0) waiters.splice(i, 1)
     reply()
   }, 25_000)
+  // 长轮询只是"等客户端结果"，绝不能把一个挂着它的 Host 进程钉在事件循环里：
+  // 桌面端更新/退出只给 Host 10 秒优雅期限，未 unref 的 25s 定时器会让外壳判定
+  // "Host did not complete graceful task teardown" 并拒绝安装更新。
+  unrefTimer(timer)
   const done = () => {
     clearTimeout(timer)
     reply()
