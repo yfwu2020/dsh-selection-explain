@@ -681,7 +681,9 @@ export async function createClientFixture() {
       } catch (error) {
         body = { parse_error: String(error) }
       }
-      sent.push(body)
+      // 截图链路的 /api/shot/* 是新增的客户端↔host 握手指令（hello/start/pending/image），
+      // 不属于「提问载荷」契约；不排除的话它会顶掉 sent[0]，把后面按 sent[0] 写的断言全带偏。
+      if (url.indexOf('/api/shot/') < 0) sent.push(body)
     }
     // 语音输入那一段的"把面板打开、翻译就绪"夹具（比 stage-probe 多一个 done 阶段）
     if (body && body.text === 'voice-probe') {
@@ -858,7 +860,9 @@ export async function createClientFixture() {
       ].join('')
       return Promise.resolve(new Response(payload, { headers: { 'content-type': 'text/event-stream' } }))
     }
-    if (body && body.question) {
+    // 通用追问桩。注意排除 quote-wait-probe：它有自己的 500ms 慢速夹具（在下面），
+    // 放在通配之前会把那个夹具整个遮掉，「流式中不给引用整条」那条用例就永远抓不到流式态。
+    if (body && body.question && body.text !== 'quote-wait-probe') {
       // 追问失败注入（`globalThis.__askFailOnce = true`）：验"报错之后光标回不回到输入框"
       if (globalThis.__askFailOnce) {
         globalThis.__askFailOnce = false

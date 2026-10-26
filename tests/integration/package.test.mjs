@@ -29,6 +29,8 @@ try {
   assert.equal(registered.id, entry.name)
   const client = registered.factory(id => { assert.equal(id, 'react'); return {createElement() {}} })
   assert.equal(typeof client.apply, 'function')
-  assert.deepEqual(client.inject, ['slots'])
+  // shortcuts 是 ⌘⇧X 截图提问引入的（987a584）：客户端要 register 全局快捷键，
+  // 而 cordis 的服务按插件隔离 —— 不在这里声明 inject，ctx.get('shortcuts') 就是 undefined。
+  assert.deepEqual(client.inject, ['slots', 'shortcuts'])
   console.log(`PASS packed entry, lazy client and runtime resources (${pack.size} bytes)`)
 } finally { await rm(dir, { recursive: true, force: true }) }

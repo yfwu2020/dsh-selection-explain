@@ -10,7 +10,13 @@ export async function run(env) {
   env.hook.forget()
   env.hook.open(text, context, 'Context')
   for (let i = 0; i < 80 && env.hook.turns().length !== 40; i++) await env.sleep(20)
-  const waitAsk = async () => { for (let i = 0; i < 100 && env.hook.turns().some(t => t.streaming); i++) await env.sleep(20) }
+  // ask() 是异步的（要先等附件上传/引用解析，然后才 push question/answer 两条轮次），
+  // 所以"问完立刻就是 streaming"不成立：先等这一轮真的开始，再等它结束。
+  // 只等"没有 streaming"会在开头 0ms 就退出，把下一条提问撞进"还在生成"的拒绝分支。
+  const waitAsk = async () => {
+    for (let i = 0; i < 100 && !env.hook.turns().some(t => t.streaming); i++) await env.sleep(10)
+    for (let i = 0; i < 150 && (env.hook.turns().some(t => t.streaming) || env.hook.state().asking); i++) await env.sleep(20)
+  }
   env.hook.ask('保持完整历史')
   await waitAsk()
   const first = env.sent.at(-1)

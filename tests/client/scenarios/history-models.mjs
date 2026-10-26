@@ -675,6 +675,9 @@ export async function run(env) {
       await env.sleep(30)
       globalThis.__askExtra = { notice: { code: 'upstream-retry', text: '上游这次返回了错误，已自动重试' }, noticeGapMs: 400 }
       env.hook.ask('上游偶发错误的用例')
+      // ask() 有异步前置（取引用上下文等），本轮不是立刻进入 streaming 的：
+      // 先等这一轮真的开始，否则轮询在提示到达之前就退出了（400ms 的观察窗口直接错过）。
+      for (let i = 0; i < 100 && !env.hook.turns().some((t) => t.streaming === true); i += 1) await env.sleep(10)
       let sawNotice = false
       for (let i = 0; i < 200 && env.hook.turns().some((t) => t.streaming === true); i += 1) {
         if (String((env.hook.turns()[env.hook.turns().length - 1] || {}).notice || '').indexOf('已自动重试') >= 0) sawNotice = true

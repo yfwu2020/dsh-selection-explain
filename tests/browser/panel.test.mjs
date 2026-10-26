@@ -166,6 +166,15 @@ window.fetch = function (input, init) {
     // 客户端要验的是"逐件上传 + 引用回传"，不是附件服务自己（那条有 tests/unit/attach.test.mjs）。
     window.__attachHits = window.__attachHits || []
     window.__attachHits.push(body)
+    // __attachDelay：把回复拖慢一点，让"上传中"这个中间态可被确定性地观察到
+    //（真上传很快，不拖慢的话「发送键在上传期间置灰」这条只能靠运气撞上）。
+    if (window.__attachDelay) {
+      return new Promise(function (resolve) {
+        setTimeout(function () { resolve(reply()) }, window.__attachDelay)
+      })
+    }
+    return reply()
+    function reply() {
     var item = (body.items || [])[0] || {}
     // 失败开关：用来验"失败 → 重试"那条路
     if (window.__attachFail && window.__attachFail === item.name) {
@@ -175,6 +184,7 @@ window.fetch = function (input, init) {
       ? { attachmentId: 'sha256:' + 'a'.repeat(64), mediaType: item.mediaType || 'image/png', width: 800, height: 600, bytes: 12, name: item.name }
       : { attachmentId: 'sha256:' + 'b'.repeat(64), name: item.name, bytes: 12 }
     return Promise.resolve(new Response(JSON.stringify({ ok: true, items: [{ kind: item.kind, ref: ref }] }), { headers: { 'content-type': 'application/json' } }))
+    }
   }
   if (url.indexOf('/selection-explain/api/analyze') >= 0) {
     if (body.question) {
@@ -793,7 +803,13 @@ async function main() {
     await waitFor(function () { return hook.state().phase === 'done' }, 4000)
     var widthBeforeAsk = Math.round(document.querySelector('.dsh-sel-panel').getBoundingClientRect().width)
     hook.ask('冒烟追问')
-    await waitFor(function () { return hook.state().asking === false }, 4000)
+    // ask() 是异步的（要先取引用上下文 / 传附件才入队）：提问刚发出那一刻 asking 还是 false，
+    // 只等 asking===false 会立刻返回、气泡还没画出来。等回答真的落到气泡里再量宽度。
+    await waitFor(function () {
+      var list = document.querySelectorAll('.dsh-sel-chatlog .dsh-sel-bubble-bot')
+      var last = list[list.length - 1]
+      return hook.state().asking === false && !!last && last.textContent.indexOf('冒烟用例') >= 0
+    }, 4000)
     var widthAfterAsk = Math.round(document.querySelector('.dsh-sel-panel').getBoundingClientRect().width)
     check('追问前后宽度不变（不再从 440 跳到 540）',
       widthBeforeAsk === widthAfterAsk && Math.abs(widthAfterAsk - WIDE_WIDTH) <= 2,
@@ -1876,7 +1892,8 @@ async function main() {
     fileInput.files = dt.files
     fileInput.dispatchEvent(new Event('change', { bubbles: true }))
 
-    check('上传中发送键置灰（不让残缺材料发出去）', sendBtn.disabled === true, String(sendBtn.disabled))
+    // 新流程（0.13.0）：选中只进内存（status=local），**点发送才真正上传** ——
+    // 叉掉的图不该在附件库留垃圾。所以这里断言"还没传"，上传断言挪到点发送那一刻。
     await waitFor(function () { return attachBox.children.length === 3 }, 3000)
     check('三件附件都上了附件条', attachBox.children.length === 3, String(attachBox.children.length))
     check('附件条展开了', attachBox.getAttribute('data-show') === '1', attachBox.getAttribute('data-show'))
@@ -1885,20 +1902,15 @@ async function main() {
         attachBox.children[1].className.indexOf('dsh-sel-thumb') >= 0 &&
         attachBox.children[2].className.indexOf('dsh-sel-thumb') >= 0,
       attachBox.children[0].className + ' / ' + attachBox.children[1].className + ' / ' + attachBox.children[2].className)
-
-    await waitFor(function () { return sendBtn.disabled === false }, 3000)
-    check('上传完成后发送键恢复可点', sendBtn.disabled === false, String(sendBtn.disabled))
-    // 名字/大小要等传完再断言：上传途中文件卡第二行写的是「正在上传…」（那是要的行为）
+    check('选中后先不落盘（三件都还是 local，一个请求都没发）',
+      window.__attachHits.length === 0 &&
+        ['0', '1', '2'].every(function (i) { return attachBox.children[i].getAttribute('data-state') === 'local' }),
+      String(window.__attachHits.length) + ' / ' + ['0', '1', '2'].map(function (i) { return attachBox.children[i].getAttribute('data-state') }).join(','))
+    check('没在传时发送键可点（不必等上传）', sendBtn.disabled === false, String(sendBtn.disabled))
+    // 名字/大小在 local 阶段就能看（本地 File 自带，不用等上传）
     check('文件卡显示名字与类型·大小',
       attachBox.children[0].textContent.indexOf('季度报表.pdf') >= 0 && /PDF/.test(attachBox.children[0].textContent),
       attachBox.children[0].textContent)
-    check('每件各发一次请求（逐件上传，失败不牵连别件）', window.__attachHits.length === 3, String(window.__attachHits.length))
-    check('请求里带的是 base64（不带 data: 前缀）',
-      window.__attachHits.every(function (hit) { return typeof hit.items[0].data === 'string' && hit.items[0].data.indexOf('data:') !== 0 && hit.items[0].data.length > 0 }),
-      window.__attachHits.map(function (hit) { return String(hit.items[0].data).slice(0, 12) }).join(' | '))
-    check('图片那件声明了 mediaType（附件服务要拿它跟字节比对）',
-      window.__attachHits.some(function (hit) { return hit.items[0].kind === 'image' && hit.items[0].mediaType === 'image/png' }),
-      JSON.stringify(window.__attachHits.map(function (hit) { return hit.items[0].mediaType })))
 
     // ── 图片预览：输入框上方的待发送缩略图，点一下要在**本窗口**里放大 ──
     // 用户报的就是这条：小窗里加的图（还没发的、已经发出去的）都点不开。
@@ -1960,8 +1972,22 @@ async function main() {
     var askBox = document.querySelector('.dsh-sel-askbox')
     askBox.value = '这个报表里哪个季度掉得最多？'
     askBox.dispatchEvent(new Event('input', { bubbles: true }))
+    // 拖慢上传，让"上传中"这个中间态可确定性观察
+    window.__attachDelay = 120
     sendBtn.click()
-    await waitFor(function () { return window.__askBodies.length > 0 }, 3000)
+    await waitFor(function () { return window.__attachHits.length > 0 }, 3000)
+    check('点发送才开始上传（上传中发送键置灰，不让材料没齐就发出去）',
+      sendBtn.disabled === true, String(sendBtn.disabled))
+    await waitFor(function () { return window.__attachHits.length === 3 }, 4000)
+    check('每件各发一次请求（逐件上传，失败不牵连别件）', window.__attachHits.length === 3, String(window.__attachHits.length))
+    check('请求里带的是 base64（不带 data: 前缀）',
+      window.__attachHits.every(function (hit) { return typeof hit.items[0].data === 'string' && hit.items[0].data.indexOf('data:') !== 0 && hit.items[0].data.length > 0 }),
+      window.__attachHits.map(function (hit) { return String(hit.items[0].data).slice(0, 12) }).join(' | '))
+    check('图片那件声明了 mediaType（附件服务要拿它跟字节比对）',
+      window.__attachHits.some(function (hit) { return hit.items[0].kind === 'image' && hit.items[0].mediaType === 'image/png' }),
+      JSON.stringify(window.__attachHits.map(function (hit) { return hit.items[0].mediaType })))
+    window.__attachDelay = 0
+    await waitFor(function () { return window.__askBodies.length > 0 }, 4000)
     var ask = window.__askBodies[0] || {}
     check('追问载荷带上了三件附件引用',
       Array.isArray(ask.attachments) && ask.attachments.length === 3 && ask.attachments.every(function (a) { return a.ref && a.ref.attachmentId }),
@@ -2089,12 +2115,18 @@ async function main() {
       String(JSON.stringify(secondAsk.history || []).length))
     await waitFor(function () { return hook.state().asking !== true }, 4000)
 
-    // 失败 → 就地重试
+    // 失败 → 就地重试。注意新流程：选中不传，失败发生在**点发送**那一刻。
     window.__attachFail = '坏图.bmp'
     var dt2 = new DataTransfer()
     dt2.items.add(new File([new Uint8Array([1, 2, 3])], '坏图.bmp', { type: 'image/bmp' }))
     fileInput.files = dt2.files
     fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+    check('还没发送时失败件仍是 local（没上传就不会有错）',
+      attachBox.children.length === 1 && attachBox.children[0].getAttribute('data-state') === 'local',
+      attachBox.children[0] ? attachBox.children[0].getAttribute('data-state') : '未找到')
+    askBox.value = '这张图里是什么？'
+    askBox.dispatchEvent(new Event('input', { bubbles: true }))
+    sendBtn.click()
     await waitFor(function () { return attachBox.children.length === 1 && attachBox.children[0].getAttribute('data-state') === 'error' }, 3000)
     check('被拒的附件标成错误态（不是静默丢掉）',
       attachBox.children.length === 1 && attachBox.children[0].getAttribute('data-state') === 'error',
