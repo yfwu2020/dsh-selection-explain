@@ -242,6 +242,9 @@ export function createAttachController(env) {
     item.status = 'uploading'
     item.error = ''
     render()
+    // 上传一开就要刷新发送键：busy() 只看 status==='uploading'，
+    // 若等到每件传完才 refresh，第一件在传的那段按钮仍是可点的（与"材料没齐别发"矛盾）。
+    env.refreshAskState()
     return fileToBase64(item.file)
       .then(function (data) {
         return fetch(ATTACH, {

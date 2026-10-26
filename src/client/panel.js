@@ -758,11 +758,19 @@ export function createPanelController(env) {
     // 正在录音/识别就到此为止：麦**一定要松开**（不能让标签页一直显示"正在使用麦克风"），
     // 识别出来的文字也没地方放了 —— 连同提示一起静默收掉。
     env.cancelVoice()
-    // 用户要的是：小窗关掉 ≠ 停止生成。
-    // 模型继续把话说完，结果照常落盘（下次从「最近」里打开就能看到完整回答），
-    // 标题那一枪也照常发 —— 那边本来就不依赖小窗。
-    // 只有点「停止」按钮 / 换一段对话才真正 abort（见 conversation.js）。
-    env.state.detached = true
+    // 收起小窗 = 中止这一轮：打个标记，让 fail() 走「已停止」而不是「解读失败」，
+    // 点回来还能重新生成。（0.12.0 起就是这个语义；4270392 曾把它换成
+    // "关掉不停止生成" + state.detached，但那个标记没有任何读者，且这一行之后
+    // 紧接着就 releaseRenderedContent()，生成完也没地方呈现 —— 按回归恢复。）
+    if (env.state.request) {
+      env.state.aborted = true
+      env.state.request.abort()
+      env.state.request = null
+    }
+    if (env.state.askRequest) {
+      env.state.stopped = true
+      env.state.askRequest.abort()
+    }
     releaseRenderedContent()
     env.paintPill()
     // 小窗收了：抽屉若也关着就把轮询停掉（两处都不需要这个值了）
