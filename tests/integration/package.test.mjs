@@ -1,7 +1,7 @@
 /** Load the packed artifact, not the checkout, to catch missing runtime resources. */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, readFile, rm, symlink, access } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, symlink, access, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -16,7 +16,29 @@ try {
   const pkg = join(dir, 'package')
   // Peers are supplied by DSH in production; provide only that host boundary here.
   await symlink(join(root, 'node_modules'), join(pkg, 'node_modules'), 'dir')
-  for (const path of ['lib/index.js', 'lib/types/index.d.ts', 'lib/client.js', 'cordis.patch.yml', 'native/mic-probe.c', 'skills/web-design/SKILL.md']) await access(join(pkg, path))
+  for (const path of ['lib/index.js', 'lib/types/index.d.ts', 'lib/client.js', 'cordis.patch.yml', 'native/mic-probe.c', 'native/window-list.c', 'skills/web-design/SKILL.md']) await access(join(pkg, path))
+  // Linux releases carry source only. Exercise recovery from the packed artifact,
+  // with a fake compiler so this test remains portable and never starts OS tools.
+  const packagedProbe = join(pkg, 'lib/native/window-list')
+  await rm(packagedProbe, { force: true })
+  const { resolveNativeProbe } = await import(pathToFileURL(join(pkg, 'lib/host/native-probe.js')).href)
+  let compilations = 0
+  const probeOptions = {
+    name: 'window-list', packagedPath: packagedProbe,
+    sourcePath: join(pkg, 'native/window-list.c'), cacheDir: join(dir, 'native-cache'),
+    frameworks: ['CoreFoundation', 'CoreGraphics'],
+    async compile(source, output, frameworks) {
+      compilations++
+      assert.match(await readFile(source, 'utf8'), /CGWindowListCopyWindowInfo/)
+      assert.deepEqual(frameworks, ['CoreFoundation', 'CoreGraphics'])
+      await writeFile(output, 'packed probe fixture')
+      return true
+    },
+  }
+  const recovered = await resolveNativeProbe(probeOptions)
+  assert.equal(await readFile(recovered, 'utf8'), 'packed probe fixture')
+  assert.equal(await resolveNativeProbe(probeOptions), recovered)
+  assert.equal(compilations, 1, 'source-only release reuses its hash cache')
   const entry = await import(pathToFileURL(join(pkg, 'lib/index.js')).href)
   assert.equal(entry.name, '@yfwu2020/dsh-selection-explain')
   assert.equal(typeof entry.apply, 'function')

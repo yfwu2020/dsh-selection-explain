@@ -342,4 +342,4 @@ export var PILL_STAR_D = 'M6 0L3.89 0.77L2.81 1.17L2.12 1.42L1.61 1.61L1.42 2.12
 
 /** 吸附滑行的时长（毫秒）：比过渡时长多一点，走完就把定位交还给 right/bottom。 */
 export var PILL_SNAP_MS = 360
-export const preferences = { maxSelectionChars: 4000, pillIdleMs: 10000 }
+export function createPreferences() { return { maxSelectionChars: 4000, pillIdleMs: 10000 } }

@@ -1,8 +1,10 @@
 import { selectionDetached, insideEditable, clamp } from './dom.js'
-import { MAX_QUOTE_SELECTION, preferences } from './constants.js'
+import { MAX_QUOTE_SELECTION, createPreferences } from './constants.js'
 
 /** selection state and operations; dependencies are supplied as live node/callback accessors. */
+/** @param {import('./controller-contracts.js').SelectionEnv} env */
 export function createSelectionController(env) {
+  var preferences = env.preferences || createPreferences()
 
   // —— 选区 → 浮标 ——
 

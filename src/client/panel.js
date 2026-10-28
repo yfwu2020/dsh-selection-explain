@@ -4,6 +4,7 @@ import { listen, el, formatDuration, clamp } from './dom.js'
 import { splitSections, stripEchoPrefix, renderRich, releasePreviewFrames } from './render.js'
 
 /** panel state and operations; dependencies are supplied as live node/callback accessors. */
+/** @param {import('./controller-contracts.js').PanelEnv} env */
 export function createPanelController(env) {
 
   // —— 面板 ——
@@ -583,7 +584,7 @@ export function createPanelController(env) {
       var startX = event.clientX
       var startY = event.clientY
       panelInteracting = true
-      var layer = env.panel.parentNode
+      var layer = /** @type {HTMLElement | null} */ (env.panel.parentNode)
       if (layer) layer.setAttribute('data-resizing', '1')
       try { node.setPointerCapture(event.pointerId) } catch (error) { /* 老浏览器没有就算了 */ }
       var changed = 0

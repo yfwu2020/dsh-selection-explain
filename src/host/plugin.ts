@@ -13,7 +13,7 @@ import { createHistoryStore } from './history-store.js'
 import { createRoutes } from './routes.js'
 import { createPromote } from './promote.js'
 import { createAttach } from './attach.js'
-import { handleShotStart, handleShotPending, handleShotImage, handleShotStatus, handleShotHello, stopShot } from './shot.js'
+import { createShotService } from './shot.js'
 
 export function apply(ctx: Context, rawConfig: Config): void {
   const config = resolveConfig(rawConfig)
@@ -26,6 +26,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
   const promote = createPromote(ctx, config, sessions, historyStore)
   const analyze = createAnalyze(ctx, config, models, sessions, historyStore)
   const attach = createAttach(ctx)
+  const shot = createShotService(config)
 
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/attach`, handler: attach.handleAttach }),
@@ -91,7 +92,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
       ctx.webServer.register({
         kind: 'exact',
         path: `${API_PREFIX}/shot/start`,
-        handler: (req, res) => handleShotStart(req, res, config),
+        handler: shot.handleShotStart,
       }),
     `${name}: shot start route`,
   )
@@ -101,7 +102,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
       ctx.webServer.register({
         kind: 'exact',
         path: `${API_PREFIX}/shot/pending`,
-        handler: handleShotPending,
+        handler: shot.handleShotPending,
       }),
     `${name}: shot pending route`,
   )
@@ -111,22 +112,20 @@ export function apply(ctx: Context, rawConfig: Config): void {
       ctx.webServer.register({
         kind: 'exact',
         path: `${API_PREFIX}/shot/image`,
-        handler: (req, res) => handleShotImage(req, res),
+        handler: shot.handleShotImage,
       }),
     `${name}: shot image route`,
   )
 
-  // 截图是临时的：卸载时把临时图删掉
-  ctx.effect(() => () => {
-    void stopShot()
-  }, `${name}: shot temp cleanup`)
+  // 卸载时取消截图命令、释放长轮询并删除本实例的临时图
+  ctx.effect(() => () => shot.stop(), `${name}: shot temp cleanup`)
 
   ctx.effect(
     () =>
       ctx.webServer.register({
         kind: 'exact',
         path: `${API_PREFIX}/shot/hello`,
-        handler: handleShotHello,
+        handler: shot.handleShotHello,
       }),
     `${name}: shot hello route`,
   )
@@ -136,7 +135,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
       ctx.webServer.register({
         kind: 'exact',
         path: `${API_PREFIX}/shot/status`,
-        handler: (req, res) => handleShotStatus(req, res),
+        handler: shot.handleShotStatus,
       }),
     `${name}: shot status route`,
   )

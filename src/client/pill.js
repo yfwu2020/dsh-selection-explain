@@ -1,8 +1,12 @@
-import { PILL_POS, PILL_BALL_SIZE, PILL_FALLBACK_MAX, PILL_STAR_EASE, PILL_STAR_TIP_END, PILL_STAR_BODY_START, PILL_STAR_SAMPLES, PILL_STAR_POP, PILL_STAR_TWIST, PILL_MORPH_MS, preferences, PILL_DRAG_SLOP, PILL_SNAP_RADIUS, PILL_SNAP_MS, HISTORY } from './constants.js'
+import { createPillState } from './state.js'
+import { PILL_POS, PILL_BALL_SIZE, PILL_FALLBACK_MAX, PILL_STAR_EASE, PILL_STAR_TIP_END, PILL_STAR_BODY_START, PILL_STAR_SAMPLES, PILL_STAR_POP, PILL_STAR_TWIST, PILL_MORPH_MS, createPreferences, PILL_DRAG_SLOP, PILL_SNAP_RADIUS, PILL_SNAP_MS, HISTORY } from './constants.js'
 import { clamp } from './dom.js'
 
 /** pill state and operations; dependencies are supplied as live node/callback accessors. */
+/** @param {import('./controller-contracts.js').PillEnv} env */
 export function createPillController(env) {
+  var interaction = env.interaction || createPillState()
+  var preferences = env.preferences || createPreferences()
 
   /** 胶囊左侧那截"最近一次划的是什么"（太长就截断）。 */
   function pillSnippet() {
@@ -95,7 +99,7 @@ export function createPillController(env) {
     var width = 0
     try {
       var host = spendHost()
-      env.pillHost = host || null
+      interaction.pillHost = host || null
       if (host) {
         var rect = host.getBoundingClientRect()
         if (rect.width > 0 || rect.height > 0) {
@@ -122,11 +126,11 @@ export function createPillController(env) {
   /* ── 位置记忆（host 存储）：拖到别处就存，吸附回右下角就清，挂载时读回来 ── */
 
   function savePillPos() {
-    if (!env.pillFreeRight) return
+    if (!interaction.pillFreeRight) return
     fetch(PILL_POS, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ right: Math.round(env.pillFreeRight.right), y: Math.round(env.pillFreeRight.y) }),
+      body: JSON.stringify({ right: Math.round(interaction.pillFreeRight.right), y: Math.round(interaction.pillFreeRight.y) }),
     }).catch(function () {})
   }
 
@@ -155,8 +159,8 @@ export function createPillController(env) {
         var pos = data && data.position
         if (!pos || typeof pos.right !== 'number' || typeof pos.y !== 'number') return
         if (pillUserPlaced) return // 用户已经自己拖过了，别用存档覆盖他
-        env.pillDock = 'free'
-        env.pillFreeRight = { right: pos.right, y: pos.y }
+        interaction.pillDock = 'free'
+        interaction.pillFreeRight = { right: pos.right, y: pos.y }
         applyFreePill()
         clampFreePill()
         placePill()
@@ -166,11 +170,11 @@ export function createPillController(env) {
 
   /** 自由摆放：用 CSS right 钉住右边缘，宽度过渡的每一帧都往左长/往左收。 */
   function applyFreePill() {
-    if (!env.pillFreeRight) return
+    if (!interaction.pillFreeRight) return
     var h = env.pill.offsetHeight || 0
     env.pill.style.left = 'auto'
-    env.pill.style.right = Math.round(window.innerWidth - env.pillFreeRight.right) + 'px'
-    env.pill.style.top = Math.round(env.pillFreeRight.y - h / 2) + 'px'
+    env.pill.style.right = Math.round(window.innerWidth - interaction.pillFreeRight.right) + 'px'
+    env.pill.style.top = Math.round(interaction.pillFreeRight.y - h / 2) + 'px'
     env.pill.style.bottom = 'auto'
   }
 
@@ -180,14 +184,14 @@ export function createPillController(env) {
    * 位置没变就一个像素都不写。
    */
   function clampFreePill() {
-    if (!env.pillFreeRight) return false
+    if (!interaction.pillFreeRight) return false
     var w = env.pill.offsetWidth || 0
     var h = env.pill.offsetHeight || 0
-    var right = clamp(env.pillFreeRight.right, w + 4, Math.max(w + 4, window.innerWidth - 4))
-    var top = clamp(env.pillFreeRight.y - h / 2, 4, Math.max(4, window.innerHeight - h - 4))
+    var right = clamp(interaction.pillFreeRight.right, w + 4, Math.max(w + 4, window.innerWidth - 4))
+    var top = clamp(interaction.pillFreeRight.y - h / 2, 4, Math.max(4, window.innerHeight - h - 4))
     var y = top + h / 2
-    if (Math.abs(right - env.pillFreeRight.right) < 0.5 && Math.abs(y - env.pillFreeRight.y) < 0.5) return false
-    env.pillFreeRight = { right: right, y: y }
+    if (Math.abs(right - interaction.pillFreeRight.right) < 0.5 && Math.abs(y - interaction.pillFreeRight.y) < 0.5) return false
+    interaction.pillFreeRight = { right: right, y: y }
     applyFreePill()
     return true
   }
@@ -217,11 +221,11 @@ export function createPillController(env) {
    */
   function placePill() {
     // 关掉胶囊时不做任何定位工作：它已经 display:none，量位置纯属白费（而且会一直轮询）
-    if (env.pillHidden) return
+    if (interaction.pillHidden) return
     var anchor = measurePillAnchor()
-    env.pillAnchorWidth = anchor.width
+    interaction.pillAnchorWidth = anchor.width
     // 费用胶囊**出现**了：小球没有存在的意义（收球的前提就是"没有可跟随的胶囊"）→ 立刻展开
-    if (env.pillAnchorWidth > 0 && env.pillBall) expandPill()
+    if (interaction.pillAnchorWidth > 0 && interaction.pillBall) expandPill()
     // 只在真的变了才写 style（每帧无脑赋值会让浏览器反复标脏样式）
     var changed = false
     function write(prop, value) {
@@ -238,17 +242,17 @@ export function createPillController(env) {
     //   · 量不到（没装 dsh-spend / 它的胶囊此刻宽高为 0）→ 收到 PILL_FALLBACK_MAX。
     // 判据是**本次量到的宽度**而不是"有没有找到容器"：容器在但胶囊被折叠/隐藏时同样跟不了，
     // 那种情况也该走兜底。
-    write('maxWidth', env.pillBall ? PILL_BALL_SIZE + 'px' : anchor.width > 0 ? '' : PILL_FALLBACK_MAX + 'px')
+    write('maxWidth', interaction.pillBall ? PILL_BALL_SIZE + 'px' : anchor.width > 0 ? '' : PILL_FALLBACK_MAX + 'px')
     // min-width 也一起过渡：球是 32×32 的圆，展开时要**平滑回到 0**。
     // 之前它挂在 [data-ball="1"] 上，一摘属性就瞬间失效 → 展开第一帧宽度塌到内容宽（10px）
     // 再长回来，看着就是先抽一下（真时间轴采样到的 0:10）。
-    write('minWidth', env.pillBall ? PILL_BALL_SIZE + 'px' : '0px')
-    if (env.pillDock === 'free') {
+    write('minWidth', interaction.pillBall ? PILL_BALL_SIZE + 'px' : '0px')
+    if (interaction.pillDock === 'free') {
       // 位置归用户：CSS right 持续钉住右边缘，只保证胶囊还在视口里。
       clampFreePill()
       return changed
     }
-    if (Date.now() < env.pillSnapUntil) {
+    if (Date.now() < interaction.pillSnapUntil) {
       // 吸附那一下的"滑回去"窗口（见 settlePillDrop）：这期间位置仍按 left/top 维持 ——
       // left/top 与 right/bottom 之间**不可插值**（left:124px → auto 会直接瞬移），
       // 所以滑行必须靠 left/top 走完，之后再交还给 right/bottom 那套稳态定位。
@@ -277,11 +281,11 @@ export function createPillController(env) {
    */
   function pillCanBall() {
     return (
-      env.pillAnchorWidth === 0 &&
-      !env.pillBall &&
+      interaction.pillAnchorWidth === 0 &&
+      !interaction.pillBall &&
       !env.panelOpen &&
-      !env.pillHover &&
-      !env.pillDrag &&
+      !interaction.pillHover &&
+      !interaction.pillDrag &&
       pillStatus().tone !== 'busy'
     )
   }
@@ -474,22 +478,22 @@ export function createPillController(env) {
   }
 
   function collapsePill() {
-    if (env.pillBall) return false
-    env.pillBall = true
+    if (interaction.pillBall) return false
+    interaction.pillBall = true
     env.pill.setAttribute('data-ball', '1')
     setPillStar(true)
     placePill() // 上限 → 球的尺寸（过渡动画交给 CSS 的 max-width）
-    if (env.pillDock === 'free') applyFreePill()
+    if (interaction.pillDock === 'free') applyFreePill()
     return true
   }
 
   function expandPill() {
-    if (!env.pillBall) return false
-    env.pillBall = false
+    if (!interaction.pillBall) return false
+    interaction.pillBall = false
     env.pill.removeAttribute('data-ball')
     setPillStar(false)
     placePill() // 上限交回 200 / 费用胶囊那条
-    if (env.pillDock === 'free') applyFreePill()
+    if (interaction.pillDock === 'free') applyFreePill()
     return true
   }
 
@@ -498,16 +502,16 @@ export function createPillController(env) {
    * 用裸 setTimeout 而不是 later()：这个计时器每帧都可能被重置，塞进 timers 数组会一直长。
    */
   function schedulePillIdle() {
-    if (env.pillIdleId) clearTimeout(env.pillIdleId)
-    env.pillIdleId = setTimeout(function () {
-      env.pillIdleId = 0
+    if (interaction.pillIdleId) clearTimeout(interaction.pillIdleId)
+    interaction.pillIdleId = setTimeout(function () {
+      interaction.pillIdleId = 0
       if (pillCanBall()) collapsePill()
     }, preferences.pillIdleMs)
   }
 
   /** 有活动（点/划过/小窗在动/状态在变）→ 收着球就展开，并把静置计时重新拨满。 */
   function notePillActivity() {
-    if (env.pillBall) expandPill()
+    if (interaction.pillBall) expandPill()
     schedulePillIdle()
   }
 
@@ -521,7 +525,7 @@ export function createPillController(env) {
    */
   function beginPillDrag(event) {
     if (event.button !== undefined && event.button !== 0) return
-    if (env.pillBall) expandPill() // 球也能直接拖：先展开（hover 那条路通常已经展开了）
+    if (interaction.pillBall) expandPill() // 球也能直接拖：先展开（hover 那条路通常已经展开了）
     var rect = env.pill.getBoundingClientRect()
     var drag = {
       offsetX: event.clientX - rect.left,
@@ -530,16 +534,16 @@ export function createPillController(env) {
       startY: event.clientY,
       moved: false,
     }
-    env.pillDrag = drag
-    env.pillDragMoved = false
-    env.pillSnapUntil = 0
+    interaction.pillDrag = drag
+    interaction.pillDragMoved = false
+    interaction.pillSnapUntil = 0
     var move = function (moveEvent) {
-      if (env.pillDrag !== drag) return
+      if (interaction.pillDrag !== drag) return
       if (!drag.moved) {
         var travelled = Math.abs(moveEvent.clientX - drag.startX) + Math.abs(moveEvent.clientY - drag.startY)
         if (travelled < PILL_DRAG_SLOP) return
         drag.moved = true
-        env.pillDragMoved = true
+        interaction.pillDragMoved = true
         env.pill.setAttribute('data-drag', '1')
       }
       var w = env.pill.offsetWidth
@@ -547,16 +551,16 @@ export function createPillController(env) {
       var left = clamp(moveEvent.clientX - drag.offsetX, 4, Math.max(4, window.innerWidth - w - 4))
       var top = clamp(moveEvent.clientY - drag.offsetY, 4, Math.max(4, window.innerHeight - h - 4))
       // 真的拖了 → 从"贴角/跟随"切成自由摆放：位置归用户，轮询不再动它
-      env.pillDock = 'free'
-      env.pillFreeRight = { right: left + w, y: top + h / 2 }
+      interaction.pillDock = 'free'
+      interaction.pillFreeRight = { right: left + w, y: top + h / 2 }
       applyFreePill()
     }
     var up = function () {
       window.removeEventListener('mousemove', move, true)
       window.removeEventListener('mouseup', up, true)
-      if (env.pillDrag !== drag) return
+      if (interaction.pillDrag !== drag) return
       var dropRect = drag.moved ? env.pill.getBoundingClientRect() : null
-      env.pillDrag = null
+      interaction.pillDrag = null
       if (!drag.moved) {
         env.pill.removeAttribute('data-drag')
         return // 没动 = 点击：交给 click 处理（不在这里 reopen）
@@ -577,7 +581,7 @@ export function createPillController(env) {
     var near =
       Math.abs(rect.left - target.left) <= PILL_SNAP_RADIUS && Math.abs(rect.top - target.top) <= PILL_SNAP_RADIUS
     if (!near) {
-      env.pillDock = 'free'
+      interaction.pillDock = 'free'
       pillUserPlaced = true
       clampFreePill()
       savePillPos() // 位置归用户：记住它（存 host 上）
@@ -588,10 +592,10 @@ export function createPillController(env) {
     // left/top 与 right/bottom 之间不可插值（left:124px → auto 会直接跳），所以先把目标位置
     // 写成 left/top 让过渡跑完，窗口结束（PILL_SNAP_MS）再交还给 right/bottom 那套稳态定位。
     var snappedTo = pillAnchorRect()
-    env.pillDock = 'anchor'
-    env.pillFreeRight = null
+    interaction.pillDock = 'anchor'
+    interaction.pillFreeRight = null
     clearPillPos() // 吸附回右下角 = 默认位置，不用记了
-    env.pillSnapUntil = Date.now() + PILL_SNAP_MS
+    interaction.pillSnapUntil = Date.now() + PILL_SNAP_MS
     // 拖动时位置由 right 控制；吸附滑行由 left 控制。先在禁用过渡时
     // 把当前几何位置交给 left，再启用过渡写目标位置，避免 auto 属性瞬跳。
     env.pill.style.left = Math.round(rect.left) + 'px'
@@ -603,8 +607,8 @@ export function createPillController(env) {
     env.pill.style.left = Math.round(snappedTo.left) + 'px'
     env.pill.style.top = Math.round(snappedTo.top) + 'px'
     env.later(function () {
-      env.pillSnapUntil = 0
-      if (env.pillDock === 'anchor') placePill()
+      interaction.pillSnapUntil = 0
+      if (interaction.pillDock === 'anchor') placePill()
     }, PILL_SNAP_MS)
     return true
   }
@@ -623,38 +627,38 @@ export function createPillController(env) {
    * 观察器负责"立刻"，轮询退化成兜底（发现迟到挂载的插件、以及没有 ResizeObserver 的环境）。
    */
   function ensureResizeWatch() {
-    if (typeof ResizeObserver !== 'function' || !env.pillHost || env.pillHost === env.pillWatched) return
-    if (env.pillObserver) {
+    if (typeof ResizeObserver !== 'function' || !interaction.pillHost || interaction.pillHost === interaction.pillWatched) return
+    if (interaction.pillObserver) {
       try {
-        env.pillObserver.disconnect()
+        interaction.pillObserver.disconnect()
       } catch (error) {
         /* noop */
       }
     }
-    env.pillWatched = env.pillHost
+    interaction.pillWatched = interaction.pillHost
     try {
-      env.pillObserver = new ResizeObserver(function () {
-        env.pillPollDelay = env.PILL_POLL_MIN
+      interaction.pillObserver = new ResizeObserver(function () {
+        interaction.pillPollDelay = 2000
         placePill()
       })
-      env.pillObserver.observe(env.pillHost)
+      interaction.pillObserver.observe(interaction.pillHost)
     } catch (error) {
-      env.pillObserver = null
+      interaction.pillObserver = null
     }
   }
 
   function pillPollStep() {
     var changed = placePill()
     ensureResizeWatch()
-    env.pillPollDelay = changed ? env.PILL_POLL_MIN : Math.min(env.PILL_POLL_MAX, Math.round(env.pillPollDelay * 1.5))
-    return env.pillPollDelay
+    interaction.pillPollDelay = changed ? 2000 : Math.min(60000, Math.round(interaction.pillPollDelay * 1.5))
+    return interaction.pillPollDelay
   }
 
   function schedulePillPlacer() {
-    env.pillPlacerId = setTimeout(function () {
+    interaction.pillPlacerId = setTimeout(function () {
       pillPollStep()
       schedulePillPlacer()
-    }, env.pillPollDelay)
+    }, interaction.pillPollDelay)
   }
 
   /**

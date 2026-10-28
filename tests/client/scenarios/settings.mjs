@@ -1,8 +1,8 @@
-import { encodeWave, bytesToBase64 } from '../../../src/client/audio.js'
-import { formatClock } from '../../../src/client/dom.js'
-import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+
+
+
+
+
 
 export async function run(env) {
 
@@ -1060,8 +1060,36 @@ export async function run(env) {
   const promoteButton = Array.from(env.walk(env.panelHead)).find((n) => n.className.indexOf('dsh-sel-action') >= 0 && env.textOf(n).indexOf('升格') >= 0)
 
   promoteButton.dispatch('click', { stopPropagation() {} })
-  Object.defineProperties(env, {
-    classesIn: { configurable: true, get() { return classesIn } },
-    settingsSnapshot: { configurable: true, get() { return settingsSnapshot } },
-  })
+  for (let i = 0; i < 60 && env.promoted.length === 0; i += 1) {
+    await new Promise((r) => setTimeout(r, 20))
+  }
+
+  for (let i = 0; i < 60 && env.openedSessions.length === 0; i += 1) {
+    await new Promise((r) => setTimeout(r, 20))
+  }
+
+  const promotePayload = env.promoted[0] || {}
+
+  env.assert(
+    '升格请求带上两节结论（分阶段取，翻译不丢）',
+    !!promotePayload.text &&
+      (promotePayload.translation || '').indexOf('STAGE-TRANSLATION') >= 0 &&
+      (promotePayload.detail || '').indexOf('STAGE-DETAIL') >= 0 &&
+      Array.isArray(promotePayload.turns),
+    JSON.stringify({ t: (promotePayload.translation || '').slice(0, 20), d: (promotePayload.detail || '').slice(0, 20) }),
+  )
+
+  env.assert('升格请求剔除种子轮次（seed 不入正式会话）', !(promotePayload.turns || []).some((t) => t.seed === true))
+
+  env.assert('升格后跳到新会话', env.openedSessions[0] === 'session-promoted-1', JSON.stringify(env.openedSessions))
+
+  env.assert('升格结果仍有记录（自检可读）', /已升格/.test(String(env.hook.state().status || '')), String(env.hook.state().status))
+
+  for (let i = 0; i < 60 && env.panel.style.display !== 'none'; i += 1) {
+    await new Promise((r) => setTimeout(r, 20))
+  }
+
+  env.assert('升格后小窗自动关闭', env.panel.style.display === 'none', 'display=' + env.panel.style.display)
+
+
 }

@@ -5,6 +5,7 @@ import { splitSections } from './render.js'
 import { CHAT_REQUEST_BYTES, contextSource, prepareChatHistory, readContextState } from '../chat-context.js'
 
 /** conversation state and operations; dependencies are supplied as live node/callback accessors. */
+/** @param {import('./controller-contracts.js').ConversationEnv} env */
 export function createConversationController(env) {
 
   /** 发送按钮/输入框的可用状态：空内容或正在生成时不可发。 */

@@ -1,8 +1,8 @@
-import { encodeWave, bytesToBase64 } from '../../../src/client/audio.js'
-import { formatClock } from '../../../src/client/dom.js'
-import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+
+
+
+
+
 
 export async function run(env) {
 
@@ -38,34 +38,12 @@ export async function run(env) {
   }
 
 
-  // ⚠️ 放在**最后**：这一节前面/中间还有别的用例会写模型设置，早了会被覆盖掉。
-  // 还原真实配置：这一段跑在"用户正在用的插件"上时，把进本节之前的快照写回去。
-  // 隔离宿主（test-settings-host.mjs）下也无害 —— 那份宿主本来就是一次性的。
-  {
-    const values = (env.settingsSnapshot && env.settingsSnapshot.values) || {}
-    // 只发有值的、且不是虚拟键的（虚拟键会被宿主拒掉，返回 rejected 里，无害但还是别发）
-    const restore = {}
-    Object.keys(values).forEach((key) => {
-      if (key === 'modelChoice') return
-      if (values[key] === undefined || values[key] === null) return
-      restore[key] = values[key]
-    })
-    if (Object.keys(restore).length) {
-      await fetch(env.ORIGIN + '/selection-explain/api/settings', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ values: restore }),
-      })
-    }
-  }
-
-
   const hook = env.hook
-  for (const dispose of env.disposers.reverse()) dispose()
+  for (const dispose of env.disposers.splice(0).reverse()) dispose()
   env.assert('卸载后缓存、计时器和预览登记全部释放', Object.values(hook.memory()).every(value => value === 0), JSON.stringify(hook.memory()))
   env.assert('清理后自有根摘除，保留宿主 DOM', env.floatingLayer.parentNode === null && env.mount.children.length === 0 && env.body.children.indexOf(env.container) >= 0)
 
-  env.assert('清理后划词桥自己建的预览 blob 被回收', env.bridgeOwnedBlob !== '' && !env.blobStore.has(env.bridgeOwnedBlob), env.bridgeOwnedBlob)
+
 
   env.assert('清理后钩子移除', env.windowStub.__dshSelectionExplain === undefined)
 

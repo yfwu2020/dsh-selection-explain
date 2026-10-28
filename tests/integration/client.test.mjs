@@ -5,11 +5,30 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { apply } from '../../lib/index.js'
+import { CLIENT_SCENARIOS } from '../client/scenario-list.mjs'
+import { fileURLToPath } from 'node:url'
+
+// Keep both the host and UI lifecycle independent; earlier scenarios cannot seed later ones.
+if (!process.env.SEL_CLIENT_SCENARIO) {
+  for (const name of CLIENT_SCENARIOS) {
+    const status = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
+        stdio: 'inherit', env: { ...process.env, SEL_CLIENT_SCENARIO: name },
+      })
+      child.once('error', reject)
+      child.once('exit', code => resolve(code ?? 1))
+    })
+    if (status !== 0) process.exit(status)
+  }
+  process.exit(0)
+}
+if (!CLIENT_SCENARIOS.includes(process.env.SEL_CLIENT_SCENARIO)) throw new Error('Unknown client scenario')
 
 const temp = await mkdtemp(join(tmpdir(), 'dsh-settings-test-'))
 const previous = process.env.DSH_HOME
 process.env.DSH_HOME = temp
 const routes = new Map()
+const disposers = []
 const llm = {
   listProviders: () => [{ id: 'fixture', name: 'Fixture' }],
   listModels: async () => [{ id: 'fixture', name: 'Fixture' }],
@@ -21,7 +40,9 @@ const llm = {
 const ctx = {
   llm,
   get: name => name === 'llm' ? llm : name === 'agentDefaultModel' ? {currentSelection: () => ({provider: 'fixture', model: 'fixture'})} : undefined,
-  on() { return () => {} }, effect(fn) { return fn() }, logger: {info() {}, warn() {}},
+  on() { return () => {} },
+  effect(fn) { const dispose = fn(); if (typeof dispose === 'function') disposers.push(dispose); return dispose },
+  logger: {info() {}, warn() {}},
   webServer: { register(route) { routes.set(route.path, route.handler); return () => routes.delete(route.path) } },
 }
 apply(ctx, {})
@@ -39,6 +60,7 @@ try {
   })
   process.exitCode = result ?? 1
 } finally {
+  for (const dispose of disposers.reverse()) await dispose()
   server.closeAllConnections()
   await new Promise(resolve => server.close(resolve))
   // Allow the plugin's debounced writes to complete before removing the fixture.

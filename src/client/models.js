@@ -2,6 +2,7 @@ import { MODELS } from './constants.js'
 import { el, listen } from './dom.js'
 
 /** models state and operations; dependencies are supplied as live node/callback accessors. */
+/** @param {import('./controller-contracts.js').ModelsEnv} env */
 export function createModelsController(env) {
 
   // —— 悬浮状态胶囊：点一下回到最近一次小窗 ——

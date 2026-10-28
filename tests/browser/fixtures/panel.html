@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="zh-CN" data-platform="darwin"><head><meta charset="utf-8"><title>panel smoke</title>
+<style>html,body{margin:0;padding:0;background:#fff}
+/* DSH 桌面的原生拖拽规则：全屏 body 浮层不能成为 no-drag 矩形。 */
+html[data-platform=darwin] [data-window-drag]{-webkit-app-region:drag}
+html[data-platform=darwin] body>:not(#root){-webkit-app-region:no-drag}
+html[data-platform=darwin] :is(button,input,textarea,[role=button],[role=dialog]){-webkit-app-region:no-drag}
+/* 给主界面留一块"正文"，用来验主界面划词那条路 */
+#doc{padding:40px;font:14px/1.7 -apple-system,"PingFang SC",sans-serif}
+</style></head>
+<body>
+<div id="root"><div id="desktop-drag-probe" data-window-drag style="position:fixed;left:300px;top:0;width:400px;height:24px"></div></div>
+<div id="doc"><p id="docp">Dev: the migration ran long, so we ship Wednesday.</p></div>
+<!-- "别处正在打字"的输入框：必须 fixed 定位 —— 放进文档流会挪动上面那段文字的坐标，
+     而这一页里有一族"依赖坐标的划词用例"（见下面 ① 的注释），挪一下就会撞红。 -->
+<textarea id="other" style="position:fixed;right:8px;bottom:8px;width:150px;height:34px">别处正在打字</textarea>
+<div id="mount"></div>
+<pre id="out">PENDING</pre>
+<script>
+// ── 自检结果收集 ──
+var RESULTS = []
+function check(name, ok, extra) { RESULTS.push({ name: name, ok: !!ok, extra: extra === undefined ? '' : String(extra).slice(0, 300) }) }
+function finish() { document.getElementById('out').textContent = JSON.stringify(RESULTS) }
+var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms) }) }
+function waitFor(fn, ms) {
+  var deadline = Date.now() + (ms || 3000)
+  return new Promise(function (done) {
+    ;(function tick() {
+      var value
+      try { value = fn() } catch (error) { value = false }
+      if (value || Date.now() > deadline) return done(value)
+      setTimeout(tick, 25)
+    })()
+  })
+}
+
+// ── 插件 bundle 需要的环境：ModuleLoader / React 垫片 / ctx ──
+var captured = null
+window.__ModuleLoader__ = { load: function (spec) { captured = spec } }
+var React = {
+  createElement: function (type, props) {
+    var children = Array.prototype.slice.call(arguments, 2)
+    var out = { type: type, props: Object.assign({}, props || {}) }
+    if (children.length === 1) out.props.children = children[0]
+    else if (children.length > 1) out.props.children = children
+    return out
+  },
+}
+
+var fixture = {
+  translation: '## 翻译\n第一段译文：the migration ran long——迁移跑得比预期久，可以被划词引用。\n\n> 在本句中：进度延迟。\n',
+  detail: '## 详解\n详解第二段：这句话在排期上意味着顺延，也可以被划词引用。\n',
+  chat: '这是对追问的回答：冒烟用例。',
+}
+function sse(events) {
+  var body = events.map(function (e) { return 'data: ' + JSON.stringify(e) + '\n\n' }).join('')
+  return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
+}
+// 麦克风占用：默认"没人在录"。⑫ 交接用例要它报"豆包在录"才能把语音卡唤出来。
+var micState = { ok: true, available: true, capturing: false, processes: [], reason: '' }
+var pillPosStore = null // 内存版 host 存储（/api/pill）
+var panelSizeStore = null // 内存版 host 存储（/api/panel，只存尺寸）
+var realFetch = window.fetch.bind(window) // 兜底：不认识的 URL 走真 fetch（截图模式要取 /thumb.png）
+window.fetch = function (input, init) {
+  var url = String(input)
+  var body = {}
+  try { body = init && init.body ? JSON.parse(String(init.body)) : {} } catch (error) { body = {} }
+  if (url.indexOf('/selection-explain/api/mic') >= 0) {
+    window.__micHits = (window.__micHits || 0) + 1
+    return Promise.resolve(new Response(JSON.stringify(micState), { headers: { 'content-type': 'application/json' } }))
+  }
+  if (url.indexOf('/selection-explain/api/ping') >= 0) {
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, route: { provider: 'fixture', model: 'fixture' }, reasoningEffortByStage: { translation: 'low', detail: 'high', chat: 'high' }, limits: {} }), { headers: { 'content-type': 'application/json' } }))
+  }
+  if (url.indexOf('/selection-explain/api/quote-context') >= 0) {
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, matched: true, context: '用户：上一问\n助手：上一答\n用户：【' + (body.text || '') + '】\n助手：下一答', rounds: 2 }), { headers: { 'content-type': 'application/json' } }))
+  }
+  if (url.indexOf('/selection-explain/api/history') >= 0) {
+    var entry = fixture.history && url.indexOf('key=' + encodeURIComponent(fixture.history.key)) >= 0 ? fixture.history : null
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, entry: entry, entries: [] }), { headers: { 'content-type': 'application/json' } }))
+  }
+  if (url.indexOf('/selection-explain/api/panel') >= 0) {
+    var isGetPanel = !init || !init.method || String(init.method).toUpperCase() === 'GET'
+    if (isGetPanel) return Promise.resolve(new Response(JSON.stringify({ ok: true, size: panelSizeStore }), { headers: { 'content-type': 'application/json' } }))
+    if (body.clear === true) {
+      panelSizeStore = null
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, size: null }), { headers: { 'content-type': 'application/json' } }))
+    }
+    // 只认 w/h：位置不该出现在这个载荷里
+    panelSizeStore = body.size ? { w: body.size.w, h: body.size.h, hadXY: ('x' in body.size || 'y' in body.size) } : null
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, size: panelSizeStore }), { headers: { 'content-type': 'application/json' } }))
+  }
+  if (url.indexOf('/selection-explain/api/pill') >= 0) {
+    var isGet = !init || !init.method || String(init.method).toUpperCase() === 'GET'
+    if (isGet) return Promise.resolve(new Response(JSON.stringify({ ok: true, position: pillPosStore }), { headers: { 'content-type': 'application/json' } }))
+    if (body.clear === true) {
+      pillPosStore = null
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, position: null }), { headers: { 'content-type': 'application/json' } }))
+    }
+    if (typeof body.right === 'number' && typeof body.y === 'number') {
+      pillPosStore = { right: body.right, y: body.y }
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, position: pillPosStore }), { headers: { 'content-type': 'application/json' } }))
+    }
+    return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'position 需要 { right, y }' }), { status: 400, headers: { 'content-type': 'application/json' } }))
+  }
+  if (url.indexOf('/selection-explain/api/models') >= 0) {
+    // 三个模型：一个长名字、一个同名 id 挂在另一个 provider 下 —— 给"菜单里给当前在用的
+    // 那个打勾"那条用例用。current = 会话在用的那个（跟随态菜单要照它打勾）。
+    return Promise.resolve(new Response(JSON.stringify({
+      ok: true,
+      current: { provider: 'p1', model: 'm-fast' },
+      stages: { chat: 'high' },
+      models: [
+        { provider: 'p1', providerName: 'Provider One', model: 'm-fast', name: 'DeepSeek V4.1 Flash', efforts: [{ id: 'off', name: 'Off' }, { id: 'low', name: 'Low' }, { id: 'high', name: 'High' }, { id: 'max', name: 'Max' }], defaultEffort: 'high' },
+        { provider: 'p1', providerName: 'Provider One', model: 'm-strong', name: 'Strong Model With A Very Long Display Name', efforts: [{ id: 'off', name: 'Off' }, { id: 'high', name: 'High' }], defaultEffort: 'high' },
+        { provider: 'p2', providerName: 'DeepSeek Account', model: 'm-fast', name: 'Another Provider Same Id', efforts: [], defaultEffort: null },
+      ],
+    }), { headers: { 'content-type': 'application/json' } }))
+  }
+  if (url.indexOf('/selection-explain/api/attach') >= 0) {
+    // 附件上传：宿主把 base64 存进附件服务、回一个持久引用。这里只记请求、回一件：
+    // 客户端要验的是"逐件上传 + 引用回传"，不是附件服务自己（那条有 tests/unit/attach.test.mjs）。
+    window.__attachHits = window.__attachHits || []
+    window.__attachHits.push(body)
+    // __attachDelay：把回复拖慢一点，让"上传中"这个中间态可被确定性地观察到
+    //（真上传很快，不拖慢的话「发送键在上传期间置灰」这条只能靠运气撞上）。
+    if (window.__attachDelay) {
+      return new Promise(function (resolve) {
+        setTimeout(function () { resolve(reply()) }, window.__attachDelay)
+      })
+    }
+    return reply()
+    function reply() {
+    var item = (body.items || [])[0] || {}
+    // 失败开关：用来验"失败 → 重试"那条路
+    if (window.__attachFail && window.__attachFail === item.name) {
+      return Promise.resolve(new Response(JSON.stringify({ ok: false, code: 'UNSUPPORTED_IMAGE_TYPE', error: '不是受支持的图片格式（PNG / JPEG / WebP / GIF）', name: item.name }), { status: 400, headers: { 'content-type': 'application/json' } }))
+    }
+    var ref = item.kind === 'image'
+      ? { attachmentId: 'sha256:' + 'a'.repeat(64), mediaType: item.mediaType || 'image/png', width: 800, height: 600, bytes: 12, name: item.name }
+      : { attachmentId: 'sha256:' + 'b'.repeat(64), name: item.name, bytes: 12 }
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, items: [{ kind: item.kind, ref: ref }] }), { headers: { 'content-type': 'application/json' } }))
+    }
+  }
+  if (url.indexOf('/selection-explain/api/analyze') >= 0) {
+    if (body.question) {
+      // 追问的载荷留下来给附件用例断言（"引用只带引用、不带 base64"）
+      window.__askBodies = window.__askBodies || []
+      window.__askBodies.push(body)
+      return Promise.resolve(sse([{ type: 'start', provider: 'fixture', model: 'fixture', mode: 'chat' }, { type: 'delta', text: fixture.chat }, { type: 'done', chars: 8 }]))
+    }
+    var fence = String.fromCharCode(96, 96, 96)
+    var code = '## 注释\n' + fence + 'js\n// 注释：先声明常量\nconst x = 1\n' + fence + '\n\n> 小结：一句话说清。\n'
+    var text = body.kind === 'code' ? code : body.stage === 'detail' ? fixture.detail : fixture.translation
+    return Promise.resolve(sse([{ type: 'start', provider: 'fixture', model: 'fixture', stage: body.stage || 'translation' }, { type: 'delta', text: text }, { type: 'done', chars: text.length }]))
+  }
+  // 兜底：不认识的 URL 走**真** fetch。
+  // 以前这里一律回一个空 JSON —— 截图模式要拿页面自己的一张真 PNG 当缩略图，
+  // 被这条兜底拦住的话拿到的是一段 JSON，缩略图就成了破图。
+  return realFetch.apply(window, arguments)
+}
+
+var disposers = []
+var registration = null
+var ctx = {
+  logger: { info: function () {}, warn: function () {} },
+  get: function () { return undefined },
+  effect: function (fn) { var d = fn(); if (typeof d === 'function') disposers.push(d); return d },
+  slots: {
+    inject: function (key, callback) { var d = callback(); if (typeof d === 'function') disposers.push(d); return d },
+    register: function (options, component) { registration = { options: options, component: component }; return function () {} },
+  },
+}
+
+// ── 真选区 + 真事件 ──
+</script>
+<script src="/client.js"></script>
+<script>
+function selectIn(node, needle) {
+  var text = node.textContent || ''
+  var at = needle ? text.indexOf(needle) : 0
+  if (at < 0) return null
+  var len = needle ? needle.length : Math.min(6, text.length)
+  var walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null)
+  var acc = 0, startNode = null, startOffset = 0, endNode = null, endOffset = 0, current
+  while ((current = walker.nextNode())) {
+    var next = acc + current.nodeValue.length
+    if (startNode === null && at < next) { startNode = current; startOffset = at - acc }
+    if (startNode !== null && at + len <= next) { endNode = current; endOffset = at + len - acc; break }
+    acc = next
+  }
+  if (!startNode || !endNode) return null
+  var range = document.createRange()
+  range.setStart(startNode, Math.max(0, startOffset))
+  range.setEnd(endNode, Math.max(0, endOffset))
+  var sel = window.getSelection()
+  sel.removeAllRanges()
+  sel.addRange(range)
+  return range
+}
+function mouseUpOn(node) {
+  node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }))
+}
+function clickOn(node) {
+  node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
+}
+/**
+ * 像用户那样点一下：mousedown → mouseup → click。
+ * 只派发 click 是"程序化点击"，浏览器不会走聚焦/选区那套默认行为 ——
+ * 而浮标靠 mousedown 的 preventDefault 保住选区，正是那条路要验。
+ */
+function realClick(node) {
+  var opts = { bubbles: true, cancelable: true, view: window, detail: 1 }
+  node.dispatchEvent(new MouseEvent("mousedown", opts))
+  node.dispatchEvent(new MouseEvent("mouseup", opts))
+  node.dispatchEvent(new MouseEvent("click", opts))
+}
+/**
+ * 量几何之前先把过渡/动画冻住。
+ *
+ * 为什么必须冻：这个冒烟脚本跑在 --virtual-time-budget 下，定时器是虚拟时间（秒级飞快），
+ * 但 **CSS 过渡的动画时钟不跟着走** —— 胶囊的宽度/位置过渡（.32s）会在"中间某一帧"被量到，
+ * 于是"等了 420ms 还是量到起点值"。冻住之后量到的是终值，断言才是确定的；
+ * "到底有没有动画"另外用 getComputedStyle 断言（transition-property 里有没有 max-width）。
+ */
+function freezeMotion() {
+  if (document.getElementById('freeze-motion')) return
+  var style = document.createElement('style')
+  style.id = 'freeze-motion'
+  style.textContent = '*{transition:none!important;animation:none!important}'
+  document.head.appendChild(style)
+}
+/** 按**顶层**逗号切分 CSS 列表值：cubic-bezier(0.4, 0, 0.6, 1) 里面也有逗号，直接 split 会切碎。 */
+function splitCssList(value) {
+  var out = []
+  var depth = 0
+  var current = ''
+  for (var i = 0; i < String(value).length; i += 1) {
+    var ch = String(value)[i]
+    if (ch === '(') depth += 1
+    if (ch === ')') depth -= 1
+    if (ch === ',' && depth === 0) { out.push(current.trim()); current = '' } else { current += ch }
+  }
+  if (current.trim()) out.push(current.trim())
+  return out
+}
+/** 浮标是不是**最上层**（z-index 低于面板时 elementFromPoint 会返回面板）。 */
+function onTop(node) {
+  var rect = node.getBoundingClientRect()
+  if (!rect.width || !rect.height) return false
+  var hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+  return hit === node || node.contains(hit)
+}
+
+/*__PANEL_SCENARIOS__*/
+async function main() {
+const scope = {};
+if (await runStartup(scope)) return
+if (await runLayout(scope)) return
+if (await runSelection(scope)) return
+if (await runPill(scope)) return
+if (await runKeyboard(scope)) return
+if (await runModels(scope)) return
+if (await runVoice(scope)) return
+if (await runAttachments(scope)) return
+if (await runMemory(scope)) return
+}
+
+main().catch(function (error) {
+  check('冒烟脚本自身没抛错', false, (error && error.message) || String(error))
+
+  finish()
+})
+</script>
+</body></html>

@@ -4,6 +4,7 @@ import { micIcon } from './icons.js'
 import { encodeWave, bytesToBase64, recordingSupported } from './audio.js'
 
 /** voice state and operations; dependencies are supplied as live node/callback accessors. */
+/** @param {import('./controller-contracts.js').VoiceEnv} env */
 export function createVoiceController(env) {
 
   // ══════════════════════════ 语音输入（麦克风） ══════════════════════════

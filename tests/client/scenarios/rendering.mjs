@@ -1,42 +1,12 @@
-import { encodeWave, bytesToBase64 } from '../../../src/client/audio.js'
-import { formatClock } from '../../../src/client/dom.js'
+
+
 import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+
+
 
 export async function run(env) {
 
-  for (let i = 0; i < 60 && env.promoted.length === 0; i += 1) {
-    await new Promise((r) => setTimeout(r, 20))
-  }
-
-  for (let i = 0; i < 60 && env.openedSessions.length === 0; i += 1) {
-    await new Promise((r) => setTimeout(r, 20))
-  }
-
-  const promotePayload = env.promoted[0] || {}
-
-  env.assert(
-    '升格请求带上两节结论（分阶段取，翻译不丢）',
-    !!promotePayload.text &&
-      (promotePayload.translation || '').indexOf('STAGE-TRANSLATION') >= 0 &&
-      (promotePayload.detail || '').indexOf('STAGE-DETAIL') >= 0 &&
-      Array.isArray(promotePayload.turns),
-    JSON.stringify({ t: (promotePayload.translation || '').slice(0, 20), d: (promotePayload.detail || '').slice(0, 20) }),
-  )
-
-  env.assert('升格请求剔除种子轮次（seed 不入正式会话）', !(promotePayload.turns || []).some((t) => t.seed === true))
-
-  env.assert('升格后跳到新会话', env.openedSessions[0] === 'session-promoted-1', JSON.stringify(env.openedSessions))
-
-  env.assert('升格结果仍有记录（自检可读）', /已升格/.test(String(env.hook.state().status || '')), String(env.hook.state().status))
-
-  for (let i = 0; i < 60 && env.panel.style.display !== 'none'; i += 1) {
-    await new Promise((r) => setTimeout(r, 20))
-  }
-
-  env.assert('升格后小窗自动关闭', env.panel.style.display === 'none', 'display=' + env.panel.style.display)
-
+  env.hook.close()
 
   env.assert('页脚不再有档位开关', !Array.from(env.walk(env.panel)).some((n) => /深入|快速/.test(env.textOf(n)) && n.className === 'dsh-sel-more'))
 
@@ -537,6 +507,14 @@ export async function run(env) {
 
   env.assert('空内容按 Enter 不发送', env.sent.length === beforeEmpty, `sent=${env.sent.length - beforeEmpty}`)
 
+
+  // 本场景独立设置档位，不能依赖设置场景留下的内存状态。
+  env.hook.openModel()
+  await new Promise((r) => setTimeout(r, 30))
+  const highEffort = Array.from(env.walk(env.hook.modelNodes().menu)).find((n) => n.getAttribute('data-slot') === 'high')
+  env.assert('追问前可独立选择高思考档位', !!highEffort)
+  highEffort.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+  await new Promise((r) => setTimeout(r, 30))
 
   const beforeAsk = env.sent.length
 
@@ -1058,8 +1036,4 @@ export async function run(env) {
   env.assert('"同词但上下文不同"仍有记录', /同词但上下文不同/.test(String(env.hook.state().status || '')) && env.hook.state().sameTextSeen === true, `${env.hook.state().sameTextSeen} / ${env.hook.state().status}`)
 
   env.assert('自检钩子报出 sameTextSeen', env.hook.state().sameTextSeen === true, String(env.hook.state().sameTextSeen))
-  Object.defineProperties(env, {
-    askBox: { configurable: true, get() { return askBox } },
-    askSend: { configurable: true, get() { return askSend } },
-  })
 }

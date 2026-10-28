@@ -2,6 +2,13 @@
 
 // ────────────────────────────── 小工具 ──────────────────────────────
 
+/**
+ * @template {keyof HTMLElementTagNameMap} T
+ * @param {T} tag
+ * @param {string} [cls]
+ * @param {string} [text]
+ * @returns {HTMLElementTagNameMap[T]}
+ */
 export function el(tag, cls, text) {
   var node = document.createElement(tag)
   if (cls) node.className = cls

@@ -2,6 +2,7 @@ import { clamp } from './dom.js'
 import { BRIDGE_MARK, bridgeIntoHtml } from './bridge.js'
 
 /** preview state and operations; dependencies are supplied as live node/callback accessors. */
+/** @param {import('./controller-contracts.js').PreviewEnv} env */
 export function createPreviewController(env) {
 
   // —— 侧边栏网页（iframe）划词桥的父侧接线 ——

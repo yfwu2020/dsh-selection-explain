@@ -1,8 +1,10 @@
 import { el, listen } from './dom.js'
-import { ROUTE, preferences, SETTINGS } from './constants.js'
+import { ROUTE, createPreferences, SETTINGS } from './constants.js'
 
 /** settings state and operations; dependencies are supplied as live node/callback accessors. */
+/** @param {import('./controller-contracts.js').SettingsEnv} env */
 export function createSettingsController(env) {
+  var preferences = env.preferences || createPreferences()
 
   /**
    * 设置页状态。
@@ -643,13 +645,13 @@ export function createSettingsController(env) {
     if (spec.key === 'toolNames') input.setAttribute('rows', '2')
     var numScale = spec.scale || 1
     if (spec.kind === 'number') {
-      input.type = 'number'
+      input.setAttribute('type', 'number')
       // 边界按**显示单位**给（配置里是毫秒，界面按秒），换算只在这一处做
       if (spec.min !== undefined) input.setAttribute('min', String(spec.min / numScale))
       if (spec.max !== undefined) input.setAttribute('max', String(spec.max / numScale))
       if (spec.step !== undefined) input.setAttribute('step', String(spec.step / numScale))
     } else {
-      input.type = 'text'
+      input.setAttribute('type', 'text')
       // 宽文本行必须让输入框独占一行，否则值会被裁掉（抽屉是嵌在小窗里的窄容器）
       row.setAttribute('data-wide', '1')
       if (spec.placeholder) input.setAttribute('placeholder', spec.placeholder)

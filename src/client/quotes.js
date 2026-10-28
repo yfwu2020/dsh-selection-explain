@@ -3,6 +3,7 @@ import { el, listen } from './dom.js'
 import { normalizeSpace, collectContext } from './context.js'
 
 /** quotes state and operations; dependencies are supplied as live node/callback accessors. */
+/** @param {import('./controller-contracts.js').QuotesEnv} env */
 export function createQuotesController(env) {
 
   // ────────────────────── 引用（❝）：把别处的文字挂进输入框 ──────────────────────

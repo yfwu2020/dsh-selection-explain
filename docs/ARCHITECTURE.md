@@ -10,17 +10,24 @@
 | `src/host/plugin.ts` | 创建服务、注册 HTTP 路由和生命周期清理 |
 | `src/host/models.ts`、`sessions.ts` | 模型选择、推理能力清单、会话模型与背景缓存 |
 | `src/host/settings-store.ts`、`history-store.ts` | 设置覆盖、历史条目和界面位置/尺寸的持久化 |
-| `src/host/analyze.ts`、`promote.ts`、`speech.ts`、`attach.ts` | 流式解读、升格、语音识别，以及附件的上传与回放接口 |
+| `src/host/analyze.ts`、`analyze-*.ts` | 解读请求调度，以及请求归一化、消息与工具准备、流式执行、重试和补结论 |
+| `src/host/shot.ts`、`shot-service.ts`、`shot-capture.ts`、`shot-platform.ts`、`shot-geometry.ts` | 截图 HTTP 接口、实例任务生命周期、捕获流程、系统操作与纯几何规则 |
+| `src/host/native-probe.ts` | 原生探针的发布二进制选择和源码 hash 编译缓存 |
+| `src/host/promote.ts`、`speech.ts`、`attach.ts` | 升格、语音识别，以及附件的上传与回放接口 |
 | `src/host/filters.ts`、`effort.ts`、`context.ts`、`tools.ts`、`history-attachments.ts` | 可独立测试的处理规则、附件引用的收敛与预算、宿主工具适配与读取边界 |
 | `src/config-values.ts` | 配置类型、默认值和数值边界 |
 | `src/settings.ts` | 设置控件元数据与补丁归一化 |
 | `src/prompts.ts` | 提示词文本 |
-| `src/client/index.js` | 创建界面节点、装配控制器、绑定事件和卸载 |
+| `src/client/index.js` | 客户端生命周期、共享服务与宿主挂载 |
+| `src/client/view.js`、`state.js`、`controllers.js`、`events.js` | 界面节点、实例状态、控制器装配和事件订阅/清理 |
+| `src/client/controller-contracts.d.ts` | 控制器依赖的 DOM、状态、回调与服务类型契约 |
+| `src/client/history.js`、`history-*.js` | 历史调度、文本转换、消息回放、滚动与截图标题生成 |
 | `src/client/*` | 设置、面板、选区、语音卡、引用、附件、预览、历史、对话及录音控制器；样式与渲染辅助 |
-| `native/mic-probe.c` | macOS 麦克风占用探针源码 |
+| `native/mic-probe.c`、`native/window-list.c` | macOS 麦克风占用、窗口与显示器探针源码 |
 | `skills/web-design/` | 网页回答时由宿主读取的设计规范 |
 | `tests/unit/`、`integration/`、`browser/` | 规则测试、隔离宿主集成、真实浏览器验证 |
-| `tests/client/`、`tests/fixtures/` | 共用客户端环境、顺序场景和原生测试夹具 |
+| `tests/client/fixtures/`、`tests/client/scenarios/` | DOM/接口/流式响应夹具，以及独立运行的客户端场景 |
+| `tests/browser/fixtures/`、`tests/browser/scenarios/`、`tests/fixtures/` | 浏览器页面骨架、分场景断言与原生测试夹具 |
 | `scripts/` | 构建、测试调度、提示词导出和设计开发工具 |
 | `lib/` | 可重新生成的发布产物，不纳入版本控制 |
 
@@ -28,7 +35,9 @@
 
 宿主入口只负责公开 DSH 需要的 `name`、`inject`、`Config`、`apply`。`apply` 创建各服务工厂，再注册原有 `/selection-explain/api/*` 路由。服务通过参数接收 `ctx`、配置和所需的其他服务。配置对象在实例内共享，设置更新立即对后续请求生效；模型缓存、历史和会话缓存由对应服务持有。
 
-浏览器入口创建 DOM，向控制器传递节点、回调和必要的状态访问器。可变状态通过访问器读取当前值，避免复制布尔状态或模型缓存造成界面不同步。控制器之间不直接导入彼此；连接关系集中在入口。纯渲染、音频编码、图标和预览桥使用普通模块导出。
+浏览器入口调用 `view.js` 创建 DOM，通过 `controllers.js` 向控制器传递节点、回调和必要的状态访问器。可变状态通过访问器读取当前值，避免复制布尔状态或模型缓存造成界面不同步。控制器之间的连接集中在装配层；依赖类型由 `controller-contracts.d.ts` 检查。偏好、面板状态和胶囊交互状态分别由工厂创建，每次挂载拥有独立实例。`events.js` 返回统一的清理函数。纯渲染、音频编码、图标和预览桥使用普通模块导出。
+
+`analyze.ts` 负责 HTTP 验证与阶段调度，执行上下文以明确类型传递给消息、工具、流式轮次和补结论模块，继续使用原有取消信号和容量限制。截图服务由每次宿主 `apply` 创建，持有自己的任务、长轮询和临时目录。平台接口可注入，几何规则不访问系统；任务结束会取消未使用的预读取，停用会中止活动命令、释放等待客户端并在命令退出后清理文件。
 
 客户端通过 esbuild 打包为一个 CommonJS 工厂，并由 `window.__ModuleLoader__.load` 注册。模块求值发生在工厂 materialize 时，DOM 挂载和监听仍由 `apply` 执行；停用时通过已有 effect/slot 清理资源。
 
@@ -50,6 +59,6 @@
 
 用户数据位于 `${DSH_HOME}/selection-explain`，未设置 `DSH_HOME` 时使用 `~/.dsh/selection-explain`。本次整理保留各 JSON 文件格式和 HTTP 路径。
 
-发布内容仅包含 `lib/`、原生探针源码、装配清单、运行时 skill、README 和许可证。Linux 构建不会产生 macOS 二进制；Mac 上首次使用可按源码 hash 在数据目录中编译并缓存。因此 `native/mic-probe.c` 必须保留。宿主文件移动后的资源路径相对于 `lib/host/` 解析。
+发布内容仅包含 `lib/`、原生探针源码、装配清单、运行时 skill、README 和许可证。Linux 构建不会产生 macOS 二进制；Mac 上首次使用可按源码 hash 在数据目录中编译并缓存。因此 `native/mic-probe.c` 和 `native/window-list.c` 都必须保留。窗口探针优先使用包内二进制；缺失时编译到唯一临时路径，成功后替换缓存，失败时保留截图降级路径。宿主文件移动后的资源路径相对于 `lib/host/` 解析。
 
 README 截图使用仓库中的版本链接，不随运行时包复制。`assets/` 仍在仓库中。公开架构和贡献说明纳入版本控制，其余本机资料与设计实验继续忽略。

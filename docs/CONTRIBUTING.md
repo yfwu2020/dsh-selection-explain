@@ -20,11 +20,19 @@ npm run test:integration
 npm run test:browser
 ```
 
-这些命令同样先构建。`tests/client/run.mjs` 中的场景共享一个界面生命周期，必须由隔离宿主入口 `tests/integration/client.test.mjs` 按顺序运行，不能单独加载一个中间场景。默认测试使用临时数据目录和模型/识别夹具，不连接用户正在使用的 DSH。
+这些命令同样先构建。客户端场景由 `tests/integration/client.test.mjs` 调度，每个场景使用独立进程、临时宿主、数据目录和界面生命周期，并在结束时清理。DOM、接口和 SSE 响应夹具位于 `tests/client/fixtures/`，场景不应依赖前一场景留下的档位、设置或消息。默认测试不连接用户正在使用的 DSH。
 
-内存与上下文进度场景独立于其他中间场景，可在构建后用 `SEL_CLIENT_SCENARIO=memory node tests/integration/client.test.mjs` 单独验证长对话的按需渲染、关闭与重开；默认测试也包含此场景；`SEL_CLIENT_SCENARIO=context node tests/integration/client.test.mjs` 单独验证进度落盘、重开、原文尾部发送和附件索引。
+构建后可运行全部客户端场景，或指定任意一个场景：
 
-浏览器测试需要 Chrome/Chromium；可通过 `CHROME` 指定可执行文件。开发机没有浏览器时会明确跳过；CI 设置 `REQUIRE_BROWSER=1`，缺少浏览器会失败。原生探针测试在 macOS 上执行，其余平台明确跳过。
+```bash
+node tests/integration/client.test.mjs
+SEL_CLIENT_SCENARIO=rendering node tests/integration/client.test.mjs
+SEL_CLIENT_SCENARIO=memory node tests/integration/client.test.mjs
+```
+
+场景名见 `tests/client/scenario-list.mjs`。`context` 验证进度落盘、重开、原文尾部发送和附件索引；`cleanup` 验证卸载释放资源。不要直接执行内部 `tests/client/run.mjs`，它要求隔离宿主入口提供环境。
+
+浏览器测试需要 Chrome/Chromium；可通过 `CHROME` 指定可执行文件。开发机没有浏览器时会明确跳过；CI 设置 `REQUIRE_BROWSER=1`，缺少浏览器会失败。面板测试驱动位于 `tests/browser/panel.test.mjs`，页面骨架与场景分别位于 `fixtures/panel.html` 和 `scenarios/`，保留同一浏览器页面内的交互顺序。原生探针测试在 macOS 上执行，其余平台明确跳过。截图服务测试注入平台夹具，不触发真实框选；另行进行人工截图验证时应明确记录。
 
 默认语音浏览器测试使用带静音间隔的合成音频，验证真实录音、编码、停顿和输入框编排。需要验证实际宿主的识别服务时单独运行：
 
@@ -49,6 +57,8 @@ npm pack --dry-run
 
 - 新宿主逻辑放到对应职责模块，通过服务参数连接。
 - 新客户端逻辑放到对应控制器，依赖从入口传入；减少跨控制器可变字段。
+- 控制器依赖更新时同步修改 `controller-contracts.d.ts`；实例状态由工厂创建，避免模块级可变对象。
+- 截图系统操作通过平台接口注入；活动命令必须响应任务取消，插件停用须等待清理完成。
 - 配置默认值和数值边界只修改 `src/config-values.ts`；控件展示放在 `src/settings.ts`。
 - 规则测试直接导入实际模块，接口测试验证请求与响应，界面几何交给真实浏览器。
 - 本机记录和设计实验继续放在被忽略的 `docs/` 中；公共架构变化同步更新本目录两份公开说明。

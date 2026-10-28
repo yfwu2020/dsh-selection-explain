@@ -79,6 +79,7 @@ export function looksLikeDirectory(file) {
   return file && file.size === 0 && !file.type && !/\.[A-Za-z0-9]+$/.test(String(file.name || ''))
 }
 
+/** @param {import('./controller-contracts.js').AttachEnv} env */
 export function createAttachController(env) {
   var seq = 0
 

@@ -1,8 +1,8 @@
-import { encodeWave, bytesToBase64 } from '../../../src/client/audio.js'
-import { formatClock } from '../../../src/client/dom.js'
-import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+
+
+
+
+
 
 export async function run(env) {
 
@@ -582,7 +582,6 @@ export async function run(env) {
     env.windowStub.getSelection = restoreGetSelection
     env.hook.close()
   }
-  Object.defineProperties(env, {
-    bridgeOwnedBlob: { configurable: true, get() { return bridgeOwnedBlob }, set(value) { bridgeOwnedBlob = value } },
-  })
+  for (const dispose of env.disposers.splice(0).reverse()) dispose()
+  env.assert('清理后划词桥自己建的预览 blob 被回收', bridgeOwnedBlob !== '' && !env.blobStore.has(bridgeOwnedBlob), bridgeOwnedBlob)
 }

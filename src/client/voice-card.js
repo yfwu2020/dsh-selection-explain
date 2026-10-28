@@ -4,6 +4,7 @@ import { isDarkSurface } from './render.js'
 import { collectContext } from './context.js'
 
 /** voice-card state and operations; dependencies are supplied as live node/callback accessors. */
+/** @param {import('./controller-contracts.js').VoiceCardEnv} env */
 export function createVoiceCardController(env) {
 
   // ══════════════════ 语音卡：选中文字 + 输入法正在语音输入 ══════════════════

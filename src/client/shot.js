@@ -218,12 +218,13 @@ function report(payload) {
   }
 }
 
+/** @param {import('./controller-contracts.js').ShotEnv} env */
 export function createShotController(env) {
   // 实例世代：热重载后可能同时存在多个实例（旧的没被彻底收掉），
   // 它们都在长轮询 /shot/pending —— 谁抢到谁处理。旧实例的 layer 往往已经
   // 脱离文档，结果就是"卡片画进了看不见的节点"（时好时坏的那种）。
   // 所以：只有**最新**那一代允许轮询，老的自己停手。
-  var host = (env.window || (typeof window !== 'undefined' ? window : null)) || {}
+  var host = /** @type {{ __dshSelShotEpoch?: number }} */ ((env.window || (typeof window !== 'undefined' ? window : null)) || {})
   var myEpoch = 0
   try {
     host.__dshSelShotEpoch = (host.__dshSelShotEpoch || 0) + 1
@@ -618,7 +619,7 @@ export function createShotController(env) {
             stage: 'probe',
             open: env.vcardOpen ? !!env.vcardOpen() : null,
             card: cinfo,
-            layer: layerEl ? { connected: !!layerEl.isConnected, parent: layerEl.parentNode ? (layerEl.parentNode.className || layerEl.parentNode.nodeName) : null } : null,
+            layer: layerEl ? { connected: !!layerEl.isConnected, parent: layerEl.parentNode ? (/** @type {Element} */ (layerEl.parentNode).className || layerEl.parentNode.nodeName) : null } : null,
             frame: frameEl ? { show: frameEl.getAttribute('data-show'), connected: !!frameEl.isConnected } : null,
             vp: [window.innerWidth, window.innerHeight],
           })

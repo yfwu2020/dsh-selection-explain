@@ -21,6 +21,7 @@ import { closeIcon } from './icons.js'
 
 var SVG_NS = 'http://www.w3.org/2000/svg'
 
+/** @param {import('./controller-contracts.js').LightboxEnv} env */
 export function createLightboxController(env) {
   var root = null
   var stage = null
