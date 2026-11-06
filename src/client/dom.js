@@ -43,11 +43,15 @@ export function selectionDetached(range) {
   return !!node && node.isConnected === false
 }
 
-/** 选区是否落在输入框里（那里不该弹按钮，避免干扰输入）。 */
+/** 选区是否落在可编辑区里（那里不该弹按钮，避免干扰输入）。 */
 export function insideEditable(node) {
   var element = node && node.nodeType === 1 ? node : node && node.parentElement
   if (!element || !element.closest) return false
-  return !!element.closest('input, textarea')
+  // DSH 0.2.x 的输入框是 contenteditable（Lexical），不是 textarea：
+  // 浏览器算好的 isContentEditable 最准（它会处理 contenteditable=false 的夹层）；
+  // 老环境/桩环境没有这个属性时退回属性选择器。
+  if (element.isContentEditable === true) return true
+  return !!element.closest('input, textarea, [contenteditable]:not([contenteditable="false"])')
 }
 
 export function formatDuration(ms) {

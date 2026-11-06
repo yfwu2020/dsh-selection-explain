@@ -221,4 +221,29 @@ export async function runSelection(scope) {
             check(icons[k][0] + '墨迹在 16×16 画布里居中', !!box && Math.abs(cx - 8) <= 0.25 && Math.abs(cy - 8) <= 0.25, box ? 'cx=' + cx.toFixed(2) + ' cy=' + cy.toFixed(2) : '未找到 svg');
         }
     }
+    // ⑪ DSH 0.2.x 的输入框是 contenteditable（Lexical），不是 textarea：
+    //    在里面选字不该弹浮标（以前只认 input/textarea，会把输入框里的选区当正文）。
+    {
+        var editable = document.createElement('div');
+        editable.setAttribute('contenteditable', 'true');
+        editable.textContent = '在输入框里选中的文字不该弹解读';
+        editable.style.cssText = 'position:fixed;left:40px;top:640px;width:420px;height:36px;z-index:1;';
+        document.body.appendChild(editable);
+        var firstText = editable.firstChild;
+        var editableRange = document.createRange();
+        editableRange.setStart(firstText, 0);
+        editableRange.setEnd(firstText, 7);
+        var editableSel = window.getSelection();
+        editableSel.removeAllRanges();
+        editableSel.addRange(editableRange);
+        mouseUpOn(editable);
+        await sleep(160);
+        var stillShown = [document.querySelector('.dsh-sel-btn:not(.dsh-sel-quotebtn)'), scope.quoteBtn].filter(function (btn) {
+            return btn && btn.style.display === 'inline-flex' && btn.getBoundingClientRect().width > 0;
+        });
+        check('contenteditable 里选字不弹浮标（解读 / 引用都不弹）', stillShown.length === 0, stillShown.length ? stillShown.map(function (btn) { return btn.className; }).join(',') : 'none');
+        editableSel.removeAllRanges();
+        editable.remove();
+        await sleep(60);
+    }
 }

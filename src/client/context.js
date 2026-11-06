@@ -20,11 +20,21 @@ export function describeContainer(element) {
   try {
     if (element.closest('pre') || element.closest('code')) return '代码块'
     if (element.closest('table')) return '表格'
-    var message = element.closest('[data-message-role],[data-role],[data-testid*="message"],article')
-    if (message) {
-      var role = message.getAttribute('data-message-role') || message.getAttribute('data-role') || ''
-      if (role === 'user') return '对话消息（用户）'
-      if (role === 'assistant') return '对话消息（助手）'
+    // DSH 0.2.x 的聊天区不再有 data-message-role / article：
+    // 用户消息挂在 data-chat-flow-kind="user"，助手正文在 data-chat-group-part="response|reasoning" 里。
+    if (element.closest('[data-message-role="user"],[data-role="user"],[data-chat-flow-kind="user"]')) return '对话消息（用户）'
+    if (
+      element.closest(
+        '[data-message-role="assistant"],[data-role="assistant"],[data-chat-flow-kind="assistant"],[data-chat-group-part="response"],[data-chat-group-part="reasoning"]',
+      )
+    ) {
+      return '对话消息（助手）'
+    }
+    if (
+      element.closest(
+        '[data-message-role],[data-role],[data-chat-flow-kind],[data-chat-group-part],[data-message-bubble],[data-testid*="message"],article',
+      )
+    ) {
       return '对话消息'
     }
   } catch (error) {

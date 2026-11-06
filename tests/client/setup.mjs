@@ -289,6 +289,7 @@ export async function createClientFixture() {
     const css = readFileSync(BUNDLE, 'utf8')
     assert('CSS 契约：右侧停靠时从左侧长出来', /\.dsh-sel-btn\[data-dock="right"\]\{transform-origin:0% 100%\}/.test(css), '')
     assert('CSS 契约：浮标与内置浮层同族（用宿主 token，不再写死主色蓝）', /background:var\(--dsw-alias-button-floating-fill/.test(css), '')
+    assert('快捷键契约：命令带 DSH 0.2.2 要求的 regions / modals', /regions: \["page"/.test(css) && /modals: \[\]/.test(css), '')
 
     delete globalThis.__fakePlatformSurface
   }

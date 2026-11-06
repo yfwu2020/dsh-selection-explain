@@ -1025,6 +1025,12 @@ export function apply(ctx) {
         // ⚠️ 必须给数组：设置页渲染列表时会 `[...row.aliases]`，
         // 留成 undefined 会直接抛 TypeError，整个快捷键弹窗打不开（实测踩到）。
         aliases: [],
+        // DSH 0.2.2 起这两个字段是命令契约的一部分（Web 运行时的分发与原生菜单都会读）：
+        //   · regions：哪些输入区域允许触发。截图是全局动作，页面/输入框/终端都给。
+        //   · modals：允许在哪些模态浮层里触发；空数组 = 任何模态开着都不抢键。
+        // 缺了它们桌面端还能靠 priority 短路"侥幸"可用，但 Web 端会直接抛 TypeError。
+        regions: ['page', 'editable', 'terminal'],
+        modals: [],
         // 键位是**物理键 + 修饰键**的结构（不是 "Mod+Shift+X" 这种字符串）：
         // code 必须是 KeyA-Z / Digit0-9 / F1-24 这类物理 code，modifiers 是 meta/control/alt/shift/primary
         // （primary 在 macOS 上是 ⌘、Windows 上是 Ctrl）。
