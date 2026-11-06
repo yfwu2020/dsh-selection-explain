@@ -26,6 +26,26 @@ export function createSelectionController(env) {
    */
   var dismissedRange = null
 
+  // 宿主在 document capture 的 pointerdown 里关闭自己的浮层，早于按钮的 click。
+  // 从按下到 click 结束期间固定浮标，避免观察器把点击目标藏掉或挪走。
+  var floatInteracting = false
+  var floatInteractionVersion = 0
+
+  function beginFloatInteraction() {
+    floatInteracting = true
+    floatInteractionVersion += 1
+  }
+
+  function endFloatInteraction() {
+    if (!floatInteracting) return
+    var version = floatInteractionVersion
+    env.later(function () {
+      if (version !== floatInteractionVersion) return
+      floatInteracting = false
+      syncPlatformSurface()
+    }, 0)
+  }
+
   /** 两段选区是不是同一处（容器 + 偏移）。取不到容器（桩环境/异常）时一律当"不同"，不拦截。 */
   function sameRange(a, b) {
     if (!a || !b || !a.startContainer || !b.startContainer) return false
@@ -356,6 +376,7 @@ export function createSelectionController(env) {
    * 返回"这次是从隐藏变可见" —— 调用方据此决定要不要播浮现动效。
    */
   function placeFloat(node, rect) {
+    if (floatInteracting) return false
     var wasHidden = node.style.display !== 'inline-flex'
     node.style.display = 'inline-flex'
     var width = node.offsetWidth || 62
@@ -473,38 +494,41 @@ export function createSelectionController(env) {
     }
     surfaceObserved = node
     surfaceVisible = surfaceSnapshot().visible
-    surfaceObserver = new MutationObserver(function () {
-      var next = surfaceSnapshot()
-      var changed = next.visible !== surfaceVisible
-      surfaceVisible = next.visible
-      if (changed && !next.visible) {
-        if (next.dismissed) {
-          // 真被收掉（Esc / 点别处）：记下这条选区，之后同一选区不再复现
-          dismissedRange = currentDocumentRange()
-          surfaceScrolledOut = false
-        } else {
-          // 只是滚出视区：先跟着藏，滚回来再放回去
-          surfaceScrolledOut = true
-        }
-        hideButton()
-        env.hideQuoteButton()
-        return
-      }
-      if (changed && next.visible) {
-        var restore = surfaceScrolledOut
-        surfaceScrolledOut = false
-        if (restore) {
-          restoreFloating()
-          return
-        }
-      }
-      refreshPlacement()
-    })
+    surfaceObserver = new MutationObserver(syncPlatformSurface)
     surfaceObserver.observe(node, {
       attributes: true,
       attributeFilter: ['aria-hidden', 'style', 'class'],
       childList: true,
     })
+  }
+
+  function syncPlatformSurface() {
+    if (floatInteracting) return
+    var next = surfaceSnapshot()
+    var changed = next.visible !== surfaceVisible
+    surfaceVisible = next.visible
+    if (changed && !next.visible) {
+      if (next.dismissed) {
+        // 真被收掉（Esc / 点别处）：记下这条选区，之后同一选区不再复现
+        dismissedRange = currentDocumentRange()
+        surfaceScrolledOut = false
+      } else {
+        // 只是滚出视区：先跟着藏，滚回来再放回去
+        surfaceScrolledOut = true
+      }
+      hideButton()
+      env.hideQuoteButton()
+      return
+    }
+    if (changed && next.visible) {
+      var restore = surfaceScrolledOut
+      surfaceScrolledOut = false
+      if (restore) {
+        restoreFloating()
+        return
+      }
+    }
+    refreshPlacement()
   }
 
   function setQuotePop(on) {
@@ -549,6 +573,8 @@ export function createSelectionController(env) {
     turnLabelOf,
     refreshPlacement,
     followPlatformSurface,
+    beginFloatInteraction,
+    endFloatInteraction,
     dispose,
   }
 }

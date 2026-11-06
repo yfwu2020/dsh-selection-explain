@@ -283,4 +283,96 @@ export async function runSelection(scope) {
         mouseUpOn(document.body);
         await sleep(80);
     }
+    // DSH 在 document capture 的 pointerdown 就 dismiss 内置浮层；不能等到 click
+    // 才保护按钮。事件之间让 MutationObserver 跑完，并按原坐标重新命中目标。
+    {
+        scope.hook.close();
+        await sleep(120);
+        var pressHost = document.createElement('div');
+        pressHost.textContent = 'A selection should open on the first click.';
+        pressHost.style.cssText = 'position:fixed;left:60px;top:560px;width:520px;height:44px;';
+        document.body.appendChild(pressHost);
+        var pressSurface = document.createElement('div');
+        pressSurface.setAttribute('data-text-interaction-surface', '');
+        pressSurface.setAttribute('aria-hidden', 'false');
+        pressSurface.style.cssText = 'position:fixed;left:700px;top:520px;width:96px;height:30px;';
+        document.body.appendChild(pressSurface);
+        var dismissOnPress = function (event) {
+            if (event.composedPath().includes(pressSurface)) return;
+            pressSurface.style.visibility = 'hidden';
+            pressSurface.setAttribute('aria-hidden', 'true');
+        };
+        document.addEventListener('pointerdown', dismissOnPress, true);
+        try {
+            selectIn(pressHost, 'first click');
+            mouseUpOn(pressHost);
+            await sleep(180);
+            var pressButton = document.querySelector('.dsh-sel-btn:not(.dsh-sel-quotebtn)');
+            var pressBox = pressButton.getBoundingClientRect();
+            var pressX = pressBox.left + pressBox.width / 2;
+            var pressY = pressBox.top + pressBox.height / 2;
+            var pressOpts = { bubbles: true, cancelable: true, view: window, clientX: pressX, clientY: pressY, button: 0, pointerId: 1 };
+            pressButton.dispatchEvent(new PointerEvent('pointerdown', pressOpts));
+            await sleep(20);
+            check('宿主在 pointerdown 关闭浮层后，解读按钮仍留在按下位置', pressButton.contains(document.elementFromPoint(pressX, pressY)), pressButton.style.display);
+            var downTarget = document.elementFromPoint(pressX, pressY);
+            downTarget.dispatchEvent(new MouseEvent('mousedown', pressOpts));
+            await sleep(20);
+            var upTarget = document.elementFromPoint(pressX, pressY);
+            upTarget.dispatchEvent(new PointerEvent('pointerup', pressOpts));
+            upTarget.dispatchEvent(new MouseEvent('mouseup', pressOpts));
+            if (pressButton.contains(downTarget) && pressButton.contains(upTarget)) clickOn(pressButton);
+            await sleep(100);
+            check('完整 pointerdown → click 第一次点击就打开解读小窗', scope.panel.style.display === 'flex', scope.panel.style.display);
+
+            // 同一保护也适用于开窗后的「引用」，并验证取消按压会释放保护。
+            if (scope.panel.style.display === 'flex') {
+                await scope.settlePanel();
+                for (var cancelPress of [false, true]) {
+                    pressSurface.style.visibility = 'visible';
+                    pressSurface.setAttribute('aria-hidden', 'false');
+                    selectIn(pressHost, cancelPress ? 'selection should' : 'first click');
+                    mouseUpOn(pressHost);
+                    await sleep(180);
+                    var quotePressBox = scope.quoteBtn.getBoundingClientRect();
+                    var quoteX = quotePressBox.left + quotePressBox.width / 2;
+                    var quoteY = quotePressBox.top + quotePressBox.height / 2;
+                    var quoteOpts = { bubbles: true, cancelable: true, view: window, clientX: quoteX, clientY: quoteY, button: 0, pointerId: 1 };
+                    var beforeQuotes = scope.chipCount();
+                    scope.quoteBtn.dispatchEvent(new PointerEvent('pointerdown', quoteOpts));
+                    await sleep(20);
+                    if (cancelPress) {
+                        scope.quoteBtn.dispatchEvent(new PointerEvent('pointercancel', quoteOpts));
+                        await sleep(20);
+                        check('取消按压后浮标正常收起且不插入引用', scope.quoteBtn.style.display === 'none' && scope.chipCount() === beforeQuotes, scope.quoteBtn.style.display);
+                    } else {
+                        var quoteDown = document.elementFromPoint(quoteX, quoteY);
+                        quoteDown.dispatchEvent(new MouseEvent('mousedown', quoteOpts));
+                        var quoteUp = document.elementFromPoint(quoteX, quoteY);
+                        quoteUp.dispatchEvent(new PointerEvent('pointerup', quoteOpts));
+                        quoteUp.dispatchEvent(new MouseEvent('mouseup', quoteOpts));
+                        if (scope.quoteBtn.contains(quoteDown) && scope.quoteBtn.contains(quoteUp)) clickOn(scope.quoteBtn);
+                        await sleep(40);
+                        check('宿主 pointerdown 关闭浮层时引用也只需点击一次', scope.chipCount() === beforeQuotes + 1 && scope.hook.quotes().at(-1).text === 'first click', String(scope.chipCount()));
+                        scope.dropQuotes();
+                    }
+                }
+                // 取消后重新划词仍能出现，保护状态不能卡住。
+                pressSurface.style.visibility = 'visible';
+                pressSurface.setAttribute('aria-hidden', 'false');
+                selectIn(pressHost, 'open on');
+                mouseUpOn(pressHost);
+                await sleep(180);
+                check('取消按压后重新划词仍可出现引用浮标', scope.quoteBtn.style.display === 'inline-flex', scope.quoteBtn.style.display);
+            }
+        } finally {
+            document.removeEventListener('pointerdown', dismissOnPress, true);
+            scope.hook.close();
+            pressSurface.remove();
+            pressHost.remove();
+            window.getSelection().removeAllRanges();
+            mouseUpOn(document.body);
+            await sleep(80);
+        }
+    }
 }

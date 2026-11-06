@@ -186,6 +186,18 @@ export function bindClientEvents(env) {
     // 曾经的规则是"没追问过才关"，但那会让用户在读第一屏翻译时被误关（点一下别处就没了）。
   }, true)
 
+  // 在 window capture 先固定点击目标：宿主随后在 document capture 的
+  // pointerdown 关闭内置浮层，观察器也不能在 click 完成前藏掉/挪走按钮。
+  var offFloatPointerDown = listen(window, 'pointerdown', function (event) {
+    if (event.button !== 0) return
+    if (env.button.contains(event.target) || env.quoteButton.contains(event.target)) {
+      env.selectionController.beginFloatInteraction()
+    }
+  }, true)
+  var offFloatPointerUp = listen(window, 'pointerup', env.selectionController.endFloatInteraction, true)
+  var offFloatPointerCancel = listen(window, 'pointercancel', env.selectionController.endFloatInteraction, true)
+  var offFloatBlur = listen(window, 'blur', env.selectionController.endFloatInteraction)
+
   // 让按钮吞掉 mousedown：点击时不破坏选区高亮
   var offButtonDown = listen(env.button, 'mousedown', function (event) {
     event.preventDefault()
@@ -522,5 +534,5 @@ export function bindClientEvents(env) {
     env.panelController.clampPanelPosition()
     env.panelController.savePanelSize()
   })
-  return { dispose() { offBridgeMessage(); offPopEnd(); offQuotePopEnd(); offMouseUp(); offKeyUp(); offSelectionChange(); offVoiceEscape(); offMouseDown(); offButtonDown(); offButtonClick(); offQuoteDown(); offQuoteClick(); offScroll(); offModelPill(); offModelMenu(); offModelKeys(); offCellMd(); offCellWeb(); offPrefKeys(); offPillDown(); offPillClick(); offPillEnter(); offPillLeave(); offPillKey(); offPreviewHeight(); offResize(); offKeyDown(); offSettingsOpen(); offSettingsBack(); offSettingsClose(); offSettingsReset(); offSettingsStop(); offSettingsPickAway(); offSettingsScrim(); offHistory(); offPromote(); offRetry(); offExpand(); offAskKey(); offAskInput(); offAskSend(); offAttachPick(); offAttachButton(); offAttachPaste(); offMic(); offVoiceBlur(); offVoiceCancel(); offVoiceStop(); offBodyWheel(); offBodyTouch(); offBodyScroll(); offClose(); offDrag(); offPanelResize() } }
+  return { dispose() { offBridgeMessage(); offPopEnd(); offQuotePopEnd(); offMouseUp(); offKeyUp(); offSelectionChange(); offVoiceEscape(); offMouseDown(); offFloatPointerDown(); offFloatPointerUp(); offFloatPointerCancel(); offFloatBlur(); offButtonDown(); offButtonClick(); offQuoteDown(); offQuoteClick(); offScroll(); offModelPill(); offModelMenu(); offModelKeys(); offCellMd(); offCellWeb(); offPrefKeys(); offPillDown(); offPillClick(); offPillEnter(); offPillLeave(); offPillKey(); offPreviewHeight(); offResize(); offKeyDown(); offSettingsOpen(); offSettingsBack(); offSettingsClose(); offSettingsReset(); offSettingsStop(); offSettingsPickAway(); offSettingsScrim(); offHistory(); offPromote(); offRetry(); offExpand(); offAskKey(); offAskInput(); offAskSend(); offAttachPick(); offAttachButton(); offAttachPaste(); offMic(); offVoiceBlur(); offVoiceCancel(); offVoiceStop(); offBodyWheel(); offBodyTouch(); offBodyScroll(); offClose(); offDrag(); offPanelResize() } }
 }
