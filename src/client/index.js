@@ -14,6 +14,36 @@ import { createResultCache, createTimerScope } from './memory.js'
 
 export function apply(ctx) {
 
+  /** 本实例的标记：只认自己这一层，用来识别/清掉上一代留下的浮层。 */
+  var instanceId = 'sel-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
+
+  /**
+   * 上一代实例如果没被正常销毁（client 热更新 / 重复挂载），先替它收干净。
+   *
+   * 不这么做的话，页面上会**叠出第二个「解读」浮标**：两枚按钮位置几乎重合，
+   * 点上面那枚（死实例，状态/面板都已失效）没有反应；它一收，露出下面那枚活的，
+   * 看起来就像"又冒出来一个浮层，点第二个才有用"。
+   */
+  try {
+    if (typeof window !== 'undefined' && typeof window.__dshSelectionExplainDispose === 'function') {
+      window.__dshSelectionExplainDispose()
+    }
+  } catch (error) {
+    /* 旧实例状态可能已经坏了，忽略 */
+  }
+  /** 摘掉不属于本实例的浮层（旧版本没有 dispose 钩子时留下的那些）。 */
+  function pruneForeignLayers() {
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return
+    var layers = document.querySelectorAll('.dsh-sel-layer[data-dsh-floating-owner="explanation"]')
+    for (var index = 0; index < layers.length; index += 1) {
+      var node = layers[index]
+      if (node && node.getAttribute('data-dsh-sel-instance') !== instanceId && node.parentNode) {
+        node.parentNode.removeChild(node)
+      }
+    }
+  }
+  pruneForeignLayers()
+
   var state = createClientState()
   var runtime = createPanelRuntime()
   var pillState = createPillState()
@@ -25,6 +55,16 @@ export function apply(ctx) {
 
   var view = createClientView()
   var { settingsSheet, modelMenu, settingsNote, settingsNoteText, settingsRail, settingsBody, pill, panel, settingsScrim, settingsButton, layer, body, translationSection, detailSection, button, quoteButton, askRow, quotesBox, expandButton, quote, retryButton, closeButton, askBox, pillName, pillMeta, pillCaret, pillStar, historyButton, chatLog, askSend, promoteButton, attachBox, attachNote, attachInput, modelPillName, modelPillTier, modelPill, webMode, cellMd, cellWeb, voiceActivityText, voiceActivity, voiceDot, voiceActionSlot, captureRow, askTools, askSpacer, micButton, waveSvg, voiceStop, voiceCancel, waveBars, prefSeg, settingsBack, settingsClose, settingsReset, addButton, head, gripCorner, gripRight, gripBottom, styleEl } = view
+  // 给本实例的浮层打上标记：外来层（上一代实例留下的）会被守卫摘掉
+  layer.setAttribute('data-dsh-sel-instance', instanceId)
+  // 兜底守卫：旧实例若还活着、又把它的层挂回 body（截图/语音卡会 ensureLayer），立刻摘掉。
+  var foreignLayerObserver = null
+  if (typeof MutationObserver === 'function' && typeof document !== 'undefined' && document.body) {
+    foreignLayerObserver = new MutationObserver(function () {
+      pruneForeignLayers()
+    })
+    foreignLayerObserver.observe(document.body, { childList: true })
+  }
   var { settingsController, selectionController, voiceCardController, quotesController, previewController, lightboxController, panelController, pillController, historyController, conversationController, attachController, shotController, modelsController, voiceController } = createControllers({
     get preferences() { return preferences },
     get state() { return state },
@@ -425,7 +465,7 @@ export function apply(ctx) {
   })
 
   // —— 调试钩子（自动化验证用） ——
-  window.__dshSelectionExplain = {
+  var debugHook = window.__dshSelectionExplain = {
     /** 截图提问的状态（调试/自动化）。 */
     shot: function () {
       return shotController.state()
@@ -1067,7 +1107,11 @@ export function apply(ctx) {
     if (typeof console !== 'undefined' && console.log) {
       console.log('[dsh-selection-explain] 划词解读已就绪（选中文字试试）')
     }
-    return function () {
+    /** 幂等：下一代替我们收、随后 loader 再调一次，都不该重复拆。 */
+    var cleaned = false
+    function cleanup() {
+      if (cleaned) return
+      cleaned = true
       runtime.panelOpen = false
       timerScope.dispose()
       cache.dispose()
@@ -1103,6 +1147,14 @@ export function apply(ctx) {
         pillState.pillObserver = null
       }
       if (fullViewObserver) fullViewObserver.disconnect()
+      if (foreignLayerObserver) {
+        try {
+          foreignLayerObserver.disconnect()
+        } catch (error) {
+          /* noop */
+        }
+        foreignLayerObserver = null
+      }
       if (typeof offSlot === 'function') offSlot()
       // 划词桥：摘观察者与消息监听，并把我们自己建的预览 blob 全部回收
       if (previewController.bridgeScanId) clearTimeout(previewController.bridgeScanId)
@@ -1142,12 +1194,25 @@ export function apply(ctx) {
       if (panel.parentNode) panel.parentNode.removeChild(panel)
       if (pill.parentNode) pill.parentNode.removeChild(pill)
       if (styleEl.parentNode) styleEl.parentNode.removeChild(styleEl)
+      // 只摘自己的钩子：下一代替我们收的时候，它已经装好了新的，不能连带删掉
       try {
-        delete window.__dshSelectionExplain
+        if (window.__dshSelectionExplain === debugHook) delete window.__dshSelectionExplain
       } catch (error) {
-        window.__dshSelectionExplain = undefined
+        if (window.__dshSelectionExplain === debugHook) window.__dshSelectionExplain = undefined
+      }
+      try {
+        if (window.__dshSelectionExplainDispose === cleanup) delete window.__dshSelectionExplainDispose
+      } catch (error) {
+        if (window.__dshSelectionExplainDispose === cleanup) window.__dshSelectionExplainDispose = undefined
       }
     }
+    // 留给下一代实例/热更新：新 apply() 一进来就能先把这一代收干净（见文件开头）
+    try {
+      window.__dshSelectionExplainDispose = cleanup
+    } catch (error) {
+      /* 桩环境/只读 window：忽略 */
+    }
+    return cleanup
   }, '@yfwu2020/dsh-selection-explain: 划词解读 UI')
 }
 export const inject = ['slots', 'shortcuts']
