@@ -175,6 +175,10 @@ export function bindClientEvents(env) {
     // 到这里说明点的不是侧边栏本身：**含面板正文**（消息区/输入框/选中文字）在内，
     // 一律先把侧边栏收回——它是用完就走的导航，不该等你点了"外面"才收。
     env.historyController.hideHistoryList()
+    // 宿主内置的「引用文本」和我们并排，属于同一条工具条：点它不算"点了别处"。
+    // 否则我们的浮标会先收再弹 —— 用户看到的就是"点了没用，又冒出第二个浮层"。
+    // 注意：它成功插入引用后会自己清掉选区，那时我们照样会随 selectionchange 收起。
+    if (target && typeof target.closest === 'function' && target.closest('[data-text-interaction-surface]')) return
     if (env.panel.contains(target)) return // 面板内的点击只收侧边栏，不关面板
     env.selectionController.hideButton()
     env.voiceCardController.hideQuoteButton()

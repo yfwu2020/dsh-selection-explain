@@ -246,4 +246,41 @@ export async function runSelection(scope) {
         editable.remove();
         await sleep(60);
     }
+    // ⑫ 点宿主内置的「引用文本」不该让我们的浮标先收再弹。
+    //    它和我们的浮标并排属于同一条工具条；如果把它当成"点了别处"，
+    //    用户看到的就是"点第一个没反应，然后又冒出第二个浮层"。
+    {
+        var dockHost = document.createElement('div');
+        dockHost.textContent = 'Dev: the migration ran long, so we ship Wednesday.';
+        dockHost.style.cssText = 'position:fixed;left:60px;top:560px;width:520px;height:44px;z-index:1;';
+        document.body.appendChild(dockHost);
+        var fakeSurface = document.createElement('div');
+        fakeSurface.setAttribute('data-text-interaction-surface', '');
+        fakeSurface.style.cssText = 'position:fixed;left:700px;top:520px;width:96px;height:30px;z-index:6;';
+        var fakeQuote = document.createElement('button');
+        fakeQuote.textContent = '引用文本';
+        fakeQuote.style.cssText = 'width:96px;height:30px;';
+        fakeSurface.appendChild(fakeQuote);
+        document.body.appendChild(fakeSurface);
+
+        var countOurs = function () {
+            return [document.querySelector('.dsh-sel-btn:not(.dsh-sel-quotebtn)'), scope.quoteBtn].filter(function (btn) {
+                return btn && btn.style.display === 'inline-flex';
+            }).length;
+        };
+        selectIn(dockHost, 'the migration ran long');
+        mouseUpOn(dockHost);
+        await sleep(220);
+        var beforeCount = countOurs();
+        fakeQuote.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+        await sleep(40);
+        var afterCount = countOurs();
+        check('点内置「引用文本」时我们的浮标不隐藏（不再"先收再弹"）', beforeCount > 0 && afterCount === beforeCount, 'before=' + beforeCount + ' after=' + afterCount);
+
+        fakeSurface.remove();
+        dockHost.remove();
+        window.getSelection().removeAllRanges();
+        mouseUpOn(document.body);
+        await sleep(80);
+    }
 }
