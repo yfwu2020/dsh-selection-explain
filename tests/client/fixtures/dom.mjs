@@ -196,7 +196,11 @@ export function createDomFixture() {
     // 默认没有费用胶囊；测试里挂上假的（globalThis.__fakeSpendWidget）后就能被量到。
     // 真实 DOM 是 id="dsh-spend-widget"（无 class）> .dsu-widget > .dsu-pill，这里两种都认。
     querySelector: (selector) =>
-      selector === '.dsu-widget' || selector === '.dsh-spend-widget' ? globalThis.__fakeSpendWidget || null : null,
+      selector === '.dsu-widget' || selector === '.dsh-spend-widget'
+        ? globalThis.__fakeSpendWidget || null
+        : selector === '[data-text-interaction-surface]'
+          ? globalThis.__fakePlatformSurface || null
+          : null,
     getElementById: (id) => (id === 'dsh-spend-widget' ? globalThis.__fakeSpendWidget || null : null),
     createRange() {
       return {

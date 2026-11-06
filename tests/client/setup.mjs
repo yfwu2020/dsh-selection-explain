@@ -256,6 +256,167 @@ export async function createClientFixture() {
   }
 
 
+  // ───────────────────────── 跟随宿主「引用文本」浮层 ─────────────────────────
+  // DSH 0.2.2 起，聊天区选中文字后宿主会自己弹一枚「引用文本」。我们的浮标要贴着它
+  // 右侧排成一条工具条（同基线、8px 间距），宿主浮层收起后再回到"贴选区右下角"。
+  {
+    const surface = new FakeEl('div')
+    surface.setAttribute('data-text-interaction-surface', '')
+    surface.setAttribute('aria-hidden', 'false')
+    surface.getBoundingClientRect = () => ({ left: 900, top: 300, right: 980, bottom: 330, width: 80, height: 30 })
+    globalThis.__fakePlatformSurface = surface
+
+    windowStub.getSelection = () => selection
+    documentStub.dispatch('mouseup', { target: body })
+    await sleep(30)
+    assert(
+      '内置「引用文本」亮着时，浮标停靠在它右侧 8px',
+      button.style.left === '988px' && button.getAttribute('data-dock') === 'right',
+      `left=${button.style.left} dock=${button.getAttribute('data-dock')}`,
+    )
+    assert('停靠时与内置浮层同一条基线（垂直居中）', button.style.top === '300px', `top=${button.style.top}`)
+
+    // 宿主浮层收起：回到原来的"贴选区右下角"
+    surface.setAttribute('aria-hidden', 'true')
+    documentStub.dispatch('mouseup', { target: body })
+    await sleep(30)
+    assert(
+      '内置浮层收起后回到选区右下角',
+      button.style.left === '138px' && !button.getAttribute('data-dock'),
+      `left=${button.style.left} dock=${button.getAttribute('data-dock')}`,
+    )
+
+    const css = readFileSync(BUNDLE, 'utf8')
+    assert('CSS 契约：右侧停靠时从左侧长出来', /\.dsh-sel-btn\[data-dock="right"\]\{transform-origin:0% 100%\}/.test(css), '')
+    assert('CSS 契约：浮标与内置浮层同族（用宿主 token，不再写死主色蓝）', /background:var\(--dsw-alias-button-floating-fill/.test(css), '')
+
+    delete globalThis.__fakePlatformSurface
+  }
+
+  // ───────────────────────── 内置浮层消失 → 我们的浮标跟着收 ─────────────────────────
+  // Esc 收掉「引用文本」时浏览器选区还在：如果只收一半，一条工具条会剩下半条。
+  {
+    const surface = new FakeEl('div')
+    surface.setAttribute('data-text-interaction-surface', '')
+    surface.setAttribute('aria-hidden', 'false')
+    surface.getBoundingClientRect = () => ({ left: 900, top: 300, right: 980, bottom: 330, width: 80, height: 30 })
+    globalThis.__fakePlatformSurface = surface
+
+    // 只在这个块里提供 MutationObserver 桩：验证"内置浮层由可见变隐藏"的联动，
+    // 又不影响其它场景（它们在启动时看到的就是 undefined，走的是降级路径）。
+    class MutationObserverStub {
+      constructor(callback) {
+        this.callback = callback
+        MutationObserverStub.instances.push(this)
+      }
+      observe(node) {
+        this.node = node
+      }
+      disconnect() {
+        this.disconnected = true
+      }
+      fire() {
+        if (!this.disconnected) this.callback([{ type: 'attributes', target: this.node }])
+      }
+    }
+    MutationObserverStub.instances = []
+    globalThis.MutationObserver = MutationObserverStub
+
+    // 用**带容器**的选区（真实 DOM Range 都有 startContainer），这样"同一选区不再复现"
+    // 的判定才有东西可比；没有容器的桩范围会被 sameRange 当作"不同"，不参与拦截。
+    const dockHost = new FakeEl('div')
+    body.appendChild(dockHost)
+    const dockRange = {
+      startContainer: dockHost,
+      endContainer: dockHost,
+      startOffset: 0,
+      endOffset: 4,
+      cloneRange: () => dockRange,
+      getClientRects: () => [{ left: 40, top: 100, right: 200, bottom: 118, width: 160, height: 18 }],
+      getBoundingClientRect: () => ({ left: 40, top: 100, right: 200, bottom: 118, width: 160, height: 18 }),
+    }
+    windowStub.getSelection = () => ({
+      isCollapsed: false,
+      rangeCount: 1,
+      toString: () => 'dock',
+      getRangeAt: () => dockRange,
+    })
+
+    documentStub.dispatch('mouseup', { target: body })
+    await sleep(30)
+    assert('（准备）浮标停靠在右侧', button.style.display === 'inline-flex' && button.style.left === '988px', `left=${button.style.left}`)
+    const observer = MutationObserverStub.instances[MutationObserverStub.instances.length - 1]
+    assert('（准备）已挂上对内置浮层的观察', !!observer && observer.node === surface, observer ? 'attached' : 'missing')
+
+    // 内置浮层被 Esc 收掉：选区还在，但浮标要跟着收
+    surface.setAttribute('aria-hidden', 'true')
+    if (observer) observer.fire()
+    await sleep(10)
+    assert('内置浮层消失时，我们的浮标同步收起（不留半条工具条）', button.style.display === 'none', String(button.style.display))
+
+    // 同一选区再松一次鼠标：也不该立刻又冒出来
+    documentStub.dispatch('mouseup', { target: body })
+    await sleep(30)
+    assert('同一条选区不因再次 mouseup 而复现（直到用户重新划线）', button.style.display === 'none', String(button.style.display))
+
+    // 重新划线（选区变了）→ 照常出现
+    const otherHost = new FakeEl('div')
+    body.appendChild(otherHost)
+    const otherRange = {
+      startContainer: otherHost,
+      endContainer: otherHost,
+      startOffset: 1,
+      endOffset: 5,
+      cloneRange: () => otherRange,
+      getClientRects: () => [{ left: 60, top: 120, right: 220, bottom: 138, width: 160, height: 18 }],
+      getBoundingClientRect: () => ({ left: 60, top: 120, right: 220, bottom: 138, width: 160, height: 18 }),
+    }
+    windowStub.getSelection = () => ({
+      isCollapsed: false,
+      rangeCount: 1,
+      toString: () => 'other',
+      getRangeAt: () => otherRange,
+    })
+    documentStub.dispatch('mouseup', { target: body })
+    await sleep(30)
+    assert('重新划线后浮标照常出现', button.style.display === 'inline-flex', String(button.style.display))
+
+    // 滚出视区 ≠ 被收掉：宿主只是把浮层暂时藏起来，滚回来它会重新出现，
+    // 我们的浮标也必须跟着回来，否则又变成半条工具条。
+    {
+      const normalRect = () => ({ left: 900, top: 300, right: 980, bottom: 330, width: 80, height: 30 })
+      surface.setAttribute('aria-hidden', 'false')
+      surface.getBoundingClientRect = normalRect
+      if (observer) observer.fire()
+      await sleep(30)
+      assert('内置浮层重新可见后，浮标回到它右侧', button.style.left === '988px' && button.getAttribute('data-dock') === 'right', `left=${button.style.left}`)
+
+      // 滚动把它带出可视区：宿主用 visibility/空矩形隐藏
+      surface.getBoundingClientRect = () => ({ left: 900, top: 300, right: 900, bottom: 300, width: 0, height: 0 })
+      if (observer) observer.fire()
+      await sleep(10)
+      assert('滚出视区：浮标跟着藏', button.style.display === 'none', String(button.style.display))
+
+      // 滚回来：两枚按钮都该回来（而不是只有宿主那枚）
+      surface.getBoundingClientRect = normalRect
+      if (observer) observer.fire()
+      await sleep(30)
+      assert(
+        '滚回视区：浮标跟着回来（不会永远收着）',
+        button.style.display === 'inline-flex' && button.style.left === '988px',
+        `display=${button.style.display} left=${button.style.left}`,
+      )
+    }
+
+    // 还原成开头那段选区：后面的用例还要点这个浮标开小窗
+    windowStub.getSelection = () => selection
+    documentStub.dispatch('mouseup', { target: body })
+    await sleep(30)
+
+    delete globalThis.MutationObserver
+    delete globalThis.__fakePlatformSurface
+  }
+
   // 引用（❝）的**离线**契约：浮标进了浮层、CSS 规则齐全（真实交互在宿主可达时另有一段）
   {
     const css = readFileSync(BUNDLE, 'utf8')

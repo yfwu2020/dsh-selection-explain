@@ -58,7 +58,7 @@ export function createClientView() {
 
   quoteButton.appendChild(quoteIcon())
 
-  quoteButton.appendChild(el('span', null, '引用'))
+  quoteButton.appendChild(el('span', null, '引用到小窗'))
 
   layer.appendChild(quoteButton)
 

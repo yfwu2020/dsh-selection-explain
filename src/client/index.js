@@ -1073,6 +1073,8 @@ export function apply(ctx) {
       panelController.releaseRenderedContent()
       if (state.askRequest) state.askRequest.abort()
       clientEvents.dispose()
+      // 摘掉对宿主「引用文本」浮层的 MutationObserver（插件卸载后不该继续观察宿主 DOM）
+      selectionController.dispose()
 
       if (floatWatchId) clearInterval(floatWatchId)
 

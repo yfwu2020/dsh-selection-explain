@@ -5,17 +5,24 @@ import { FONT, Z_BTN, Z_PANEL, PILL_BALL_SIZE, PILL_MORPH } from './constants.js
 export var CSS = [
   // 浮现动效：从锚点（右下角 = 贴着选区那侧）弹性放大。
   // 初始 74% + 6px 下移，缓动带过冲；时长 240ms —— 超过 ~300ms 连续划选会显得拖沓。
-  '.dsh-sel-btn{transform-origin:100% 100%;position:fixed;display:none;align-items:center;gap:5px;height:28px;padding:0 11px;border:0;border-radius:999px;',
-  // 浮标按钮保持**原样**：跟随主题主色（默认蓝 #3b6ef5），不跟面板的青色统一
-  'background:var(--dsw-alias-button-primary-fill,#3b6ef5);color:var(--dsw-alias-label-primary-foreground,#fff);',
-  'font:500 12px/1 ' + FONT + ';cursor:pointer;white-space:nowrap;user-select:none;',
-  'box-shadow:0 6px 20px rgba(0,0,0,.24);transition:transform .1s ease,filter .1s ease}',
+  // 与 DSH 内置「引用文本」浮层同族：同一套设计变量、同一尺寸（30px 高 / 13px 字号 / 999 圆角）。
+  // 两枚按钮并排时看起来是一条工具条；深浅色交给宿主的 token 自动切换。
+  '.dsh-sel-btn{transform-origin:100% 100%;position:fixed;display:none;align-items:center;gap:6px;height:30px;padding:5px 10px;border:0;border-radius:999px;',
+  'background:var(--dsw-alias-button-floating-fill,#fff);color:var(--dsw-alias-label-primary,#0f1115);',
+  'font:400 13px/20px var(--dsw-font-family,' + FONT + ');cursor:pointer;white-space:nowrap;user-select:none;',
+  'box-shadow:var(--dsw-elevation-panel,0 0 0 .5px #0000001f,0 3px 8px #00000008,0 0 16px #00000005);',
+  'transition:transform .1s ease,background .12s ease}',
+  // 停靠方向决定浮现原点：从贴着内置浮层的那一侧长出来。
+  '.dsh-sel-btn[data-dock="right"]{transform-origin:0% 100%}',
+  '.dsh-sel-btn[data-dock="left"]{transform-origin:100% 100%}',
+  '.dsh-sel-btn[data-dock="below"]{transform-origin:50% 0%}',
   '@keyframes dsh-sel-pop{from{opacity:0;transform:scale(.74) translateY(6px)}to{opacity:1;transform:none}}',
   // 只在"从隐藏到显示"那一次挂上这个类；animationend 后摘掉，
   // 否则 fill:both 会把 transform 钉在 none 上，:active 的按压缩放就永远不生效了
   // 用 data 属性而不是类名：类名不动，外面按 .dsh-sel-btn 找它/量它都不会被影响
   '.dsh-sel-btn[data-pop="1"]{animation:dsh-sel-pop .24s cubic-bezier(.34,1.56,.64,1) both}',
-  '.dsh-sel-btn:hover{filter:brightness(1.08)}',
+  // 悬停也走内置浮层的那一档底色（以前是对主色蓝做 brightness，换成浅底会发灰）。
+  '.dsh-sel-btn:hover{background:var(--dsw-alias-button-floating-hover,#f1f3f5)}',
   '.dsh-sel-btn:active{transform:scale(.97)}',
   // 图标：13px 画布 + **左移 1px**。
   // 为什么要有这个负外边距：画布是 16×16、图形墨迹只占中间 ~11px，左右各留 ~2px 空白，

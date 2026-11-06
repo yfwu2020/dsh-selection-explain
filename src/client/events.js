@@ -213,8 +213,12 @@ export function bindClientEvents(env) {
   })
 
   var offScroll = listen(window, 'scroll', function (event) {
-    env.selectionController.hideButton()
-    env.voiceCardController.hideQuoteButton()
+    // 内置「引用文本」浮层还亮着时跟着它重排（两枚按钮共用一条基线），
+    // 否则保持原设计：一滚动就收浮标，免得贴在已经滚走的文字旁边。
+    if (!env.selectionController.followPlatformSurface()) {
+      env.selectionController.hideButton()
+      env.voiceCardController.hideQuoteButton()
+    }
     // 页面/面板滚动也收回侧边栏；滚动列表自身不算（它有自己的滚动条）。
     // event.target 不一定是 Node（合成事件可能是 window），contains 会抛，得自己挡一道
     var target = event && event.target
@@ -323,8 +327,11 @@ export function bindClientEvents(env) {
   })
 
   var offResize = listen(window, 'resize', function () {
-    env.selectionController.hideButton()
-    env.voiceCardController.hideQuoteButton()
+    // 与滚动同一条规则：有内置浮层就跟着它重排，没有才收浮标
+    if (!env.selectionController.followPlatformSurface()) {
+      env.selectionController.hideButton()
+      env.voiceCardController.hideQuoteButton()
+    }
     // 宽度变了 → 换行位置变了 → 输入框高度要重量（否则会是按旧宽度算出来的高度）
     env.conversationController.autoGrowAskBox()
     // 拖窗口变小后，面板本身也要拉回视口内（否则历史列表会跟着算到屏幕外）

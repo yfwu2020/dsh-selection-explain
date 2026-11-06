@@ -67,7 +67,7 @@ export async function run(env) {
       },
     })
     const bridgeSelection = env.hook.selection()
-    env.assert('帧内选区让浮标出现在「帧偏移 + 帧内坐标」处', env.button.style.display === 'inline-flex' && env.button.style.left === '98px' && env.button.style.top === '85px', env.button.style.left + '/' + env.button.style.top)
+    env.assert('帧内选区让浮标出现在「帧偏移 + 帧内坐标」处', env.button.style.display === 'inline-flex' && env.button.style.left === '98px' && env.button.style.top === '83px', env.button.style.left + '/' + env.button.style.top)
     env.assert('选区记成 iframe 来源', !!bridgeSelection && bridgeSelection.source === 'iframe' && bridgeSelection.text === 'the migration ran long', JSON.stringify(bridgeSelection))
     env.assert('标签按帧来源给（侧边栏网页）', bridgeSelection.label === '侧边栏网页', bridgeSelection.label)
     env.assert('上下文由帧内带来（含【】标记）', bridgeSelection.context.indexOf('【the migration ran long】') > 0, bridgeSelection.context)
