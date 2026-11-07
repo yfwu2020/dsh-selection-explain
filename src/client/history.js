@@ -162,6 +162,9 @@ export function createHistoryController(env) {
 
   /** 用一条历史（或 host 回放结果）恢复面板。 */
   function applyHistoryEntry(entry, source) {
+    // 换了一段对话：上一段若还在后台跑（用户把它收起过），先静默停掉 ——
+    // 既不把它的「已停止」写到这段回放上，也不让它的流继续往新 state 里写。
+    env.cancelBackground()
     var parts = entry.parts || {}
     env.state.parts = { translation: parts.translation || '', detail: parts.detail || '' }
     // 「这段对话有没有解读」跟着条目走：没有解读的对话（语音卡"跳过翻译与详解、直接追问"）

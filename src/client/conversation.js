@@ -96,6 +96,35 @@ export function createConversationController(env) {
   }
 
   /**
+   * 静默取消在飞的请求：用于「换了一段对话」（新选区 / 历史回放 / 截图提问 / 语音卡新建会话）。
+   *
+   * 与小窗收起不同 —— 收起只是把窗收起来，模型继续说；换对话则意味着这一枪已经不在前台了：
+   * 继续跑既费 token，又会在新的 state 上写串内容（旧回答写进新对话）。
+   * 这里**不设** aborted / stopped：那两个标记的语义是"用户主动停止这一轮"，界面要显示
+   * 「已停止」；换对话不该在新旧任何一边留下这个印记。
+   */
+  function cancelBackground() {
+    var request = env.state.request
+    if (request) {
+      env.state.request = null
+      try {
+        request.abort()
+      } catch (error) {
+        /* noop */
+      }
+    }
+    var ask = env.state.askRequest
+    if (ask) {
+      env.state.askRequest = null
+      try {
+        ask.abort()
+      } catch (error) {
+        /* noop */
+      }
+    }
+  }
+
+  /**
    * 发送一个追问（多轮，带历史；走 host 的 chat 模式）。
    *
    * 两段式：先**取引用的上下文**（会话里那几段要问 host 要，见 resolveQuoteContexts），
@@ -251,7 +280,7 @@ export function createConversationController(env) {
     // 这一轮的 abort 句柄：生成中按「停止」会打断它（不是失败，保留已流出的内容）
     env.state.stopped = false
     var askController = new AbortController()
-    env.state.askRequest = {
+    var askHandle = {
       abort: function () {
         try {
           askController.abort()
@@ -260,9 +289,25 @@ export function createConversationController(env) {
         }
       },
     }
+    env.state.askRequest = askHandle
 
     function finish(error) {
       env.timerScope.clear(timer)
+      if (env.state.askRequest !== askHandle) {
+        // 这段对话已经被换掉了（换选区 / 回放历史时 cancelBackground 静默取消了这一枪）：
+        // 只收尾这一轮自己的对象，不落盘、不改界面、不写状态。
+        // 只有当没有新的一枪顶上来时才放掉"正在追问"这个全局标记 ——
+        // 否则新对话的发送键会停在「停止」、追问被 isGenerating() 拦住；
+        // 但若新 ask 紧接着已经开始（askRequest 已有新句柄），它自己会管这个标记。
+        answerTurn.asking = false
+        answerTurn.streaming = false
+        if (env.state.askRequest === null) {
+          env.state.asking = false
+          env.state.toolBusy = false
+          refreshAskState()
+        }
+        return
+      }
       env.state.asking = false
       env.state.toolBusy = false
       // 本轮结束了："正在整理结论…"这类过程提示一律撤掉（结论轮一个字没吐时也别留着）
@@ -352,6 +397,8 @@ export function createConversationController(env) {
         var decoder = new TextDecoder()
         var buffer = ''
         function handle(block) {
+          // 换对话后旧流还在吐：这些事件不该写进新的 state / DOM
+          if (env.state.askRequest !== askHandle) return
           var lines = block.split('\n')
           for (var i = 0; i < lines.length; i++) {
             var line = lines[i]
@@ -591,9 +638,11 @@ export function createConversationController(env) {
     var requestTurns = env.state.turns
     var requestKey = cacheKey
     env.state.cacheState = 'miss'
+    // 上一轮还在飞（生成中又划了新词 / 换了对话）：先停掉旧流。
+    // 旧流的 catch 会凭 handle 身份认出"我不是当前这一轮"，只收掉自己的计时器，不碰界面。
     if (env.state.request) env.state.request.abort()
     var controller = new AbortController()
-    env.state.request = {
+    var handle = {
       abort: function () {
         try {
           controller.abort()
@@ -602,6 +651,7 @@ export function createConversationController(env) {
         }
       },
     }
+    env.state.request = handle
     env.state.raw = ''
     env.state.phase = 'loading'
     env.state.error = ''
@@ -633,7 +683,7 @@ export function createConversationController(env) {
 
     function fail(message) {
       if (env.state.phase === 'done') return
-      // 用户收起小窗导致的中止：不算失败，记成"已停止"，重开还能接着看
+      // 用户点「停止」导致的中止：不算失败，记成"已停止"，重开还能接着看
       env.state.phase = env.state.aborted ? 'paused' : 'error'
       env.state.error = env.state.aborted ? '' : message
       // 一轮失败/中止结束 → 同样把光标交回输入框，用户可以直接重试或换个问法
@@ -641,7 +691,7 @@ export function createConversationController(env) {
       env.state.toolBusy = false
       env.state.elapsed = Date.now() - env.state.startedAt
       stopTicker()
-      env.state.request = null
+      if (env.state.request === handle) env.state.request = null
       clearWaiting()
       env.paint()
     }
@@ -666,7 +716,7 @@ export function createConversationController(env) {
       env.state.chars = env.state.raw.length
       env.state.toolBusy = false
       stopTicker()
-      env.state.request = null
+      if (env.state.request === handle) env.state.request = null
       clearWaiting()
       if (cacheKey) env.cache.set(cacheKey, { parts: { ...env.state.parts }, turns: env.state.turns.slice() })
       // 小窗关掉也继续落盘；只有"已经换了一段对话"时才不写（避免把旧内容写到新对话上）
@@ -678,6 +728,9 @@ export function createConversationController(env) {
     var dirty = false
 
     function handleEvent(block) {
+      // 这一股流已经不属于当前对话（被新请求顶掉 / 换对话时被静默取消）：
+      // 一个字节都不许写进现在的 state —— 否则旧回答会写到新对话上。
+      if (env.state.request !== handle) return
       var lines = block.split('\n')
       for (var i = 0; i < lines.length; i++) {
         var line = lines[i]
@@ -791,7 +844,8 @@ export function createConversationController(env) {
         if (!response.body || !response.body.getReader) {
           return response.text().then(function (text) {
             text.split('\n\n').forEach(handleEvent)
-            succeed()
+            // 已经被新请求/新对话接管：别把"完成"写进别人的 state
+            if (env.state.request === handle) succeed()
           })
         }
         var reader = response.body.getReader()
@@ -801,7 +855,7 @@ export function createConversationController(env) {
           return reader.read().then(function (result) {
             if (result.done) {
               if (buffer.trim()) handleEvent(buffer)
-              if (env.state.phase !== 'done' && env.state.phase !== 'error') succeed()
+              if (env.state.request === handle && env.state.phase !== 'done' && env.state.phase !== 'error') succeed()
               return
             }
             buffer += decoder.decode(result.value, { stream: true })
@@ -821,12 +875,13 @@ export function createConversationController(env) {
       })
       .catch(function (error) {
         if (error && error.name === 'AbortError') {
-          // 两种中止要分开：
-          //  ① 被"重新生成"顶掉 —— state.request 已经指向新请求，什么都别做，新请求会接管画面；
-          //  ② 用户收起小窗 —— state.request 已被 closePanel 清空，记成「已停止」，
-          //     这样点胶囊回来还能看到进度并在原地重新生成（以前这里一律 return，
-          //     结果收起小窗后状态永远停在 streaming，重开是个永不结束的等待动画）。
+          // 中止要分开：
+          //  ① 被"重新生成 / 新选区"顶掉，或换对话时被静默取消 —— state.request 已经不是我了，
+          //     什么都别做（新请求/新对话会接管画面），只收掉自己的计时器；
+          //  ② 用户点「停止」—— state.aborted 为 true，记成「已停止」（phase=paused），
+          //     这样点胶囊回来还能看到进度并在原地重新生成。
           if (env.state.aborted) fail('中止')
+          else stopTicker()
           return
         }
         fail(String((error && error.message) || error))
@@ -935,6 +990,7 @@ export function createConversationController(env) {
     refreshAskState,
     isGenerating,
     stopCurrent,
+    cancelBackground,
     sendAsk,
     runRequest,
     showWaiting,

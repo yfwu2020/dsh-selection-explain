@@ -56,6 +56,25 @@ function sse(events) {
   var body = events.map(function (e) { return 'data: ' + JSON.stringify(e) + '\n\n' }).join('')
   return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
 }
+/**
+ * 一件一件吐的 SSE：让"关窗时流量还在跑"变成可确定观察的状态。
+ * __analyzeDelay 是两件之间的间隔（毫秒），默认 60。
+ */
+function slowSse(events) {
+  var stream = new ReadableStream({
+    start: function (controller) {
+      var index = 0
+      var encoder = new TextEncoder()
+      ;(function push() {
+        if (index >= events.length) { controller.close(); return }
+        controller.enqueue(encoder.encode('data: ' + JSON.stringify(events[index]) + '\n\n'))
+        index += 1
+        setTimeout(push, window.__analyzeDelay || 60)
+      })()
+    },
+  })
+  return new Response(stream, { headers: { 'content-type': 'text/event-stream' } })
+}
 // 麦克风占用：默认"没人在录"。⑫ 交接用例要它报"豆包在录"才能把语音卡唤出来。
 var micState = { ok: true, available: true, capturing: false, processes: [], reason: '' }
 var pillPosStore = null // 内存版 host 存储（/api/pill）
@@ -143,6 +162,8 @@ window.fetch = function (input, init) {
     }
   }
   if (url.indexOf('/selection-explain/api/analyze') >= 0) {
+    // 把 AbortSignal 留下来：关窗用例要断言"收起小窗没有 abort 这一枪"
+    ;(window.__analyzeSignals = window.__analyzeSignals || []).push(init && init.signal)
     if (body.question) {
       // 追问的载荷留下来给附件用例断言（"引用只带引用、不带 base64"）
       window.__askBodies = window.__askBodies || []
@@ -152,7 +173,8 @@ window.fetch = function (input, init) {
     var fence = String.fromCharCode(96, 96, 96)
     var code = '## 注释\n' + fence + 'js\n// 注释：先声明常量\nconst x = 1\n' + fence + '\n\n> 小结：一句话说清。\n'
     var text = body.kind === 'code' ? code : body.stage === 'detail' ? fixture.detail : fixture.translation
-    return Promise.resolve(sse([{ type: 'start', provider: 'fixture', model: 'fixture', stage: body.stage || 'translation' }, { type: 'delta', text: text }, { type: 'done', chars: text.length }]))
+    var events = [{ type: 'start', provider: 'fixture', model: 'fixture', stage: body.stage || 'translation' }, { type: 'delta', text: text }, { type: 'done', chars: text.length }]
+    return Promise.resolve(window.__analyzeSlow ? slowSse(events) : sse(events))
   }
   // 兜底：不认识的 URL 走**真** fetch。
   // 以前这里一律回一个空 JSON —— 截图模式要拿页面自己的一张真 PNG 当缩略图，
@@ -263,6 +285,7 @@ if (await runKeyboard(scope)) return
 if (await runModels(scope)) return
 if (await runVoice(scope)) return
 if (await runAttachments(scope)) return
+if (await runCloseStream(scope)) return
 if (await runMemory(scope)) return
 }
 

@@ -137,6 +137,7 @@ export interface PanelEnv {
   sendAsk: ReturnType<typeof import('./conversation.js').createConversationController>['sendAsk']
   restoreFromHistory: ReturnType<typeof import('./history.js').createHistoryController>['restoreFromHistory']
   runRequest: ReturnType<typeof import('./conversation.js').createConversationController>['runRequest']
+  cancelBackground: ReturnType<typeof import('./conversation.js').createConversationController>['cancelBackground']
   vcardHandoff: ReturnType<typeof import('./voice-card.js').createVoiceCardController>['vcardHandoff']
   panel: ClientView['panel']
   historyList: HTMLDivElement
@@ -202,6 +203,7 @@ export interface HistoryEnv {
   clearQuotes: ReturnType<typeof import('./quotes.js').createQuotesController>['clearQuotes']
   buildPayload: ReturnType<typeof import('./panel.js').createPanelController>['buildPayload']
   askFocusAfterTurn: ReturnType<typeof import('./panel.js').createPanelController>['askFocusAfterTurn']
+  cancelBackground: ReturnType<typeof import('./conversation.js').createConversationController>['cancelBackground']
   quote: ClientView['quote']
   applySectionTitle: ReturnType<typeof import('./panel.js').createPanelController>['applySectionTitle']
   paint: ReturnType<typeof import('./panel.js').createPanelController>['paint']

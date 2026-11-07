@@ -313,10 +313,11 @@ export async function run(env) {
     for (let i = 0; i < 40; i += 1) await env.sleep(20)
   }
 
-  // 收起小窗 = 中止这一轮，不该记成"失败"，而是"已停止"（点回来还能重新生成）
+  // 收起小窗 ≠ 停止生成：在飞的那一轮继续跑完、照常落盘，胶囊显示「完成」，
+  // 点回来能看到完整回答（不需要重新生成）。只有「停止」/换一段对话才 abort。
   const slowStart = env.sent.length
 
-  env.hook.open('中止探测', '', '中止用例')
+  env.hook.open('中止探测', '', '关窗不打断用例')
 
   for (let i = 0; i < 40 && env.sent.length === slowStart; i += 1) await env.sleep(20)
 
@@ -324,17 +325,25 @@ export async function run(env) {
 
   env.hook.close()
 
-  for (let i = 0; i < 60 && env.hook.state().phase !== 'paused'; i += 1) await env.sleep(20)
+  await env.sleep(80)
 
-  env.assert('收起小窗中止的那轮记成"已停止"而不是失败', env.hook.state().phase === 'paused', env.hook.state().phase)
+  env.assert('收起小窗不 abort 在飞的请求', env.hook.state().hasRequest === true, `phase=${env.hook.state().phase} hasRequest=${env.hook.state().hasRequest}`)
 
-  env.assert('胶囊显示已停止', pill.getAttribute('data-tone') === 'paused' && env.textOf(pill).indexOf('已停止') >= 0, env.textOf(pill))
+  env.assert('收起小窗不算「已停止」', env.hook.state().aborted === false && env.hook.state().phase === 'streaming', `phase=${env.hook.state().phase} aborted=${env.hook.state().aborted}`)
+
+  for (let i = 0; i < 120 && env.hook.state().phase !== 'done'; i += 1) await env.sleep(20)
+
+  env.assert('收起后这一轮照常跑完', env.hook.state().phase === 'done', env.hook.state().phase)
+
+  env.assert('收起后正文没有丢', String(env.hook.state().raw).indexOf('中止用例的开头') >= 0, String(env.hook.state().raw).length)
+
+  env.assert('胶囊显示完成（不是已停止）', pill.getAttribute('data-tone') === 'done' && env.textOf(pill).indexOf('完成') >= 0, `${pill.getAttribute('data-tone')} ${env.textOf(pill)}`)
 
   pill.dispatch('click', { preventDefault() {}, stopPropagation() {} })
 
-  await env.sleep(30)
+  await env.sleep(40)
 
-  env.assert('点回来看到"已停止"的状态与可重试入口', env.hook.state().phase === 'paused' && !!Array.from(env.walk(env.panel)).find((n) => String(n.className).indexOf('dsh-sel-retry') >= 0), `phase=${env.hook.state().phase}`)
+  env.assert('点回来看到完整回答（不需要重新生成）', env.hook.state().phase === 'done' && env.textOf(env.sections[0]).indexOf('中止用例的开头') >= 0 && !Array.from(env.walk(env.panel)).find((n) => String(n.className).indexOf('dsh-sel-retry') >= 0), `phase=${env.hook.state().phase}`)
 
 
   // 没有费用插件时，胶囊应该贴页面底部（以前兜底是 bottom:64，会悬在半空）

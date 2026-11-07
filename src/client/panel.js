@@ -271,6 +271,9 @@ export function createPanelController(env) {
   }
 
   function openPanelWithInner(text, context, label, anchor, keyContext, options) {
+    // 换了一段对话：上一段若还在后台跑（用户把它收起过），静默停掉 —— 不写「已停止」，
+    // 也不会把旧流写进这一段新对话的 state（见 conversation.js 的 cancelBackground）。
+    env.cancelBackground()
     // 截图提问：没有文字可解读，走"图 + 一句话"那条
     if (options && options.shotRef !== undefined) {
       openPanelForShot(anchor, options)
@@ -759,19 +762,14 @@ export function createPanelController(env) {
     // 正在录音/识别就到此为止：麦**一定要松开**（不能让标签页一直显示"正在使用麦克风"），
     // 识别出来的文字也没地方放了 —— 连同提示一起静默收掉。
     env.cancelVoice()
-    // 收起小窗 = 中止这一轮：打个标记，让 fail() 走「已停止」而不是「解读失败」，
-    // 点回来还能重新生成。（0.12.0 起就是这个语义；4270392 曾把它换成
-    // "关掉不停止生成" + state.detached，但那个标记没有任何读者，且这一行之后
-    // 紧接着就 releaseRenderedContent()，生成完也没地方呈现 —— 按回归恢复。）
-    if (env.state.request) {
-      env.state.aborted = true
-      env.state.request.abort()
-      env.state.request = null
-    }
-    if (env.state.askRequest) {
-      env.state.stopped = true
-      env.state.askRequest.abort()
-    }
+    // 收起小窗 ≠ 停止生成：模型继续把话说完，结果照常落盘 —— 再点胶囊、或从「最近」
+    // 打开这段对话，就能看到完整回答（重开时 paint() / renderTurns() 按 state 重建画面）。
+    // 真正会 abort 的只有两处：用户点「停止」（conversation.js 的 stopCurrent），
+    // 以及换了一段对话（新选区 / 历史回放 / 截图提问 → cancelBackground）。
+    // 关窗只是把窗收起来，不该被当成"用户要打断这一轮"。
+    //
+    // 这里仍然释放重内容（回答区里的网页预览 iframe）：它们最占内存，重开时
+    // paint() 会按 state 重建；正文本身一个字都不丢。
     releaseRenderedContent()
     env.paintPill()
     // 小窗收了：抽屉若也关着就把轮询停掉（两处都不需要这个值了）

@@ -8,9 +8,10 @@ import { runModels } from './scenarios/panel-models.mjs'
 import { runVoice } from './scenarios/panel-voice.mjs'
 import { runAttachments } from './scenarios/panel-attachments.mjs'
 import { runMemory } from './scenarios/panel-memory.mjs'
+import { runCloseStream } from './scenarios/panel-close-stream.mjs'
 
 export function createPanelPage() {
   const html = readFileSync(new URL('./fixtures/panel.html', import.meta.url), 'utf8')
-  const scenarios = [runStartup, runLayout, runSelection, runPill, runKeyboard, runModels, runVoice, runAttachments, runMemory]
+  const scenarios = [runStartup, runLayout, runSelection, runPill, runKeyboard, runModels, runVoice, runAttachments, runCloseStream, runMemory]
   return html.replace('/*__PANEL_SCENARIOS__*/', () => scenarios.map(fn => fn.toString()).join('\n'))
 }

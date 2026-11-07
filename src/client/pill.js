@@ -668,7 +668,7 @@ export function createPillController(env) {
    */
   function reopenLast() {
     if (env.panelOpen) {
-      // 再点一次 = 收起（和右上角 ✕ 同一条路径：还在飞的请求会被中止并记成「已停止」）
+      // 再点一次 = 收起（和右上角 ✕ 同一条路径：收起不打断生成，模型继续把话说完）
       env.closePanel()
       return
     }
