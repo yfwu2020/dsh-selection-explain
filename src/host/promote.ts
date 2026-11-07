@@ -6,24 +6,28 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sendJson, readBody, BODY_LIMIT } from './http.js'
 import type { AnalyzeBody } from './types.js'
 import { sessionIdOf } from './context.js'
-import { name, PLUGIN_SOURCE_KIND } from './constants.js'
-import type { LiveSessionLike } from './sessions.js'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { name } from './constants.js'
+import { randomUUID } from 'node:crypto'
+import { buildPromoteSeed } from './promote-seed.js'
+import type { PromoteSeedEvent } from './promote-seed.js'
 import { readHistoryAttachments } from './history-attachments.js'
-import type { HistoryAttachment } from './history-attachments.js'
 
-/**
- * 去掉小窗正文里那行 `【本条消息带了附件】…`。
- *
- * 那行是**小窗**的说法（历史里给模型看的锚点）。升格时附件是**真带过来**的，
- * 再留着它，主会话里就会同时出现"一行字说带了附件"和"附件本身"，
- * 而且措辞（"本条消息"）在主会话语境下也不通顺。
- *
- * 只在**确实带上了附件**时才去（`hasAttachments`）：没有附件时那行是唯一的信息，不能抹。
- */
-function attachmentMarkerStripped(text: string, hasAttachments: boolean): string {
-  if (!hasAttachments) return text
-  return text.replace(/^【本条消息带了附件】[^\n]*\n?/, '')
+interface AgentComposition {
+  agentPreset?: string
+  setup: unknown
+}
+interface AgentComposer {
+  composeAgent?: (preset: undefined) => Promise<AgentComposition>
+}
+interface SeededAgents {
+  create?: (options: {
+    sessionId: string
+    seed: PromoteSeedEvent[]
+    inheritedEventCount: number
+    meta: { isSeeded: true; cwd?: string; agentPreset?: string }
+    agentOptions?: { provider: string; model: string }
+    setup: unknown
+  }) => Promise<unknown>
 }
 
 /** Owns promote state for one plugin instance. */
@@ -31,11 +35,8 @@ export function createPromote(ctx: Context, config: Config, sessions: ReturnType
 
   /**
    * 把划词解读小窗「升格」成正式会话（建在来源会话同一个项目下）：
-   *   ① 建会话 → ② 注入上下文消息（选中文字/所在位置/上下文片段，生产者自有 kind 的 context 消息）
-   *   → ③ 把首轮解读写成助手消息 → ④ 把追问逐轮写成真实的 user/assistant 历史消息
-   *   → ⑤ 送一条短开场消息让 agent 接手（这样整段历史才会落盘）。
-   * 这样新会话里看到的就是一段真实的多轮对话，而不是一大坨打包文本。
-   * live 会话对象拿不到时，退回「打包成一条消息」的老路径，保证升格不会整体失败。
+   * 先构造真实多轮历史，再作为 seed 创建 agent；内核从历史初始化下一轮编号。
+   * 不支持 seed 或无法复用宿主的 agent 配置时，退回打包 prompt。
    */
   const handlePromote = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (req.method !== 'POST') {
@@ -56,6 +57,8 @@ export function createPromote(ctx: Context, config: Config, sessions: ReturnType
     }
     const controller = ctx.get('sessionController') as
       | {
+          composeAgent?: AgentComposer['composeAgent']
+          agents?: AgentComposer
           create?: (request: { workspaceId?: string; cwd?: string; agentPreset?: string }) => Promise<{ sessionId?: string }>
           rename?: (request: { sessionId: string; title: string }) => Promise<unknown>
           prompt?: (
@@ -93,10 +96,54 @@ export function createPromote(ctx: Context, config: Config, sessions: ReturnType
       }
     }
     try {
-      // 注意：session.create 的 workspaceId 与 cwd 互斥（同时传会报
-      // "session.create accepts workspaceId or cwd, not both"）——有 workspace 就只传它
-      const created = await controller.create(workspaceId ? { workspaceId } : cwd ? { cwd } : {})
-      const newSessionId = typeof created?.sessionId === 'string' ? created.sessionId : ''
+      const label = historyStore.clampText(body.label, 80) || '页面内容'
+      const contextText = historyStore.clampText(body.context, config.maxContextChars) || '（未记录）'
+      const translation = historyStore.clampText(body.translation, 8000)
+      const detail = historyStore.clampText(body.detail, 12000)
+      const turns = (Array.isArray(body.turns) ? body.turns : [])
+        .map((turn) => turn as { role?: unknown; text?: unknown; seed?: unknown; attachments?: unknown })
+        .filter((turn) => turn.seed !== true && typeof turn.text === 'string' && turn.text.trim().length > 0)
+        .map((turn) => ({
+          role: turn.role === 'assistant' ? ('assistant' as const) : ('user' as const),
+          text: (turn.text as string).trim(),
+          // 附件（图片/文件）随轮次一起带过来 —— 走的是和 /analyze、历史落盘**同一个收敛器**。
+          // 客户端本来就在发它们（exportTurns 带 attachments），是这里以前只认 role/text 把它们丢了，
+          // 于是升格出来的会话「声称带了附件、却看不到图」。
+          attachments: readHistoryAttachments(turn.attachments),
+        }))
+
+      const agents = ctx.get('agents') as SeededAgents | undefined
+      // The composer moved under controller.agents in newer hosts. Preserve its
+      // preset mounting and model-selection setup, as the host's fork path does.
+      const composer = typeof controller.composeAgent === 'function' ? controller : controller.agents
+      // Without cwd only normal creation can supply the host's default workspace.
+      // A cwd-less seeded session is omitted from the sidebar and cannot be resumed.
+      const seeded = !!cwd && typeof agents?.create === 'function' && typeof composer?.composeAgent === 'function'
+      let newSessionId: string
+      if (seeded) {
+        const composition = await composer!.composeAgent!(undefined)
+        const seed = buildPromoteSeed({ text, label, contextText, translation, detail, sourceSessionId, turns })
+        newSessionId = `session-${randomUUID()}`
+        const selection = (ctx.get('agentDefaultModel') as {
+          currentSelection?: () => { provider: string; model: string }
+        } | undefined)?.currentSelection?.()
+        await agents!.create!({
+          sessionId: newSessionId,
+          seed,
+          inheritedEventCount: seed.length,
+          meta: {
+            isSeeded: true,
+            ...(cwd ? { cwd } : {}),
+            ...(composition.agentPreset ? { agentPreset: composition.agentPreset } : {}),
+          },
+          ...(selection ? { agentOptions: { provider: selection.provider, model: selection.model } } : {}),
+          setup: composition.setup,
+        })
+      } else {
+        // session.create accepts workspaceId or cwd, never both.
+        const created = await controller.create(workspaceId ? { workspaceId } : cwd ? { cwd } : {})
+        newSessionId = typeof created?.sessionId === 'string' ? created.sessionId : ''
+      }
       if (!newSessionId) {
         sendJson(res, 500, { error: '创建会话失败：未返回会话 id' })
         return
@@ -119,150 +166,8 @@ export function createPromote(ctx: Context, config: Config, sessions: ReturnType
         /* 标题失败不影响升格 */
       }
 
-      const label = historyStore.clampText(body.label, 80) || '页面内容'
-      const contextText = historyStore.clampText(body.context, config.maxContextChars) || '（未记录）'
-      const translation = historyStore.clampText(body.translation, 8000)
-      const detail = historyStore.clampText(body.detail, 12000)
-      const turns = (Array.isArray(body.turns) ? body.turns : [])
-        .map((turn) => turn as { role?: unknown; text?: unknown; seed?: unknown; attachments?: unknown })
-        .filter((turn) => turn.seed !== true && typeof turn.text === 'string' && turn.text.trim().length > 0)
-        .map((turn) => ({
-          role: turn.role === 'assistant' ? ('assistant' as const) : ('user' as const),
-          text: (turn.text as string).trim(),
-          // 附件（图片/文件）随轮次一起带过来 —— 走的是和 /analyze、历史落盘**同一个收敛器**。
-          // 客户端本来就在发它们（exportTurns 带 attachments），是这里以前只认 role/text 把它们丢了，
-          // 于是升格出来的会话「声称带了附件、却看不到图」。
-          attachments: readHistoryAttachments(turn.attachments),
-        }))
-
-      const live = (ctx.get('sessions') as { get?: (id: string) => LiveSessionLike | undefined } | undefined)?.get?.(
-        newSessionId,
-      )
-      let seeded = false
-      if (live && typeof live.append === 'function') {
-        const stamp = Date.now().toString(36)
-        /**
-         * 把一轮写进日志：turn/start → step/start → 消息 → step/end → turn/end。
-         * ⚠️ 必须带这层骨架：客户端会话视图是按 turn/step 事件给消息定位的，
-         * 裸写 user/message、assistant/message 会因为拿不到坐标而不显示成历史对话。
-         */
-        // 轮号从 1000 起：客户端按「轮号」分组（Map<number>），而新建会话里 agent 的第一轮
-        // 一定从 1 开始（phase.turn 初始为 0），所以历史轮必须避开低位号段，
-        // 否则历史的 turn 1 会和真实的 turn 1 并成同一组、看起来"历史没进去"。
-        // 同时这也是 resume 语义安全的：resume 时 phase.turn = lastTurn + 1 = 1000+N+1，仍不与历史重号。
-        /**
-         * 一轮升格后的**内容块**：附件在前、正文在后。
-         *
-         * 顺序与主会话、与 /analyze 完全一致（先给材料，再读问题）——
-         * 形状也是主会话真实使用的那一种（`{type:'image', attachment:{…}}`），
-         * 所以升格后客户端能画出缩略图、模型也能真的看到图。
-         */
-        const contentOfTurn = (turn: { text: string; attachments: HistoryAttachment[] }): ContentBlock[] => {
-          const blocks: ContentBlock[] = []
-          for (const item of turn.attachments) {
-            blocks.push(
-              item.kind === 'image'
-                ? { type: 'image', attachment: item.ref as never }
-                : { type: 'file', attachment: item.ref as never },
-            )
-          }
-          blocks.push({ type: 'text', text: attachmentMarkerStripped(turn.text, turn.attachments.length > 0) })
-          return blocks
-        }
-
-        let turnNo = 1000
-        const appendTurn = (userEvent: Record<string, unknown> | null, assistantText: string): void => {
-          turnNo += 1
-          const turn = turnNo
-          live.append?.('turn/start', { turn })
-          live.append?.('step/start', { turn, step: 1 })
-          if (userEvent) live.append?.('user/message', userEvent, { surfaceOp: 'append' })
-          live.append?.(
-            'assistant/message',
-            {
-              turn,
-              step: 1,
-              stream: [],
-              message: {
-                id: `sel-a-${stamp}-${turn}`,
-                role: 'assistant',
-                source: { kind: 'model', provider: 'dsh-selection-explain', model: '划词解读小窗' },
-                content: [{ type: 'text', text: assistantText }],
-              },
-            },
-            { surfaceOp: 'append' },
-          )
-          live.append?.('step/end', { turn, step: 1 })
-          live.append?.('turn/end', { turn, reason: { kind: 'completed' } })
-        }
-
-        // 第 1 轮：上下文消息（生产者自有的 source.kind + snapshot 呈现）+ 首轮解读
-        // ⚠️ kind 必须是 PLUGIN_SOURCE_KIND（`plugin:<插件名>`）：会话格式 v4 起不再
-        // 接受退役的 `plugin` 包装（`kind: 'plugin'` 加一个 `plugin` 字段），否则整场升格
-        // 会死在 "format v4 message requires a producer-owned source kind" 上（见文件头常量注释）。
-        const contextBody = [
-          `选中文字：${text}`,
-          `所在位置：${label}`,
-          `来源：划词解读小窗${sourceSessionId ? `（来源会话 ${sourceSessionId}）` : ''}`,
-          '',
-          '选中处的上下文片段：',
-          contextText,
-        ].join('\n')
-        const explanation = ['翻译', translation || '（未记录）', '', '详解', detail || '（未记录）'].join('\n')
-        appendTurn(
-          {
-            id: `sel-ctx-${stamp}`,
-            role: 'user',
-            source: {
-              kind: PLUGIN_SOURCE_KIND,
-              form: 'snapshot',
-              sections: [
-                { name: '划词解读 · 选中文字', text },
-                { name: '划词解读 · 所在位置', text: label },
-                { name: '划词解读 · 上下文片段', text: contextText },
-              ],
-            },
-            content: [{ type: 'text', text: contextBody }],
-          },
-          explanation,
-        )
-        // 后续轮：小窗里的追问逐轮写成真实问答
-        for (let i = 0; i < turns.length; i += 1) {
-          const turn = turns[i]
-          if (!turn) continue
-          if (turn.role === 'user') {
-            appendTurn(
-              {
-                id: `sel-u-${stamp}-${i}`,
-                role: 'user',
-                source: { kind: 'user' },
-                content: contentOfTurn(turn),
-              },
-              turns[i + 1] && turns[i + 1]?.role === 'assistant' ? (turns[i + 1]?.text ?? '') : '（未记录）',
-            )
-            i += 1 // 助手回答已随本轮写入
-          } else {
-            // 落单的助手消息（历史里没有对应提问）：单独成一轮
-            appendTurn(null, turn.text)
-          }
-        }
-        seeded = true
-      }
-
-      // ⑤ 开场消息
-      //
-      // ⚠️ 这个 prompt **只在打包回退路径下需要** —— 那时它本身就是"背景"的载体
-      //（一整段打包文字），不发就等于背景没进去。
-      // history 模式下历史已经是真实的 user/assistant 事件，来源也写在第一条上下文消息里
-      //（`选中文字：… / 所在位置：… / 来源：划词解读小窗（来源会话 …）`），
-      // 再发一句"请用一句话确认"没有任何作用，只剩代价：
-      //   · 每次升格白烧一次模型调用（升格时模型往往正忙）；
-      //   · 升格出来的会话顶部多一条"好的，我确认"的噪声；
-      //   · 把 agent 的第 1 轮占掉 —— 用户自己问的第一句变成第 2 轮。
-      //
-      // 曾经的理由是「整段历史落盘的触发点」。**实测否掉了**（2026-10-19）：
-      // 种子事件 +328ms 就写进磁盘，模型回复 +2863ms 才出现 ——
-      // 落盘靠的是 `live.append`（当场写盘），与这次 prompt 无关。
+      // A host without seeded creation gets a normal prompt carrying the
+      // background. Never inject execution events into an already-created agent.
       if (!seeded) {
         const opener = [
             '【划词解读 · 升格为会话】',

@@ -42,6 +42,17 @@ SEL_ORIGIN=http://127.0.0.1:3080 SPEECH_WAV=/absolute/path/sample.wav npm run te
 
 语音样本需为 16kHz、单声道、PCM16 WAV。在线测试会向指定宿主发出识别请求，不属于默认离线验证。
 
+## 升格的真实宿主回归
+
+默认集成测试使用锁定依赖中的真实 Session 与关系校验器，验证 seed、来源、附件、项目归属和旧宿主回退。另有真实 DSH v4 运行时测试，需要提供已安装宿主中包含 `@deepseek-ai/*` 包的 `node_modules` 目录：
+
+```bash
+npm run build
+node tests/runtime/promote.test.mjs /absolute/path/to/dsh/node_modules
+```
+
+该测试使用真实 agent factory、投影和 Zstandard JSONL 存储，在临时目录验证：升格后立即重开、原 agent 追问后重开、冷恢复后继续追问、再次恢复后轮号续接。每次重开都新建服务容器与存储后端。模型调用在 pre-step 阶段拦截，不访问外部模型或用户数据；它不验证模型生成内容。默认 `npm test` 不包含这项需要完整宿主的测试。
+
 ## 构建与打包
 
 ```bash

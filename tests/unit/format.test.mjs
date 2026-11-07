@@ -7,11 +7,17 @@ import { resolveConfig } from '../../lib/host/config.js'
 const events = [], prompts = [], created = [], attached = []
 let liveEnabled = true
 const services = {
-  sessions: {get: () => liveEnabled ? {append: (type, data, options) => events.push({type, data, options})} : undefined},
+  agents: {create: async options => {
+    created.push(options)
+    events.push(...options.seed.map(({surfaceOp, ...event}) => ({...event, options: surfaceOp ? {surfaceOp} : undefined})))
+    return {agent: {id: options.sessionId}, async dispose() {}}
+  }},
+  // Even if a live Session is available, promotion must never inject history into it.
+  sessions: {get: () => ({append() {throw new Error('unsafe live history append')}})},
   workspaceRegistry: {resolveByPath: async () => ({id: 'workspace'}), get: () => ({sessionIds: [], attachSession: async id => attached.push(id)})},
-  sessionController: {create: async options => {created.push(options); return {sessionId: 'promoted'}}, rename: async () => {}, prompt: async request => prompts.push(request)},
+  sessionController: {composeAgent: async () => ({setup() {}}), create: async options => {created.push(options); return {sessionId: 'promoted'}}, rename: async () => {}, prompt: async request => prompts.push(request)},
 }
-const {handlePromote} = createPromote({get: name => services[name]}, resolveConfig({}), {resolveSessionCwd: async () => '/fixture/project'}, {clampText: (value, max) => typeof value === 'string' ? value.slice(0, max) : ''})
+const {handlePromote} = createPromote({get: name => name === 'agents' && !liveEnabled ? undefined : services[name]}, resolveConfig({}), {resolveSessionCwd: async () => '/fixture/project'}, {clampText: (value, max) => typeof value === 'string' ? value.slice(0, max) : ''})
 const server = createServer((req, res) => {Promise.resolve(handlePromote(req, res)).catch(error => {res.writeHead(500); res.end(String(error))})})
 await new Promise(done => server.listen(0, '127.0.0.1', done))
 const origin = 'http://127.0.0.1:' + server.address().port
@@ -19,15 +25,17 @@ const payload = {text: 'selected text', context: 'surrounding text', label: 'Sou
 const promote = body => fetch(origin, {method: 'POST', body: JSON.stringify(body)}).then(res => res.json())
 try {
   assert.equal((await promote(payload)).mode, 'history')
-  assert.deepEqual(created[0], {workspaceId: 'workspace'})
-  assert.deepEqual(attached, ['promoted'])
+  assert.equal(created[0].meta.cwd, '/fixture/project')
+  assert.equal(created[0].meta.isSeeded, true)
+  assert.equal(created[0].seed.length, created[0].inheritedEventCount)
+  assert.deepEqual(attached, [created[0].sessionId])
   assert.deepEqual(events.map(event => event.type), ['turn/start', 'step/start', 'user/message', 'assistant/message', 'step/end', 'turn/end', 'turn/start', 'step/start', 'user/message', 'assistant/message', 'step/end', 'turn/end'])
   const context = events.find(event => event.type === 'user/message').data
   assert.equal(context.source.kind, 'plugin:@yfwu2020/dsh-selection-explain')
   assert.equal(context.source.form, 'snapshot')
   assert.equal(context.source.sections[0].text, 'selected text')
   assert.equal(context.content[0].text.includes('surrounding text'), true)
-  assert.equal(events[0].data.turn, 1001)
+  assert.equal(events[0].data.turn, 1)
   assert.equal(events[5].data.reason.kind, 'completed')
   assert.equal(events[8].data.source.kind, 'user')
   assert.equal(events[9].data.message.content[0].text, 'answer')

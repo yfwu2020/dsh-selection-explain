@@ -13,7 +13,7 @@
 | `src/host/analyze.ts`、`analyze-*.ts` | 解读请求调度，以及请求归一化、消息与工具准备、流式执行、重试和补结论 |
 | `src/host/shot.ts`、`shot-service.ts`、`shot-capture.ts`、`shot-platform.ts`、`shot-geometry.ts` | 截图 HTTP 接口、实例任务生命周期、捕获流程、系统操作与纯几何规则 |
 | `src/host/native-probe.ts` | 原生探针的发布二进制选择和源码 hash 编译缓存 |
-| `src/host/promote.ts`、`speech.ts`、`attach.ts` | 升格、语音识别，以及附件的上传与回放接口 |
+| `src/host/promote.ts`、`promote-seed.ts`、`speech.ts`、`attach.ts` | 升格、语音识别，以及附件的上传与回放接口 |
 | `src/host/filters.ts`、`effort.ts`、`context.ts`、`tools.ts`、`history-attachments.ts` | 可独立测试的处理规则、附件引用的收敛与预算、宿主工具适配与读取边界 |
 | `src/config-values.ts` | 配置类型、默认值和数值边界 |
 | `src/settings.ts` | 设置控件元数据与补丁归一化 |
@@ -44,6 +44,12 @@
 客户端结果缓存由 `memory.js` 管理：最多 20 项，序列化文本的 UTF-16 估算总量最多 8 MiB，读取命中会刷新淘汰顺序。缓存保存独立 JSON 快照，避免保留可变界面对象；此预算不代表浏览器进程的堆内存上限。计时器作用域只登记仍然活动的计时器，完成、取消和卸载时立即移除。
 
 长对话默认渲染最近 40 条可见消息，按需每次再展开 40 条；完整轮次仍用于保存与组装模型请求。关闭面板会清除回答区域的 DOM 和预览帧登记，保留文字、草稿与待发送附件，重开时重新渲染。卸载时还会释放附件 object URL、缓存、计时器和桥的帧引用。
+
+## 升格为正式会话
+
+`promote-seed.ts` 先把上下文、首轮解读和追问组装为完整 seed：事件 `seq` 从 0 连续，轮号从 1 连续，turn/step 成对闭合，消息保留插件来源与附件引用。`promote.ts` 复用宿主的 agent composition（预设挂载与模型选择设置），通过 `agents.create` 一次传入 seed、`inheritedEventCount` 和 `isSeeded`。历史在 agent 构造前已进入投影，下一轮自然从历史末尾继续；不能先建空 agent，再向 live 日志追加历史。
+
+宿主缺少 seed 创建或 composition 能力、或无法解析来源工作目录时，使用普通会话创建与打包 prompt，不手写执行事件。修复仅改变新升格会话；已有损坏的正式会话日志需要另行备份与修复，不自动改写用户历史。
 
 ## 小窗模型上下文
 

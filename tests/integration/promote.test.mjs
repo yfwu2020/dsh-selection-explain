@@ -5,13 +5,15 @@
  * `workspaceRegistry` / `sessions` 这些宽松 cast 的接口，DSH 升级后形状变了它不会编译报错，
  * 只会在真实点击时 503 / 静默失败。所以这里用假宿主把两端钉住：
  *   · create 收到的是 workspaceId 或 cwd（二选一，不能同时传）；
- *   · history 模式写 turn/step 骨架，且来源是插件自有 kind；
- *   · 没有 live 会话时退回打包 prompt，且带 AbortSignal；
+ *   · history 在 agent 创建时作为 seed 载入，且通过宿主关系校验；
+ *   · 缺少 seed/composition 能力时退回打包 prompt，且带 AbortSignal；
  *   · 缺 text → 400、非 POST → 405、没有 sessionController → 503。
  */
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { apply } from '../../lib/index.js'
+import { Session, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
+import { apply as installSessionInvariant } from '@deepseek-ai/dsh-session/invariant'
 
 const PLUGIN_SOURCE_KIND = 'plugin:@yfwu2020/dsh-selection-explain'
 const PROMOTE_PATH = '/selection-explain/api/promote'
@@ -22,6 +24,9 @@ function makeState() {
     routes: new Map(),
     disposers: [],
     creates: [],
+    seededCreates: [],
+    hasSeededCreate: true,
+    failSeededCreate: false,
     renames: [],
     prompts: [],
     attached: [],
@@ -31,7 +36,12 @@ function makeState() {
     hasController: true,
     failCreate: false,
   }
+  const composition = { agentPreset: 'fixture-preset', setup() {} }
   const controller = {
+    async composeAgent(preset) {
+      assert.equal(preset, undefined)
+      return composition
+    },
     async create(request) {
       state.creates.push(request)
       if (state.failCreate) return {}
@@ -71,6 +81,18 @@ function makeState() {
       },
     },
     get(name) {
+      if (name === 'agents') return state.hasSeededCreate ? {
+        async create(options) {
+          state.seededCreates.push(options)
+          if (state.failSeededCreate) throw new Error('seed creation failed')
+          const session = Session.create(options.sessionId, options.seed, {
+            id: options.sessionId, version: SESSION_FORMAT_VERSION, createdAt: Date.now(), ...options.meta,
+          }, options.inheritedEventCount)
+          await validateReplay(session)
+          state.live.set(options.sessionId, session)
+          return { agent: { id: options.sessionId, session }, async dispose() {} }
+        },
+      } : undefined
       if (name === 'sessionController') return state.hasController ? controller : undefined
       if (name === 'sessions') return { get: (id) => state.live.get(id) }
       if (name === 'sessionQuery') return { readSession: async () => undefined, readSurface: async () => ({ events: [] }) }
@@ -82,6 +104,7 @@ function makeState() {
   }
   state.ctx = ctx
   state.controller = controller
+  state.composition = composition
   return state
 }
 
@@ -119,6 +142,16 @@ async function post(origin, body) {
   return { status: response.status, body: await response.json() }
 }
 
+// Use the host's relational validator, so an invalid turn sequence cannot pass
+// merely because the HTTP fixture recorded the expected event names.
+async function validateReplay(session) {
+  await installSessionInvariant({ invariants: {
+    register(_name, install) {
+      install({ sessions: { list: () => [session] }, on() {} }, message => { throw new Error(message) })
+    },
+  } })
+}
+
 const liveSession = (state, id, cwd) => {
   const events = []
   state.live.set(id, {
@@ -136,7 +169,7 @@ const liveSession = (state, id, cwd) => {
   const state = makeState()
   state.workspace = { id: 'ws-1', path: '/tmp/project', sessionIds: [], attachSession: async (id) => state.attached.push(id) }
   state.live.set('src-1', { header: { cwd: '/tmp/project' }, seq: 7 })
-  const events = liveSession(state, 'new-1', '/tmp/project')
+  const oldEvents = liveSession(state, 'new-1', '/tmp/project')
   const app = await boot(state)
   try {
     const result = await post(app.origin, {
@@ -151,19 +184,40 @@ const liveSession = (state, id, cwd) => {
         { role: 'assistant', text: '因为迁移超时，需要留出回滚窗口。' },
       ],
     })
-    assert.equal(result.status, 200)
+    assert.equal(result.status, 200, result.body.error)
+    assert.deepEqual(state.creates, [], '历史必须随 agent 创建传入，不能先建空会话再 append')
+    const newId = result.body.sessionId
+    assert.match(newId, /^session-[0-9a-f-]{36}$/)
     assert.deepEqual(result.body, {
       ok: true,
-      sessionId: 'new-1',
+      sessionId: newId,
       cwd: '/tmp/project',
       workspaceId: 'ws-1',
       mode: 'history',
     })
-    assert.deepEqual(state.creates, [{ workspaceId: 'ws-1' }], 'workspace 与 cwd 互斥：有 workspace 就只传它')
+    assert.deepEqual(oldEvents, [], '不得事后向已有 live 会话写历史')
+    assert.equal(state.seededCreates.length, 1)
+    const options = state.seededCreates[0]
+    assert.deepEqual(options.meta, { cwd: '/tmp/project', isSeeded: true, agentPreset: 'fixture-preset' })
+    assert.deepEqual(options.agentOptions, { provider: 'fixture', model: 'fixture' })
+    assert.equal(options.setup, state.composition.setup)
+    assert.equal(options.inheritedEventCount, options.seed.length)
+    assert.deepEqual(options.seed.map(e => e.seq), Array.from({ length: options.seed.length }, (_, i) => i))
+    const events = options.seed.map(({ surfaceOp, ...event }) => ({ ...event, options: surfaceOp ? { surfaceOp } : undefined }))
+    const session = state.live.get(newId)
+    assert.equal(session.eventAt(options.seed.length).type, 'session/end-seed')
+    // Cold reconstruction before any follow-up and after a new completed turn.
+    await validateReplay(Session.fromRestore(newId, JSON.parse(JSON.stringify(session.snapshotEvents())), session.header, session.inheritedEventCount, 'detached'))
+    session.append('turn/start', { turn: 3 })
+    session.append('step/start', { turn: 3, step: 1 })
+    session.append('user/message', { id: 'follow-up', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '继续讨论' }] }, { surfaceOp: 'append' })
+    session.append('step/end', { turn: 3, step: 1 })
+    session.append('turn/end', { turn: 3, reason: { kind: 'completed' } })
+    await validateReplay(Session.fromRestore(newId, JSON.parse(JSON.stringify(session.snapshotEvents())), session.header, session.inheritedEventCount, 'detached'))
     assert.equal(state.renames.length, 1)
-    assert.equal(state.renames[0].sessionId, 'new-1')
+    assert.equal(state.renames[0].sessionId, newId)
     assert.match(state.renames[0].title, /^划词解读：the migration ran long/)
-    assert.deepEqual(state.attached, ['new-1'], '新会话要显式挂到 workspace')
+    assert.deepEqual(state.attached, [newId], '新会话要显式挂到 workspace')
     assert.equal(state.prompts.length, 0, 'history 模式不再发开场 prompt')
 
     assert.deepEqual(
@@ -196,14 +250,15 @@ const liveSession = (state, id, cwd) => {
   }
 }
 
-// ───────────────── ② 没有 live 会话 → 回退成一条打包 prompt ─────────────────
+// ───────────────── ② 没有 seeded agent 创建能力 → 回退成一条打包 prompt ─────────────────
 {
   const state = makeState()
+  state.hasSeededCreate = false
   state.live.set('src-2', { header: { cwd: '/tmp/project' }, seq: 1 })
   const app = await boot(state)
   try {
     const result = await post(app.origin, { text: 'hello world', sessionId: 'src-2' })
-    assert.equal(result.status, 200)
+    assert.equal(result.status, 200, result.body.error)
     assert.equal(result.body.mode, 'packed')
     assert.equal(result.body.workspaceId, null)
     assert.equal(result.body.cwd, '/tmp/project')
@@ -254,6 +309,7 @@ const liveSession = (state, id, cwd) => {
 // ───────────────── ④ 建会话失败（拿不到 sessionId）→ 500，不继续写历史 ─────────────────
 {
   const state = makeState()
+  state.hasSeededCreate = false
   state.failCreate = true
   const app = await boot(state)
   try {
@@ -264,6 +320,68 @@ const liveSession = (state, id, cwd) => {
   } finally {
     await app.close()
   }
+}
+
+// Failed seeded construction must never retry through a potentially corrupt live append.
+{
+  const state = makeState()
+  state.live.set('failure-source', { header: { cwd: '/tmp/project' } })
+  state.failSeededCreate = true
+  const app = await boot(state)
+  try {
+    const result = await post(app.origin, { text: 'x', sessionId: 'failure-source' })
+    assert.equal(result.status, 500)
+    assert.match(result.body.error, /seed creation failed/)
+    assert.equal(state.creates.length, 0)
+    assert.equal(state.prompts.length, 0)
+  } finally { await app.close() }
+}
+
+// Newer hosts keep the composer on the controller's internal agent helper.
+{
+  const state = makeState()
+  state.live.set('nested-source', { header: { cwd: '/tmp/nested-project' } })
+  state.controller.agents = { composeAgent: state.controller.composeAgent }
+  delete state.controller.composeAgent
+  const app = await boot(state)
+  try {
+    const result = await post(app.origin, { text: 'nested composer', sessionId: 'nested-source' })
+    assert.equal(result.status, 200, result.body.error)
+    assert.equal(result.body.mode, 'history')
+    assert.equal(state.seededCreates[0].setup, state.composition.setup)
+    assert.equal(state.seededCreates[0].meta.cwd, '/tmp/nested-project')
+  } finally { await app.close() }
+}
+
+// Missing composition must use the host's normal creation, even with live access.
+{
+  const state = makeState()
+  delete state.controller.composeAgent
+  const events = liveSession(state, 'new-1')
+  const app = await boot(state)
+  try {
+    const result = await post(app.origin, { text: 'legacy host' })
+    assert.equal(result.status, 200, result.body.error)
+    assert.equal(result.body.mode, 'packed')
+    assert.deepEqual(state.creates, [{}])
+    assert.deepEqual(events, [])
+    assert.equal(state.seededCreates.length, 0)
+    assert.equal(state.prompts.length, 1)
+  } finally { await app.close() }
+}
+
+// Without a source cwd, only normal creation knows the host's default workspace.
+{
+  const state = makeState()
+  const app = await boot(state)
+  try {
+    const result = await post(app.origin, { text: 'no bound source session' })
+    assert.equal(result.status, 200, result.body.error)
+    assert.equal(result.body.mode, 'packed', '不得创建没有 cwd、侧栏不可见且无法恢复的 seed 会话')
+    assert.deepEqual(state.creates, [{}])
+    assert.equal(state.seededCreates.length, 0)
+    assert.equal(state.prompts.length, 1)
+  } finally { await app.close() }
 }
 
 console.log('PASS promote: history seeding, workspace attach, packed fallback, 400/405/503, create failure')
