@@ -1,6 +1,7 @@
+import { createSystemMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { HistoryAttachment } from './history-attachments.js'
-import { PLUGIN_SOURCE_KIND } from './constants.js'
+import { name, PLUGIN_SOURCE_KIND } from './constants.js'
 
 export interface PromoteTurn {
   role: 'user' | 'assistant'
@@ -73,6 +74,19 @@ export function buildPromoteSeed({ text, label, contextText, translation, detail
     const turn = turnNo
     append('turn/start', { turn })
     append('step/start', { turn, step: 1 })
+    if (turn === 1) {
+      // v4 reserves the first surface node for system-prompt updates. Seed it
+      // empty; the host replaces it with its current prompt on the first step.
+      // Adding a system message after the imported user/assistant history would
+      // make the stored log unreadable on the next resume (issue #2).
+      append('system/message', {
+        turn,
+        step: 1,
+        // The host's factory supplies the source vocabulary for its format
+        // version (v3 plugin source, v4 system-prompt source).
+        message: createSystemMessage('', name),
+      }, { surfaceOp: 'append' })
+    }
     if (userEvent) append('user/message', userEvent, { surfaceOp: 'append' })
     append(
       'assistant/message',

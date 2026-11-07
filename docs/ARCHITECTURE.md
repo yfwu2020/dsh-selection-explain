@@ -47,7 +47,7 @@
 
 ## 升格为正式会话
 
-`promote-seed.ts` 先把上下文、首轮解读和追问组装为完整 seed：事件 `seq` 从 0 连续，轮号从 1 连续，turn/step 成对闭合，消息保留插件来源与附件引用。`promote.ts` 复用宿主的 agent composition（预设挂载与模型选择设置），通过 `agents.create` 一次传入 seed、`inheritedEventCount` 和 `isSeeded`。历史在 agent 构造前已进入投影，下一轮自然从历史末尾继续；不能先建空 agent，再向 live 日志追加历史。
+`promote-seed.ts` 先把上下文、首轮解读和追问组装为完整 seed：事件 `seq` 从 0 连续，轮号从 1 连续，turn/step 成对闭合，消息保留插件来源与附件引用。第一轮 step 内、所有用户和助手消息之前，通过宿主消息工厂预留空的系统首节点；宿主首次执行时将当前系统提示词更新到该节点，避免在已有历史之后追加系统消息而导致 v4 冷读取失败。`promote.ts` 复用宿主的 agent composition（预设挂载与模型选择设置），通过 `agents.create` 一次传入 seed、`inheritedEventCount` 和 `isSeeded`。历史在 agent 构造前已进入投影，下一轮自然从历史末尾继续；不能先建空 agent，再向 live 日志追加历史。
 
 宿主缺少 seed 创建或 composition 能力、或无法解析来源工作目录时，使用普通会话创建与打包 prompt，不手写执行事件。修复仅改变新升格会话；已有损坏的正式会话日志需要另行备份与修复，不自动改写用户历史。
 

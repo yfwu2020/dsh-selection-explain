@@ -34,4 +34,41 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm test
       - run: npm run typecheck
+      - name: Real v4 promotion, completed replies and cold reload
+        if: matrix.node == '24'
+        shell: bash
+        run: |
+          RUNTIME_DIR="$RUNNER_TEMP/dsh-selection-runtime"
+          npm install --prefix "$RUNTIME_DIR" --ignore-scripts --no-audit --no-fund \
+            @deepseek-ai/dsh-agent-loop@0.2.0-rc.2 \
+            @deepseek-ai/dsh-session-persistence-jsonl@0.2.0-rc.2
+          node tests/runtime/promote.test.mjs "$RUNTIME_DIR/node_modules"
       - run: npm pack --dry-run --ignore-scripts
+
+  windows-promote:
+    name: Windows promotion (Node ${{ matrix.node }})
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.14.0', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      # Build only the host modules exercised here. Native macOS probes and the
+      # browser suite are covered by verify; this job uses Windows paths and I/O.
+      - name: Compile host modules
+        run: npx tsc -p tsconfig.json
+      - name: Install isolated v4 runtime
+        run: >-
+          npm install --prefix "${{ runner.temp }}\dsh-selection-runtime"
+          --ignore-scripts --no-audit --no-fund
+          @deepseek-ai/dsh-agent-loop@0.2.0-rc.2
+          @deepseek-ai/dsh-session-persistence-jsonl@0.2.0-rc.2
+      - name: Completed replies, Zstandard disk reload and prompt changes
+        run: node tests/runtime/promote.test.mjs "${{ runner.temp }}\dsh-selection-runtime\node_modules"

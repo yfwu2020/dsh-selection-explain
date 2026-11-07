@@ -44,14 +44,14 @@ SEL_ORIGIN=http://127.0.0.1:3080 SPEECH_WAV=/absolute/path/sample.wav npm run te
 
 ## 升格的真实宿主回归
 
-默认集成测试使用锁定依赖中的真实 Session 与关系校验器，验证 seed、来源、附件、项目归属和旧宿主回退。另有真实 DSH v4 运行时测试，需要提供已安装宿主中包含 `@deepseek-ai/*` 包的 `node_modules` 目录：
+默认集成测试使用锁定依赖中的真实 Session 与关系校验器，验证 seed、系统首节点、来源、附件、项目归属和旧宿主回退。另有真实 DSH v4 运行时测试，需要提供已安装宿主中包含 `@deepseek-ai/*` 包的 `node_modules` 目录：
 
 ```bash
 npm run build
 node tests/runtime/promote.test.mjs /absolute/path/to/dsh/node_modules
 ```
 
-该测试使用真实 agent factory、投影和 Zstandard JSONL 存储，在临时目录验证：升格后立即重开、原 agent 追问后重开、冷恢复后继续追问、再次恢复后轮号续接。每次重开都新建服务容器与存储后端。模型调用在 pre-step 阶段拦截，不访问外部模型或用户数据；它不验证模型生成内容。默认 `npm test` 不包含这项需要完整宿主的测试。
+该测试把已构建插件复制到临时目录，使用指定宿主的同一套依赖，避免将旧版消息工厂与 v4 会话服务混用。测试使用真实 agent factory、提示词投影、完整 step 与 Zstandard JSONL 存储，只有外部模型适配器替换为离线流。验证升格后立即重开、完整回复后重开、冷恢复后继续回复、系统提示词变更与清空、再次恢复后轮号续接，以及导入历史仍在模型请求中。每次重开都新建服务容器与存储后端，不访问外部模型或用户数据。默认 `npm test` 不包含这项需要完整宿主的测试；`check.yml` 在 Node 24 的 Linux 和 macOS 检查中另行安装锁定版本的 v4 核心运行时并执行；Windows 云端任务在 Node 22.14.0 和 24 上编译宿主模块并执行相同的完整回复与冷恢复测试，覆盖 Windows 原生路径、目录 junction 和文件读写。此任务验证本问题涉及的内核与日志恢复链路，不启动桌面界面。
 
 ## 构建与打包
 

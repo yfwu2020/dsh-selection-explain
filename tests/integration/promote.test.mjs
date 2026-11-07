@@ -223,26 +223,26 @@ const liveSession = (state, id, cwd) => {
     assert.deepEqual(
       events.map((event) => event.type),
       [
-        'turn/start', 'step/start', 'user/message', 'assistant/message', 'step/end', 'turn/end',
+        'turn/start', 'step/start', 'system/message', 'user/message', 'assistant/message', 'step/end', 'turn/end',
         'turn/start', 'step/start', 'user/message', 'assistant/message', 'step/end', 'turn/end',
       ],
       '两轮都必须带 turn/step 骨架（否则客户端不显示成历史对话）',
     )
-    const contextUser = events[2]
+    const contextUser = events.find(event => event.type === 'user/message')
     assert.equal(contextUser.data.source.kind, PLUGIN_SOURCE_KIND, '上下文消息要用插件自有 source kind')
     assert.match(contextUser.data.content[0].text, /选中文字：the migration ran long/)
     assert.match(contextUser.data.content[0].text, /所在位置：对话消息（助手）/)
-    const contextAssistant = events[3]
+    const contextAssistant = events.find(event => event.type === 'assistant/message')
     assert.match(contextAssistant.data.message.content[0].text, /翻译/)
     assert.match(contextAssistant.data.message.content[0].text, /详解/)
 
-    const question = events[8]
+    const question = events.filter(event => event.type === 'user/message')[1]
     assert.equal(question.data.source.kind, 'user')
     assert.equal(question.data.content[0].text, '为什么是周三？')
-    const answer = events[9]
+    const answer = events.filter(event => event.type === 'assistant/message')[1]
     assert.equal(answer.data.message.content[0].text, '因为迁移超时，需要留出回滚窗口。')
     assert.ok(
-      events.filter((event) => event.type === 'user/message' || event.type === 'assistant/message').every((event) => event.options && event.options.surfaceOp === 'append'),
+      events.filter((event) => ['system/message', 'user/message', 'assistant/message'].includes(event.type)).every((event) => event.options && event.options.surfaceOp === 'append'),
       '消息事件都要 surfaceOp=append（骨架事件不需要）',
     )
   } finally {
