@@ -52,7 +52,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['22.14.0', '24']
+        # The v4 persistence module imports Zstandard APIs added in Node 22.15.
+        node: ['22.15.0', '24']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
